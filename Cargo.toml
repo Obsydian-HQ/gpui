@@ -4,6 +4,9 @@ members = [
     "crates/collections",
     "crates/gpui_macros",
     "crates/http_client",
+    "crates/http_client_tls",
+    "crates/media",
+    "crates/sum_tree",
     "crates/util",
     "crates/scheduler",
     "crates/refineable",
@@ -23,6 +26,9 @@ edition = "2024"
 collections = { path = "crates/collections", version = "0.1.0" }
 gpui_macros = { path = "crates/gpui_macros" }
 http_client = { path = "crates/http_client" }
+http_client_tls = { path = "crates/http_client_tls" }
+media = { path = "crates/media" }
+sum_tree = { path = "crates/sum_tree" }
 util = { path = "crates/util" }
 scheduler = { path = "crates/scheduler" }
 refineable = { path = "crates/refineable" }
@@ -41,6 +47,9 @@ async_zip = { version = "0.0.18", features = ["deflate", "deflate64"] }
 bytes = "1.0"
 backtrace = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+core-foundation = "=0.10.0"
+core-video = { version = "0.4.3", features = ["metal"] }
+ctor = "0.4.0"
 derive_more = "0.99.17"
 dirs = "4.0"
 futures = "0.3"
@@ -56,15 +65,20 @@ itertools = "0.14.0"
 libc = "0.2"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 mach2 = "0.5"
+metal = "0.29"
 nix = "0.29"
+objc = "0.2"
 parking_lot = "0.12.1"
 pretty_assertions = { version = "1.3.0", features = ["unstable"] }
 proc-macro2 = "1.0.93"
 quote = "1.0.9"
 rand = "0.9"
+rayon = "1.8"
 regex = "1.5"
 rust-embed = { version = "8.4", features = ["include-exclude"] }
 rustc-hash = "2.1.0"
+rustls = { version = "0.23.26" }
+rustls-platform-verifier = "0.5.0"
 schemars = { version = "1.0", features = ["indexmap2"] }
 serde = { version = "1.0.221", features = ["derive", "rc"] }
 serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
@@ -76,6 +90,7 @@ smol = "2.0"
 syn = { version = "2.0.101", features = ["full", "extra-traits", "visit-mut"] }
 take-until = "0.2.0"
 tempfile = "3.20.0"
+tracing = "0.1.40"
 unicase = "2.6"
 url = "2.2"
 walkdir = "2.5"
