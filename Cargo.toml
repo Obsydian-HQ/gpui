@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/collections",
+    "crates/util",
+    "crates/scheduler",
+    "crates/refineable",
+    "crates/refineable/derive_refineable",
+]
+
+[workspace.package]
+publish = false
+edition = "2024"
+
+[workspace.dependencies]
+
+#
+# Workspace member crates
+#
+
+collections = { path = "crates/collections", version = "0.1.0" }
+util = { path = "crates/util" }
+scheduler = { path = "crates/scheduler" }
+refineable = { path = "crates/refineable" }
+derive_refineable = { path = "crates/refineable/derive_refineable" }
+
+#
+# External crates
+#
+
+anyhow = "1.0.86"
+async-fs = "2.1"
+async-task = "4.7"
+async_zip = { version = "0.0.18", features = ["deflate", "deflate64"] }
+backtrace = "0.3"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "4.0"
+futures = "0.3"
+futures-lite = "1.13"
+git2 = { version = "0.20.1", default-features = false }
+globset = "0.4"
+indexmap = { version = "2.7.0", features = ["serde"] }
+indoc = "2"
+itertools = "0.14.0"
+libc = "0.2"
+log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
+mach2 = "0.5"
+nix = "0.29"
+parking_lot = "0.12.1"
+pretty_assertions = { version = "1.3.0", features = ["unstable"] }
+proc-macro2 = "1.0.93"
+quote = "1.0.9"
+rand = "0.9"
+regex = "1.5"
+rust-embed = { version = "8.4", features = ["include-exclude"] }
+rustc-hash = "2.1.0"
+schemars = { version = "1.0", features = ["indexmap2"] }
+serde = { version = "1.0.221", features = ["derive", "rc"] }
+serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
+serde_json_lenient = { version = "0.2", features = ["preserve_order", "raw_value"] }
+shlex = "1.3.0"
+smol = "2.0"
+syn = { version = "2.0.101", features = ["full", "extra-traits", "visit-mut"] }
+take-until = "0.2.0"
+tempfile = "3.20.0"
+unicase = "2.6"
+walkdir = "2.5"
+which = "6.0.0"
+
+[patch.crates-io]
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow" }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+declare_interior_mutable_const = "deny"
+redundant_clone = "deny"
+disallowed_methods = "deny"
+style = { level = "allow", priority = -1 }
+type_complexity = "allow"
+let_underscore_future = "allow"
+single_range_in_vec_init = "allow"
+too_many_arguments = "allow"
+large_enum_variant = "allow"
+nonminimal_bool = "allow"
