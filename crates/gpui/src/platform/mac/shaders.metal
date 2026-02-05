@@ -891,8 +891,9 @@ fragment float4 surface_bgra_fragment(
     texture2d<float> bgra_texture
     [[texture(SurfaceInputIndex_YTexture)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
-  float4 bgra = bgra_texture.sample(texture_sampler, input.texture_position);
-  return float4(bgra.b, bgra.g, bgra.r, bgra.a);
+  // BGRA8Unorm textures are automatically swizzled by Metal hardware on
+  // sampling, so .r/.g/.b/.a already map to R/G/B/A respectively.
+  return bgra_texture.sample(texture_sampler, input.texture_position);
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
