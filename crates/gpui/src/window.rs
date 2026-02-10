@@ -919,7 +919,7 @@ pub struct Window {
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
-    next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
@@ -1917,6 +1917,8 @@ impl Window {
         self.appearance_observers
             .clone()
             .retain(&(), |callback| callback(self, cx));
+
+        self.refresh();
     }
 
     /// Returns the appearance of the current window.
@@ -2020,6 +2022,12 @@ impl Window {
     /// Show the platform character palette.
     pub fn show_character_palette(&self) {
         self.platform_window.show_character_palette();
+    }
+
+    /// Returns a raw pointer to the platform's native view (e.g., NSView on macOS).
+    /// Used by native controls to add platform subviews.
+    pub fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
+        self.platform_window.raw_native_view_ptr()
     }
 
     /// The scale factor of the display associated with the window. For example, it could

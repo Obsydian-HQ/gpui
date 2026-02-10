@@ -329,3 +329,7 @@ path = "examples/grid_layout.rs"
 [[example]]
 name = "mouse_pressure"
 path = "examples/mouse_pressure.rs"
+
+[[example]]
+name = "native_button"
+path = "examples/native_button.rs"

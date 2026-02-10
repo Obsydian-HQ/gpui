@@ -1561,6 +1561,10 @@ impl PlatformWindow for MacWindow {
             .detach()
     }
 
+    fn raw_native_view_ptr(&self) -> *mut c_void {
+        self.0.lock().native_view.as_ptr() as *mut c_void
+    }
+
     fn titlebar_double_click(&self) {
         let this = self.0.lock();
         let window = this.native_window;

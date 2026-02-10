@@ -82,6 +82,8 @@ pub use keystroke::*;
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::*;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::native_controls;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
 #[cfg(target_os = "windows")]
@@ -575,6 +577,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn gpu_specs(&self) -> Option<GpuSpecs>;
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
+
+    /// Returns a raw pointer to the platform's native view (e.g., NSView on macOS).
+    /// Used by native controls to add platform subviews.
+    /// Returns null on platforms that don't support native subviews.
+    fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
 
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {

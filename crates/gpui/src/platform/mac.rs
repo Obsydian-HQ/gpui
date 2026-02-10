@@ -28,6 +28,7 @@ mod open_type;
 #[cfg(feature = "font-kit")]
 mod text_system;
 
+pub(crate) mod native_controls;
 mod platform;
 mod window;
 mod window_appearance;
