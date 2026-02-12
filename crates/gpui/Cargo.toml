@@ -333,3 +333,15 @@ path = "examples/mouse_pressure.rs"
 [[example]]
 name = "native_button"
 path = "examples/native_button.rs"
+
+[[example]]
+name = "native_styled_button"
+path = "examples/native_styled_button.rs"
+
+[[example]]
+name = "native_icon_button"
+path = "examples/native_icon_button.rs"
+
+[[example]]
+name = "native_toggle_group"
+path = "examples/native_toggle_group.rs"

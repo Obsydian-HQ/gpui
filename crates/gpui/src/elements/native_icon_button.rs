@@ -9,69 +9,29 @@ use crate::{
     Styled, Window, px,
 };
 
+use super::native_button::{NativeButtonStyle, NativeButtonTint};
+
 type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
-
-// =============================================================================
-// Style & tint enums
-// =============================================================================
-
-/// Visual style for a native platform button.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NativeButtonStyle {
-    /// Standard macOS rounded push button (NSBezelStyleRounded).
-    #[default]
-    Rounded,
-    /// Filled / prominent appearance. Uses bezel color for emphasis.
-    Filled,
-    /// Inline / accessory bar style. Compact, minimal chrome.
-    Inline,
-    /// Borderless — no bezel, just text or icon. Reacts on hover.
-    Borderless,
-}
-
-/// Semantic tint color applied to a native button's bezel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeButtonTint {
-    /// System accent color (typically blue).
-    Accent,
-    /// Destructive / error (red).
-    Destructive,
-    /// Warning (orange).
-    Warning,
-    /// Success (green).
-    Success,
-}
-
-impl NativeButtonTint {
-    /// Returns the RGBA color components for this tint (sRGB, 0.0–1.0).
-    pub fn rgba(self) -> (f64, f64, f64, f64) {
-        match self {
-            NativeButtonTint::Accent => (0.0, 0.478, 1.0, 1.0),
-            NativeButtonTint::Destructive => (1.0, 0.231, 0.188, 1.0),
-            NativeButtonTint::Warning => (1.0, 0.584, 0.0, 1.0),
-            NativeButtonTint::Success => (0.196, 0.843, 0.294, 1.0),
-        }
-    }
-}
 
 // =============================================================================
 // Public constructor
 // =============================================================================
 
-/// Creates a native platform button element (NSButton on macOS).
+/// Creates a native icon button using an SF Symbol name (macOS 11+).
 ///
-/// The button participates in GPUI's Taffy layout system and renders as a real
-/// platform button, not a custom-drawn element.
-pub fn native_button(
+/// Example SF Symbol names: "gear", "plus", "trash", "magnifyingglass",
+/// "square.and.arrow.up", "folder", "bell", "person.crop.circle".
+pub fn native_icon_button(
     id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-) -> NativeButton {
-    NativeButton {
+    sf_symbol: impl Into<SharedString>,
+) -> NativeIconButton {
+    NativeIconButton {
         id: id.into(),
-        label: label.into(),
+        sf_symbol: sf_symbol.into(),
+        tooltip_label: None,
         on_click: None,
         style: StyleRefinement::default(),
-        button_style: NativeButtonStyle::default(),
+        button_style: NativeButtonStyle::Borderless,
         tint: None,
         disabled: false,
     }
@@ -81,11 +41,13 @@ pub fn native_button(
 // Element struct
 // =============================================================================
 
-/// A native platform button element that creates a real OS button (NSButton on macOS)
-/// as a subview of the window's native view, positioned by GPUI's Taffy layout engine.
-pub struct NativeButton {
+/// A native icon-only button that uses SF Symbols on macOS.
+///
+/// Renders as a real NSButton with an image, positioned by GPUI's Taffy layout.
+pub struct NativeIconButton {
     id: ElementId,
-    label: SharedString,
+    sf_symbol: SharedString,
+    tooltip_label: Option<SharedString>,
     on_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
     button_style: NativeButtonStyle,
@@ -93,7 +55,7 @@ pub struct NativeButton {
     disabled: bool,
 }
 
-impl NativeButton {
+impl NativeIconButton {
     /// Register a callback to be invoked when the button is clicked.
     pub fn on_click(
         mut self,
@@ -103,13 +65,19 @@ impl NativeButton {
         self
     }
 
+    /// Set an accessibility tooltip for the button.
+    pub fn tooltip(mut self, label: impl Into<SharedString>) -> Self {
+        self.tooltip_label = Some(label.into());
+        self
+    }
+
     /// Set the visual style of the button.
     pub fn button_style(mut self, style: NativeButtonStyle) -> Self {
         self.button_style = style;
         self
     }
 
-    /// Set a semantic tint color on the button bezel.
+    /// Set a semantic tint color on the button.
     pub fn tint(mut self, tint: NativeButtonTint) -> Self {
         self.tint = Some(tint);
         self
@@ -126,22 +94,20 @@ impl NativeButton {
 // Persisted element state
 // =============================================================================
 
-struct NativeButtonElementState {
+struct NativeIconButtonState {
     native_button_ptr: *mut c_void,
     native_target_ptr: *mut c_void,
-    current_label: SharedString,
-    current_style: NativeButtonStyle,
-    current_tint: Option<NativeButtonTint>,
+    current_symbol: SharedString,
     attached: bool,
 }
 
-impl Drop for NativeButtonElementState {
+impl Drop for NativeIconButtonState {
     fn drop(&mut self) {
         if self.attached {
             #[cfg(target_os = "macos")]
             unsafe {
                 use crate::platform::native_controls;
-                native_controls::remove_native_button_from_view(
+                native_controls::remove_native_view_from_parent(
                     self.native_button_ptr as cocoa::base::id,
                 );
                 native_controls::release_native_button_target(self.native_target_ptr);
@@ -153,65 +119,13 @@ impl Drop for NativeButtonElementState {
     }
 }
 
-unsafe impl Send for NativeButtonElementState {}
-
-// =============================================================================
-// Platform helpers
-// =============================================================================
-
-#[cfg(target_os = "macos")]
-fn apply_button_style(button: cocoa::base::id, style: NativeButtonStyle) {
-    unsafe {
-        use crate::platform::native_controls;
-        match style {
-            NativeButtonStyle::Rounded => {
-                native_controls::set_native_button_bezel_style(button, 1); // NSBezelStyleRounded
-                native_controls::set_native_button_bordered(button, true);
-                native_controls::set_native_button_shows_border_on_hover(button, false);
-            }
-            NativeButtonStyle::Filled => {
-                // NSBezelStyleAccessoryBarAction (12) = flat rounded-rect, visually
-                // distinct from the capsule-shaped Push (1).
-                native_controls::set_native_button_bezel_style(button, 12);
-                native_controls::set_native_button_bordered(button, true);
-                native_controls::set_native_button_shows_border_on_hover(button, false);
-                native_controls::set_native_button_bezel_color_accent(button);
-                native_controls::set_native_button_content_tint_color(button, 1.0, 1.0, 1.0, 1.0);
-            }
-            NativeButtonStyle::Inline => {
-                native_controls::set_native_button_bezel_style(button, 15); // NSBezelStyleInline
-                native_controls::set_native_button_bordered(button, true);
-                native_controls::set_native_button_shows_border_on_hover(button, false);
-            }
-            NativeButtonStyle::Borderless => {
-                // Bordered + showsBorderOnlyWhileMouseInside gives borderless look
-                // that highlights on hover
-                native_controls::set_native_button_bezel_style(button, 1); // NSBezelStyleRounded
-                native_controls::set_native_button_bordered(button, true);
-                native_controls::set_native_button_shows_border_on_hover(button, true);
-            }
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn apply_button_tint(button: cocoa::base::id, tint: Option<NativeButtonTint>) {
-    if let Some(tint) = tint {
-        let (r, g, b, a) = tint.rgba();
-        unsafe {
-            use crate::platform::native_controls;
-            native_controls::set_native_button_bezel_color(button, r, g, b, a);
-            // For borderless/inline buttons, also tint the text
-            native_controls::set_native_button_content_tint_color(button, 1.0, 1.0, 1.0, 1.0);
-        }
-    }
-}
+unsafe impl Send for NativeIconButtonState {}
 
 // =============================================================================
 // Element trait impl
 // =============================================================================
 
-impl IntoElement for NativeButton {
+impl IntoElement for NativeIconButton {
     type Element = Self;
 
     fn into_element(self) -> Self::Element {
@@ -219,7 +133,7 @@ impl IntoElement for NativeButton {
     }
 }
 
-impl Element for NativeButton {
+impl Element for NativeIconButton {
     type RequestLayoutState = ();
     type PrepaintState = Bounds<Pixels>;
 
@@ -241,17 +155,15 @@ impl Element for NativeButton {
         let mut style = Style::default();
         style.refine(&self.style);
 
+        // Square default size for icon buttons
         if matches!(style.size.width, Length::Auto) {
-            let char_width = 8.0;
-            let padding = 24.0;
-            let width = (self.label.len() as f32 * char_width + padding).max(80.0);
             style.size.width = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(width)),
+                AbsoluteLength::Pixels(px(28.0)),
             ));
         }
         if matches!(style.size.height, Length::Auto) {
             style.size.height = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(24.0)),
+                AbsoluteLength::Pixels(px(28.0)),
             ));
         }
 
@@ -291,45 +203,33 @@ impl Element for NativeButton {
             }
 
             let on_click = self.on_click.take();
-            let label = self.label.clone();
+            let sf_symbol = self.sf_symbol.clone();
             let button_style = self.button_style;
             let tint = self.tint;
+            let tooltip = self.tooltip_label.clone();
             let disabled = self.disabled;
 
             let next_frame_callbacks = window.next_frame_callbacks.clone();
             let invalidator = window.invalidator.clone();
 
-            window.with_optional_element_state::<NativeButtonElementState, _>(
+            window.with_optional_element_state::<NativeIconButtonState, _>(
                 id,
                 |prev_state, window| {
                     let state = if let Some(Some(mut state)) = prev_state {
                         unsafe {
-                            native_controls::set_native_button_frame(
+                            native_controls::set_native_view_frame(
                                 state.native_button_ptr as cocoa::base::id,
                                 bounds,
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
                             );
-                            if state.current_label != label {
-                                native_controls::set_native_button_title(
+                            if state.current_symbol != sf_symbol {
+                                native_controls::set_native_button_sf_symbol(
                                     state.native_button_ptr as cocoa::base::id,
-                                    &label,
+                                    &sf_symbol,
+                                    true,
                                 );
-                                state.current_label = label;
-                            }
-                            if state.current_style != button_style {
-                                apply_button_style(
-                                    state.native_button_ptr as cocoa::base::id,
-                                    button_style,
-                                );
-                                state.current_style = button_style;
-                            }
-                            if state.current_tint != tint {
-                                apply_button_tint(
-                                    state.native_button_ptr as cocoa::base::id,
-                                    tint,
-                                );
-                                state.current_tint = tint;
+                                state.current_symbol = sf_symbol;
                             }
                             native_controls::set_native_control_enabled(
                                 state.native_button_ptr as cocoa::base::id,
@@ -346,7 +246,7 @@ impl Element for NativeButton {
                             let nfc = next_frame_callbacks.clone();
                             let inv = invalidator.clone();
                             let on_click = Rc::new(on_click);
-                            let callback = make_native_callback(on_click, nfc, inv);
+                            let callback = make_icon_callback(on_click, nfc, inv);
                             unsafe {
                                 state.native_target_ptr =
                                     native_controls::set_native_button_action(
@@ -359,27 +259,63 @@ impl Element for NativeButton {
                         state
                     } else {
                         let (button_ptr, target_ptr) = unsafe {
-                            let button = native_controls::create_native_button(&label);
-                            native_controls::attach_native_button_to_view(
+                            // Create button with empty title
+                            let button = native_controls::create_native_button("");
+                            native_controls::set_native_button_sf_symbol(
+                                button, &sf_symbol, true,
+                            );
+
+                            // Apply style
+                            match button_style {
+                                NativeButtonStyle::Rounded => {
+                                    native_controls::set_native_button_bezel_style(button, 1);
+                                    native_controls::set_native_button_bordered(button, true);
+                                }
+                                NativeButtonStyle::Filled => {
+                                    native_controls::set_native_button_bezel_style(button, 1);
+                                    native_controls::set_native_button_bordered(button, true);
+                                }
+                                NativeButtonStyle::Inline => {
+                                    native_controls::set_native_button_bezel_style(button, 15);
+                                    native_controls::set_native_button_bordered(button, true);
+                                }
+                                NativeButtonStyle::Borderless => {
+                                    native_controls::set_native_button_bordered(button, false);
+                                }
+                            }
+
+                            // Apply tint
+                            if let Some(tint) = tint {
+                                let (r, g, b, a) = tint.rgba();
+                                native_controls::set_native_button_content_tint_color(
+                                    button, r, g, b, a,
+                                );
+                            }
+
+                            // Tooltip
+                            if let Some(ref tip) = tooltip {
+                                native_controls::set_native_view_tooltip(button, tip);
+                            }
+
+                            // Disabled state
+                            native_controls::set_native_control_enabled(button, !disabled);
+
+                            native_controls::attach_native_view_to_parent(
                                 button,
                                 native_view as cocoa::base::id,
                             );
-                            native_controls::set_native_button_frame(
+                            native_controls::set_native_view_frame(
                                 button,
                                 bounds,
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
                             );
 
-                            apply_button_style(button, button_style);
-                            apply_button_tint(button, tint);
-                            native_controls::set_native_control_enabled(button, !disabled);
-
                             let target = if let Some(on_click) = on_click {
                                 let nfc = next_frame_callbacks.clone();
                                 let inv = invalidator.clone();
                                 let on_click = Rc::new(on_click);
-                                let callback = make_native_callback(on_click, nfc, inv);
+                                let callback = make_icon_callback(on_click, nfc, inv);
                                 native_controls::set_native_button_action(button, callback)
                             } else {
                                 std::ptr::null_mut()
@@ -388,12 +324,10 @@ impl Element for NativeButton {
                             (button as *mut c_void, target)
                         };
 
-                        NativeButtonElementState {
+                        NativeIconButtonState {
                             native_button_ptr: button_ptr,
                             native_target_ptr: target_ptr,
-                            current_label: label,
-                            current_style: button_style,
-                            current_tint: tint,
+                            current_symbol: sf_symbol,
                             attached: true,
                         }
                     };
@@ -406,7 +340,7 @@ impl Element for NativeButton {
 }
 
 #[cfg(target_os = "macos")]
-fn make_native_callback(
+fn make_icon_callback(
     on_click: Rc<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     invalidator: crate::WindowInvalidator,
@@ -422,7 +356,7 @@ fn make_native_callback(
     })
 }
 
-impl Styled for NativeButton {
+impl Styled for NativeIconButton {
     fn style(&mut self) -> &mut StyleRefinement {
         &mut self.style
     }
