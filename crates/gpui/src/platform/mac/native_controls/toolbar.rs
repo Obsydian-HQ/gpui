@@ -28,6 +28,7 @@ use objc::{
 use std::{
     collections::HashMap,
     ffi::{CStr, c_char, c_void},
+    panic::{AssertUnwindSafe, catch_unwind},
     ptr,
 };
 
@@ -37,6 +38,15 @@ const CALLBACK_IVAR: &str = "callbackPtr";
 static mut TOOLBAR_DELEGATE_CLASS: *const Class = ptr::null();
 static mut TOOLBAR_GROUP_TARGET_CLASS: *const Class = ptr::null();
 static mut TOOLBAR_SEARCH_TARGET_CLASS: *const Class = ptr::null();
+
+#[link(name = "AppKit", kind = "framework")]
+unsafe extern "C" {
+    static NSToolbarSpaceItemIdentifier: id;
+    static NSToolbarFlexibleSpaceItemIdentifier: id;
+    static NSToolbarSeparatorItemIdentifier: id;
+    static NSToolbarToggleSidebarItemIdentifier: id;
+    static NSToolbarSidebarTrackingSeparatorItemIdentifier: id;
+}
 
 #[ctor]
 unsafe fn build_toolbar_classes() {
@@ -355,20 +365,20 @@ impl ToolbarRuntime {
 
     unsafe fn item_for_identifier(&mut self, identifier: id) -> id {
         unsafe {
+            if is_standard_toolbar_identifier(identifier) {
+                return nil;
+            }
+
             let Some(identifier) = ns_string_to_rust(identifier) else {
                 return nil;
             };
-
-            if is_standard_toolbar_identifier(&identifier) {
-                return nil;
-            }
 
             if let Some(item) = self.created_items.get(&identifier) {
                 return *item;
             }
 
             let Some(definition) = self.item_definitions.remove(&identifier) else {
-                return nil;
+                return self.fallback_item_for_identifier(&identifier);
             };
 
             let WindowToolbarItem {
@@ -458,6 +468,17 @@ impl ToolbarRuntime {
             }
 
             self.created_items.insert(identifier, item);
+            item
+        }
+    }
+
+    unsafe fn fallback_item_for_identifier(&self, identifier: &str) -> id {
+        unsafe {
+            let item = create_toolbar_item(identifier);
+            if item.is_null() {
+                return nil;
+            }
+            apply_toolbar_item_metadata(item, identifier, None, None);
             item
         }
     }
@@ -906,10 +927,18 @@ extern "C" fn toolbar_item_for_identifier(
     identifier: id,
     _will_be_inserted: i8,
 ) -> id {
-    unsafe {
+    let result = catch_unwind(AssertUnwindSafe(|| unsafe {
         if let Some(runtime) = toolbar_runtime_mut(this) {
             runtime.item_for_identifier(identifier)
         } else {
+            nil
+        }
+    }));
+
+    match result {
+        Ok(item) => item,
+        Err(_) => {
+            log::error!("toolbar:itemForItemIdentifier: callback panicked");
             nil
         }
     }
@@ -998,32 +1027,35 @@ unsafe fn toolbar_item_identifier(identifier: &WindowToolbarItemIdentifier) -> i
             WindowToolbarItemIdentifier::Custom(identifier) => {
                 super::super::ns_string(identifier.as_ref())
             }
-            WindowToolbarItemIdentifier::Space => super::super::ns_string("NSToolbarSpaceItem"),
-            WindowToolbarItemIdentifier::FlexibleSpace => {
-                super::super::ns_string("NSToolbarFlexibleSpaceItem")
-            }
-            WindowToolbarItemIdentifier::Separator => {
-                super::super::ns_string("NSToolbarSeparatorItem")
-            }
-            WindowToolbarItemIdentifier::ToggleSidebar => {
-                super::super::ns_string("NSToolbarToggleSidebarItem")
-            }
+            WindowToolbarItemIdentifier::Space => NSToolbarSpaceItemIdentifier,
+            WindowToolbarItemIdentifier::FlexibleSpace => NSToolbarFlexibleSpaceItemIdentifier,
+            WindowToolbarItemIdentifier::Separator => NSToolbarSeparatorItemIdentifier,
+            WindowToolbarItemIdentifier::ToggleSidebar => NSToolbarToggleSidebarItemIdentifier,
             WindowToolbarItemIdentifier::SidebarTrackingSeparator => {
-                super::super::ns_string("NSToolbarSidebarTrackingSeparatorItem")
+                NSToolbarSidebarTrackingSeparatorItemIdentifier
             }
         }
     }
 }
 
-fn is_standard_toolbar_identifier(identifier: &str) -> bool {
-    matches!(
-        identifier,
-        "NSToolbarSpaceItem"
-            | "NSToolbarFlexibleSpaceItem"
-            | "NSToolbarSeparatorItem"
-            | "NSToolbarToggleSidebarItem"
-            | "NSToolbarSidebarTrackingSeparatorItem"
-    )
+unsafe fn is_standard_toolbar_identifier(identifier: id) -> bool {
+    unsafe {
+        identifier_equals(identifier, NSToolbarSpaceItemIdentifier)
+            || identifier_equals(identifier, NSToolbarFlexibleSpaceItemIdentifier)
+            || identifier_equals(identifier, NSToolbarSeparatorItemIdentifier)
+            || identifier_equals(identifier, NSToolbarToggleSidebarItemIdentifier)
+            || identifier_equals(identifier, NSToolbarSidebarTrackingSeparatorItemIdentifier)
+    }
+}
+
+unsafe fn identifier_equals(lhs: id, rhs: id) -> bool {
+    unsafe {
+        if lhs.is_null() || rhs.is_null() {
+            return false;
+        }
+        let equal: i8 = msg_send![lhs, isEqual: rhs];
+        equal != 0
+    }
 }
 
 unsafe fn control_string_value(control: id) -> String {

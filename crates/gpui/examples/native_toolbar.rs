@@ -7,8 +7,6 @@ use gpui::{
     WindowToolbarStyle, WindowToolbarSwitchOptions, WindowToolbarTrackingSeparatorOptions, div,
     prelude::*, px, rgb, size,
 };
-#[cfg(target_os = "macos")]
-use std::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 struct NativeToolbarExample;
@@ -52,11 +50,11 @@ impl Render for NativeToolbarExample {
 
 #[cfg(target_os = "macos")]
 fn custom(id: &str) -> WindowToolbarItemIdentifier {
-    WindowToolbarItemIdentifier::Custom(SharedString::from(id))
+    WindowToolbarItemIdentifier::Custom(SharedString::from(id.to_string()))
 }
 
 #[cfg(target_os = "macos")]
-fn build_toolbar_options(split_view: *mut c_void) -> WindowToolbarOptions {
+fn build_toolbar_options() -> WindowToolbarOptions {
     let refresh_item = WindowToolbarItem {
         identifier: "refresh".into(),
         label: "Refresh".into(),
@@ -136,9 +134,9 @@ fn build_toolbar_options(split_view: *mut c_void) -> WindowToolbarOptions {
         identifier: "tracking_separator".into(),
         label: "Sidebar Divider".into(),
         palette_label: Some("Sidebar Divider".into()),
-        tool_tip: Some("Tracking separator (provide split_view pointer)".into()),
+        tool_tip: Some("Tracking separator (requires split view)".into()),
         kind: WindowToolbarItemKind::TrackingSeparator(WindowToolbarTrackingSeparatorOptions {
-            split_view,
+            split_view: std::ptr::null_mut(),
             divider_index: 0,
         }),
     };
@@ -158,16 +156,7 @@ fn build_toolbar_options(split_view: *mut c_void) -> WindowToolbarOptions {
             tracking_separator_item,
         ],
         default_item_identifiers: vec![
-            WindowToolbarItemIdentifier::ToggleSidebar,
-            custom("tracking_separator"),
-            WindowToolbarItemIdentifier::Separator,
             custom("refresh"),
-            WindowToolbarItemIdentifier::Space,
-            custom("mode_group"),
-            WindowToolbarItemIdentifier::FlexibleSpace,
-            custom("search"),
-            WindowToolbarItemIdentifier::Space,
-            custom("preview"),
         ],
         allowed_item_identifiers: vec![
             custom("refresh"),
@@ -180,9 +169,9 @@ fn build_toolbar_options(split_view: *mut c_void) -> WindowToolbarOptions {
             WindowToolbarItemIdentifier::Separator,
             WindowToolbarItemIdentifier::ToggleSidebar,
         ],
-        selectable_item_identifiers: vec![custom("mode_group")],
+        selectable_item_identifiers: vec![],
         centered_item_identifier: None,
-        selected_item_identifier: Some(custom("mode_group")),
+        selected_item_identifier: None,
     }
 }
 
@@ -193,19 +182,10 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                toolbar: Some(build_toolbar_options()),
                 ..Default::default()
             },
-            |window, cx| {
-                let _ = window.install_native_sidebar(
-                    px(160.),
-                    px(260.),
-                    px(420.),
-                    Some("gpui.native_toolbar.example.sidebar"),
-                );
-                let split_view = window.raw_native_sidebar_split_view_ptr();
-                window.set_native_toolbar_options(Some(build_toolbar_options(split_view)));
-                cx.new(|_| NativeToolbarExample)
-            },
+            |_, cx| cx.new(|_| NativeToolbarExample),
         )
         .unwrap();
         cx.activate(true);
