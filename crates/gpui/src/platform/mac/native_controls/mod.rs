@@ -1,17 +1,27 @@
 mod button;
 mod checkbox;
+mod combo_box;
 mod popup;
 mod progress;
+mod search_field;
 mod segmented;
+mod sidebar;
 mod slider;
+mod stepper;
+mod switch;
 mod text_field;
 
 pub(crate) use button::*;
 pub(crate) use checkbox::*;
+pub(crate) use combo_box::*;
 pub(crate) use popup::*;
 pub(crate) use progress::*;
+pub(crate) use search_field::*;
 pub(crate) use segmented::*;
+pub(crate) use sidebar::*;
 pub(crate) use slider::*;
+pub(crate) use stepper::*;
+pub(crate) use switch::*;
 pub(crate) use text_field::*;
 
 use crate::{Bounds, Pixels};
