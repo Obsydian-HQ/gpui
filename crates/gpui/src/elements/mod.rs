@@ -7,6 +7,7 @@ mod image_cache;
 mod img;
 mod list;
 mod native_button;
+mod native_element_helpers;
 mod native_icon_button;
 mod native_text_field;
 mod native_toggle_group;

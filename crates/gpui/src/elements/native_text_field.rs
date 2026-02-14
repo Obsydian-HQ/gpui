@@ -9,7 +9,9 @@ use crate::{
     Styled, Window, px,
 };
 
-type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+use super::native_element_helpers::{
+    FrameCallback, schedule_native_callback, schedule_native_focus_callback,
+};
 
 // =============================================================================
 // Event types
@@ -186,12 +188,11 @@ impl Drop for NativeTextFieldElementState {
             #[cfg(target_os = "macos")]
             unsafe {
                 use crate::platform::native_controls;
-                native_controls::remove_native_view_from_parent(
-                    self.native_field_ptr as cocoa::base::id,
-                );
-                native_controls::release_native_text_field_delegate(self.native_delegate_ptr);
-                native_controls::release_native_text_field(
-                    self.native_field_ptr as cocoa::base::id,
+                super::native_element_helpers::cleanup_native_control(
+                    self.native_field_ptr,
+                    self.native_delegate_ptr,
+                    native_controls::release_native_text_field_delegate,
+                    native_controls::release_native_text_field,
                 );
             }
         }
@@ -305,14 +306,11 @@ impl Element for NativeTextField {
                                 || state.current_style != field_style =>
                         {
                             unsafe {
-                                native_controls::remove_native_view_from_parent(
-                                    state.native_field_ptr as cocoa::base::id,
-                                );
-                                native_controls::release_native_text_field_delegate(
+                                super::native_element_helpers::cleanup_native_control(
+                                    state.native_field_ptr,
                                     state.native_delegate_ptr,
-                                );
-                                native_controls::release_native_text_field(
-                                    state.native_field_ptr as cocoa::base::id,
+                                    native_controls::release_native_text_field_delegate,
+                                    native_controls::release_native_text_field,
                                 );
                             }
                             state.attached = false; // Prevent Drop from double-freeing
@@ -454,67 +452,39 @@ fn build_text_field_callbacks(
 ) -> crate::platform::native_controls::TextFieldCallbacks {
     use crate::platform::native_controls::TextFieldCallbacks;
 
-    let change_cb: Option<Box<dyn Fn(String)>> = on_change.map(|on_change| {
-        let nfc = next_frame_callbacks.clone();
-        let inv = invalidator.clone();
-        let on_change = Rc::new(on_change);
-        let cb: Box<dyn Fn(String)> = Box::new(move |text: String| {
-            let on_change = on_change.clone();
-            let callback: FrameCallback = Box::new(move |window, cx| {
-                let event = TextChangeEvent { text };
-                on_change(&event, window, cx);
-            });
-            RefCell::borrow_mut(&nfc).push(callback);
-            inv.set_dirty(true);
-        });
-        cb
+    let change_cb = on_change.map(|h| {
+        schedule_native_callback(
+            Rc::new(h),
+            |text| TextChangeEvent { text },
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
     });
 
-    let submit_cb: Option<Box<dyn Fn(String)>> = on_submit.map(|on_submit| {
-        let nfc = next_frame_callbacks.clone();
-        let inv = invalidator.clone();
-        let on_submit = Rc::new(on_submit);
-        let cb: Box<dyn Fn(String)> = Box::new(move |text: String| {
-            let on_submit = on_submit.clone();
-            let callback: FrameCallback = Box::new(move |window, cx| {
-                let event = TextSubmitEvent { text };
-                on_submit(&event, window, cx);
-            });
-            RefCell::borrow_mut(&nfc).push(callback);
-            inv.set_dirty(true);
-        });
-        cb
+    let submit_cb = on_submit.map(|h| {
+        schedule_native_callback(
+            Rc::new(h),
+            |text| TextSubmitEvent { text },
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
     });
 
-    let begin_cb: Option<Box<dyn Fn()>> = on_focus.map(|on_focus| {
-        let nfc = next_frame_callbacks.clone();
-        let inv = invalidator.clone();
-        let on_focus = Rc::new(on_focus);
-        let cb: Box<dyn Fn()> = Box::new(move || {
-            let on_focus = on_focus.clone();
-            let callback: FrameCallback = Box::new(move |window, cx| {
-                on_focus(window, cx);
-            });
-            RefCell::borrow_mut(&nfc).push(callback);
-            inv.set_dirty(true);
-        });
-        cb
+    let begin_cb = on_focus.map(|h| {
+        schedule_native_focus_callback(
+            Rc::new(h),
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
     });
 
-    let end_cb: Option<Box<dyn Fn(String)>> = on_blur.map(|on_blur| {
-        let nfc = next_frame_callbacks.clone();
-        let inv = invalidator.clone();
-        let on_blur = Rc::new(on_blur);
-        let cb: Box<dyn Fn(String)> = Box::new(move |text: String| {
-            let on_blur = on_blur.clone();
-            let callback: FrameCallback = Box::new(move |window, cx| {
-                let event = TextSubmitEvent { text };
-                on_blur(&event, window, cx);
-            });
-            RefCell::borrow_mut(&nfc).push(callback);
-            inv.set_dirty(true);
-        });
-        cb
+    let end_cb = on_blur.map(|h| {
+        schedule_native_callback(
+            Rc::new(h),
+            |text| TextSubmitEvent { text },
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
     });
 
     TextFieldCallbacks {

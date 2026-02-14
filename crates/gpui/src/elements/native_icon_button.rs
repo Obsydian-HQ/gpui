@@ -1,5 +1,4 @@
 use refineable::Refineable as _;
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -10,8 +9,7 @@ use crate::{
 };
 
 use super::native_button::{NativeButtonStyle, NativeButtonTint};
-
-type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+use super::native_element_helpers::schedule_native_callback_no_args;
 
 // =============================================================================
 // Public constructor
@@ -107,12 +105,11 @@ impl Drop for NativeIconButtonState {
             #[cfg(target_os = "macos")]
             unsafe {
                 use crate::platform::native_controls;
-                native_controls::remove_native_view_from_parent(
-                    self.native_button_ptr as cocoa::base::id,
-                );
-                native_controls::release_native_button_target(self.native_target_ptr);
-                native_controls::release_native_button(
-                    self.native_button_ptr as cocoa::base::id,
+                super::native_element_helpers::cleanup_native_control(
+                    self.native_button_ptr,
+                    self.native_target_ptr,
+                    native_controls::release_native_button_target,
+                    native_controls::release_native_button,
                 );
             }
         }
@@ -246,7 +243,12 @@ impl Element for NativeIconButton {
                             let nfc = next_frame_callbacks.clone();
                             let inv = invalidator.clone();
                             let on_click = Rc::new(on_click);
-                            let callback = make_icon_callback(on_click, nfc, inv);
+                            let callback = schedule_native_callback_no_args(
+                                    on_click,
+                                    || ClickEvent::default(),
+                                    nfc,
+                                    inv,
+                                );
                             unsafe {
                                 state.native_target_ptr =
                                     native_controls::set_native_button_action(
@@ -315,7 +317,12 @@ impl Element for NativeIconButton {
                                 let nfc = next_frame_callbacks.clone();
                                 let inv = invalidator.clone();
                                 let on_click = Rc::new(on_click);
-                                let callback = make_icon_callback(on_click, nfc, inv);
+                                let callback = schedule_native_callback_no_args(
+                                    on_click,
+                                    || ClickEvent::default(),
+                                    nfc,
+                                    inv,
+                                );
                                 native_controls::set_native_button_action(button, callback)
                             } else {
                                 std::ptr::null_mut()
@@ -337,23 +344,6 @@ impl Element for NativeIconButton {
             );
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn make_icon_callback(
-    on_click: Rc<Box<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>>,
-    next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
-    invalidator: crate::WindowInvalidator,
-) -> Box<dyn Fn()> {
-    Box::new(move || {
-        let on_click = on_click.clone();
-        let callback: FrameCallback = Box::new(move |window, cx| {
-            let event = ClickEvent::default();
-            on_click(&event, window, cx);
-        });
-        RefCell::borrow_mut(&next_frame_callbacks).push(callback);
-        invalidator.set_dirty(true);
-    })
 }
 
 impl Styled for NativeIconButton {

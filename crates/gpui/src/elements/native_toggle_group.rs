@@ -1,5 +1,4 @@
 use refineable::Refineable as _;
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -9,7 +8,7 @@ use crate::{
     Styled, Window, px,
 };
 
-type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
+use super::native_element_helpers::schedule_native_callback;
 
 // =============================================================================
 // Event type
@@ -132,12 +131,11 @@ impl Drop for NativeToggleGroupState {
             #[cfg(target_os = "macos")]
             unsafe {
                 use crate::platform::native_controls;
-                native_controls::remove_native_view_from_parent(
-                    self.control_ptr as cocoa::base::id,
-                );
-                native_controls::release_native_segmented_target(self.target_ptr);
-                native_controls::release_native_segmented_control(
-                    self.control_ptr as cocoa::base::id,
+                super::native_element_helpers::cleanup_native_control(
+                    self.control_ptr,
+                    self.target_ptr,
+                    native_controls::release_native_segmented_target,
+                    native_controls::release_native_segmented_control,
                 );
             }
         }
@@ -246,14 +244,11 @@ impl Element for NativeToggleGroup {
                             if state.current_segment_style != segment_style =>
                         {
                             unsafe {
-                                native_controls::remove_native_view_from_parent(
-                                    state.control_ptr as cocoa::base::id,
-                                );
-                                native_controls::release_native_segmented_target(
+                                super::native_element_helpers::cleanup_native_control(
+                                    state.control_ptr,
                                     state.target_ptr,
-                                );
-                                native_controls::release_native_segmented_control(
-                                    state.control_ptr as cocoa::base::id,
+                                    native_controls::release_native_segmented_target,
+                                    native_controls::release_native_segmented_control,
                                 );
                             }
                             state.attached = false; // Prevent Drop from double-freeing
@@ -290,8 +285,12 @@ impl Element for NativeToggleGroup {
                             let nfc = next_frame_callbacks.clone();
                             let inv = invalidator.clone();
                             let on_select = Rc::new(on_select);
-                            let callback =
-                                make_segment_callback(on_select, nfc, inv);
+                            let callback = schedule_native_callback(
+                                    on_select,
+                                    |index| SegmentSelectEvent { index },
+                                    nfc,
+                                    inv,
+                                );
                             unsafe {
                                 state.target_ptr =
                                     native_controls::set_native_segmented_action(
@@ -332,8 +331,12 @@ impl Element for NativeToggleGroup {
                                 let nfc = next_frame_callbacks.clone();
                                 let inv = invalidator.clone();
                                 let on_select = Rc::new(on_select);
-                                let callback =
-                                    make_segment_callback(on_select, nfc, inv);
+                                let callback = schedule_native_callback(
+                                    on_select,
+                                    |index| SegmentSelectEvent { index },
+                                    nfc,
+                                    inv,
+                                );
                                 native_controls::set_native_segmented_action(control, callback)
                             } else {
                                 std::ptr::null_mut()
@@ -357,23 +360,6 @@ impl Element for NativeToggleGroup {
             );
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn make_segment_callback(
-    on_select: Rc<Box<dyn Fn(&SegmentSelectEvent, &mut Window, &mut App) + 'static>>,
-    next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
-    invalidator: crate::WindowInvalidator,
-) -> Box<dyn Fn(usize)> {
-    Box::new(move |index| {
-        let on_select = on_select.clone();
-        let callback: FrameCallback = Box::new(move |window, cx| {
-            let event = SegmentSelectEvent { index };
-            on_select(&event, window, cx);
-        });
-        RefCell::borrow_mut(&next_frame_callbacks).push(callback);
-        invalidator.set_dirty(true);
-    })
 }
 
 impl Styled for NativeToggleGroup {
