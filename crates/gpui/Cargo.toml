@@ -343,5 +343,9 @@ name = "native_icon_button"
 path = "examples/native_icon_button.rs"
 
 [[example]]
+name = "native_text_field"
+path = "examples/native_text_field.rs"
+
+[[example]]
 name = "native_toggle_group"
 path = "examples/native_toggle_group.rs"
