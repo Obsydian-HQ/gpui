@@ -381,3 +381,7 @@ path = "examples/native_switch.rs"
 [[example]]
 name = "native_toggle_group"
 path = "examples/native_toggle_group.rs"
+
+[[example]]
+name = "native_sidebar"
+path = "examples/native_sidebar.rs"

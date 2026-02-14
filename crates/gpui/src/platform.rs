@@ -81,9 +81,9 @@ pub use keystroke::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
-pub(crate) use mac::*;
-#[cfg(target_os = "macos")]
 pub(crate) use mac::native_controls;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::*;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
 #[cfg(target_os = "windows")]
@@ -551,6 +551,27 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn move_tab_to_new_window(&self) {}
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
+    fn install_native_sidebar(
+        &self,
+        _min_width: Pixels,
+        _default_width: Pixels,
+        _max_width: Pixels,
+        _autosave_name: Option<&str>,
+    ) -> bool {
+        false
+    }
+    fn toggle_native_sidebar(&self) {}
+    fn set_native_sidebar_collapsed(&self, _collapsed: bool) {}
+    fn is_native_sidebar_collapsed(&self) -> Option<bool> {
+        None
+    }
+    fn set_native_sidebar_width(&self, _width: Pixels) {}
+    fn native_sidebar_width(&self) -> Option<Pixels> {
+        None
+    }
+    fn raw_native_sidebar_view_ptr(&self) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
 
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::HWND;

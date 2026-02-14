@@ -4780,6 +4780,54 @@ impl Window {
             .set_tabbing_identifier(tabbing_identifier)
     }
 
+    /// Installs a native macOS split sidebar using NSSplitViewController.
+    /// Returns `true` when the sidebar exists or is installed successfully.
+    pub fn install_native_sidebar(
+        &self,
+        min_width: Pixels,
+        default_width: Pixels,
+        max_width: Pixels,
+        autosave_name: Option<&str>,
+    ) -> bool {
+        self.platform_window.install_native_sidebar(
+            min_width,
+            default_width,
+            max_width,
+            autosave_name,
+        )
+    }
+
+    /// Toggles the native macOS sidebar collapsed state, if installed.
+    pub fn toggle_native_sidebar(&self) {
+        self.platform_window.toggle_native_sidebar();
+    }
+
+    /// Sets the native macOS sidebar collapsed state, if installed.
+    pub fn set_native_sidebar_collapsed(&self, collapsed: bool) {
+        self.platform_window.set_native_sidebar_collapsed(collapsed);
+    }
+
+    /// Returns the native macOS sidebar collapsed state, if installed.
+    pub fn is_native_sidebar_collapsed(&self) -> Option<bool> {
+        self.platform_window.is_native_sidebar_collapsed()
+    }
+
+    /// Sets the native macOS sidebar width in pixels, if installed.
+    pub fn set_native_sidebar_width(&self, width: Pixels) {
+        self.platform_window.set_native_sidebar_width(width);
+    }
+
+    /// Returns the native macOS sidebar width in pixels, if installed.
+    pub fn native_sidebar_width(&self) -> Option<Pixels> {
+        self.platform_window.native_sidebar_width()
+    }
+
+    /// Returns the raw native sidebar view pointer (NSView on macOS).
+    /// This is intended for low-level native integrations.
+    pub fn raw_native_sidebar_view_ptr(&self) -> *mut std::ffi::c_void {
+        self.platform_window.raw_native_sidebar_view_ptr()
+    }
+
     /// Toggles the inspector mode on this window.
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub fn toggle_inspector(&mut self, cx: &mut App) {

@@ -1,4 +1,4 @@
-use super::{BoolExt, MacDisplay, NSRange, NSStringExt, ns_string, renderer};
+use super::{BoolExt, MacDisplay, NSRange, NSStringExt, native_controls, ns_string, renderer};
 use crate::{
     AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DisplayLink, ExternalPaths,
     FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
@@ -435,6 +435,13 @@ struct MacWindowState {
     activated_least_once: bool,
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<id>,
+    native_sidebar: Option<NativeSidebarState>,
+}
+
+#[derive(Clone, Copy)]
+struct NativeSidebarState {
+    split_controller: id,
+    sidebar_view: id,
 }
 
 impl MacWindowState {
@@ -750,6 +757,7 @@ impl MacWindow {
                 toggle_tab_bar_callback: None,
                 activated_least_once: false,
                 sheet_parent: None,
+                native_sidebar: None,
             })));
 
             (*native_window).set_ivar(
@@ -1530,6 +1538,127 @@ impl PlatformWindow for MacWindow {
 
     fn on_toggle_tab_bar(&self, callback: Box<dyn FnMut()>) {
         self.0.as_ref().lock().toggle_tab_bar_callback = Some(callback);
+    }
+
+    fn install_native_sidebar(
+        &self,
+        min_width: Pixels,
+        default_width: Pixels,
+        max_width: Pixels,
+        autosave_name: Option<&str>,
+    ) -> bool {
+        let min_thickness = min_width.0.max(0.0) as f64;
+        let max_thickness = max_width.0.max(min_width.0) as f64;
+        let default_thickness = default_width.0.clamp(min_width.0, max_width.0) as f64;
+
+        let (existing_sidebar, native_window, native_view) = {
+            let this = self.0.lock();
+            (
+                this.native_sidebar,
+                this.native_window,
+                this.native_view.as_ptr() as id,
+            )
+        };
+
+        if let Some(sidebar) = existing_sidebar {
+            unsafe {
+                native_controls::set_native_sidebar_minimum_thickness_for_inline(
+                    sidebar.split_controller,
+                    min_thickness,
+                );
+                let _ = native_controls::set_native_sidebar_thickness(
+                    sidebar.split_controller,
+                    default_thickness,
+                );
+            }
+            return true;
+        }
+
+        let installation = unsafe {
+            native_controls::install_native_sidebar_on_window(
+                native_window,
+                native_view,
+                min_thickness,
+                max_thickness,
+                autosave_name,
+            )
+        };
+        unsafe {
+            native_controls::set_native_sidebar_minimum_thickness_for_inline(
+                installation.controller,
+                min_thickness,
+            );
+            let _ = native_controls::set_native_sidebar_thickness(
+                installation.controller,
+                default_thickness,
+            );
+        }
+
+        let mut this = self.0.lock();
+        if this.native_sidebar.is_none() {
+            this.native_sidebar = Some(NativeSidebarState {
+                split_controller: installation.controller,
+                sidebar_view: installation.sidebar_view,
+            });
+        }
+
+        true
+    }
+
+    fn toggle_native_sidebar(&self) {
+        let sidebar = self.0.lock().native_sidebar;
+        if let Some(sidebar) = sidebar {
+            unsafe {
+                native_controls::toggle_native_sidebar(sidebar.split_controller);
+            }
+        }
+    }
+
+    fn set_native_sidebar_collapsed(&self, collapsed: bool) {
+        let sidebar = self.0.lock().native_sidebar;
+        if let Some(sidebar) = sidebar {
+            unsafe {
+                let _ = native_controls::set_native_sidebar_collapsed(
+                    sidebar.split_controller,
+                    collapsed,
+                );
+            }
+        }
+    }
+
+    fn is_native_sidebar_collapsed(&self) -> Option<bool> {
+        let sidebar = self.0.lock().native_sidebar;
+        sidebar.and_then(|sidebar| unsafe {
+            native_controls::is_native_sidebar_collapsed(sidebar.split_controller)
+        })
+    }
+
+    fn set_native_sidebar_width(&self, width: Pixels) {
+        let sidebar = self.0.lock().native_sidebar;
+        if let Some(sidebar) = sidebar {
+            unsafe {
+                let _ = native_controls::set_native_sidebar_thickness(
+                    sidebar.split_controller,
+                    width.0.max(0.0) as f64,
+                );
+            }
+        }
+    }
+
+    fn native_sidebar_width(&self) -> Option<Pixels> {
+        let sidebar = self.0.lock().native_sidebar;
+        sidebar.and_then(|sidebar| unsafe {
+            native_controls::native_sidebar_thickness(sidebar.split_controller)
+                .map(|w| px(w as f32))
+        })
+    }
+
+    fn raw_native_sidebar_view_ptr(&self) -> *mut c_void {
+        self.0
+            .lock()
+            .native_sidebar
+            .map(|sidebar| sidebar.sidebar_view as *mut c_void)
+            .unwrap_or(std::ptr::null_mut())
     }
 
     fn draw(&self, scene: &crate::Scene) {
