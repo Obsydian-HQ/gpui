@@ -343,6 +343,18 @@ name = "native_dropdown"
 path = "examples/native_dropdown.rs"
 
 [[example]]
+name = "native_combo_box"
+path = "examples/native_combo_box.rs"
+
+[[example]]
+name = "native_search_field"
+path = "examples/native_search_field.rs"
+
+[[example]]
+name = "native_stepper"
+path = "examples/native_stepper.rs"
+
+[[example]]
 name = "native_styled_button"
 path = "examples/native_styled_button.rs"
 
@@ -361,6 +373,10 @@ path = "examples/native_slider.rs"
 [[example]]
 name = "native_text_field"
 path = "examples/native_text_field.rs"
+
+[[example]]
+name = "native_switch"
+path = "examples/native_switch.rs"
 
 [[example]]
 name = "native_toggle_group"
