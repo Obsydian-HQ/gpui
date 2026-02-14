@@ -335,12 +335,28 @@ name = "native_button"
 path = "examples/native_button.rs"
 
 [[example]]
+name = "native_checkbox"
+path = "examples/native_checkbox.rs"
+
+[[example]]
+name = "native_dropdown"
+path = "examples/native_dropdown.rs"
+
+[[example]]
 name = "native_styled_button"
 path = "examples/native_styled_button.rs"
 
 [[example]]
 name = "native_icon_button"
 path = "examples/native_icon_button.rs"
+
+[[example]]
+name = "native_progress_bar"
+path = "examples/native_progress_bar.rs"
+
+[[example]]
+name = "native_slider"
+path = "examples/native_slider.rs"
 
 [[example]]
 name = "native_text_field"

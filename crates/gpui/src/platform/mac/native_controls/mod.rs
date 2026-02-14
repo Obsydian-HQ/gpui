@@ -1,9 +1,17 @@
 mod button;
+mod checkbox;
+mod popup;
+mod progress;
 mod segmented;
+mod slider;
 mod text_field;
 
 pub(crate) use button::*;
+pub(crate) use checkbox::*;
+pub(crate) use popup::*;
+pub(crate) use progress::*;
 pub(crate) use segmented::*;
+pub(crate) use slider::*;
 pub(crate) use text_field::*;
 
 use crate::{Bounds, Pixels};
