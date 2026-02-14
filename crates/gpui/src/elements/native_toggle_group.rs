@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style, StyleRefinement,
-    Styled, Window, px,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
+    StyleRefinement, Styled, Window, px,
 };
 
 use super::native_element_helpers::schedule_native_callback;
@@ -66,7 +66,10 @@ pub fn native_toggle_group(
 ) -> NativeToggleGroup {
     NativeToggleGroup {
         id: id.into(),
-        labels: labels.iter().map(|l| SharedString::from(l.as_ref().to_string())).collect(),
+        labels: labels
+            .iter()
+            .map(|l| SharedString::from(l.as_ref().to_string()))
+            .collect(),
         selected_index: 0,
         on_select: None,
         style: StyleRefinement::default(),
@@ -181,14 +184,12 @@ impl Element for NativeToggleGroup {
         if matches!(style.size.width, Length::Auto) {
             // Estimate width: ~70px per segment
             let width = (self.labels.len() as f32 * 70.0).max(140.0);
-            style.size.width = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(width)),
-            ));
+            style.size.width =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(width))));
         }
         if matches!(style.size.height, Length::Auto) {
-            style.size.height = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(24.0)),
-            ));
+            style.size.height =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(24.0))));
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -240,9 +241,7 @@ impl Element for NativeToggleGroup {
                     // If style changed, destroy old control so we recreate it.
                     // NSSegmentedControl doesn't reliably redraw on setSegmentStyle:.
                     let prev_state = match prev_state {
-                        Some(Some(mut state))
-                            if state.current_segment_style != segment_style =>
-                        {
+                        Some(Some(mut state)) if state.current_segment_style != segment_style => {
                             unsafe {
                                 super::native_element_helpers::cleanup_native_control(
                                     state.control_ptr,
@@ -278,25 +277,22 @@ impl Element for NativeToggleGroup {
                         // Update callback
                         if let Some(on_select) = on_select {
                             unsafe {
-                                native_controls::release_native_segmented_target(
-                                    state.target_ptr,
-                                );
+                                native_controls::release_native_segmented_target(state.target_ptr);
                             }
                             let nfc = next_frame_callbacks.clone();
                             let inv = invalidator.clone();
                             let on_select = Rc::new(on_select);
                             let callback = schedule_native_callback(
-                                    on_select,
-                                    |index| SegmentSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                );
+                                on_select,
+                                |index| SegmentSelectEvent { index },
+                                nfc,
+                                inv,
+                            );
                             unsafe {
-                                state.target_ptr =
-                                    native_controls::set_native_segmented_action(
-                                        state.control_ptr as cocoa::base::id,
-                                        callback,
-                                    );
+                                state.target_ptr = native_controls::set_native_segmented_action(
+                                    state.control_ptr as cocoa::base::id,
+                                    callback,
+                                );
                             }
                         }
 
@@ -304,8 +300,7 @@ impl Element for NativeToggleGroup {
                     } else {
                         // Creation path: new control or style changed
                         let (control_ptr, target_ptr) = unsafe {
-                            let label_strs: Vec<&str> =
-                                labels.iter().map(|s| s.as_ref()).collect();
+                            let label_strs: Vec<&str> = labels.iter().map(|s| s.as_ref()).collect();
                             let control = native_controls::create_native_segmented_control(
                                 &label_strs,
                                 selected_index,

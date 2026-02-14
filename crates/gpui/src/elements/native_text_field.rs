@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style, StyleRefinement,
-    Styled, Window, px,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
+    StyleRefinement, Styled, Window, px,
 };
 
 use super::native_element_helpers::{
@@ -150,10 +150,7 @@ impl NativeTextField {
     }
 
     /// Register a callback invoked when editing begins (first keystroke).
-    pub fn on_focus(
-        mut self,
-        listener: impl Fn(&mut Window, &mut App) + 'static,
-    ) -> Self {
+    pub fn on_focus(mut self, listener: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_focus = Some(Box::new(listener));
         self
     }
@@ -236,14 +233,12 @@ impl Element for NativeTextField {
         style.refine(&self.style);
 
         if matches!(style.size.width, Length::Auto) {
-            style.size.width = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(200.0)),
-            ));
+            style.size.width =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(200.0))));
         }
         if matches!(style.size.height, Length::Auto) {
-            style.size.height = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(22.0)),
-            ));
+            style.size.height =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(22.0))));
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -388,9 +383,7 @@ impl Element for NativeTextField {
 
                             // Set initial value
                             if !value.is_empty() {
-                                native_controls::set_native_text_field_string_value(
-                                    field, &value,
-                                );
+                                native_controls::set_native_text_field_string_value(field, &value);
                             }
 
                             // Disabled state

@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::{
     AbsoluteLength, App, Bounds, ClickEvent, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style, StyleRefinement,
-    Styled, Window, px,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
+    StyleRefinement, Styled, Window, px,
 };
 
 use super::native_button::{NativeButtonStyle, NativeButtonTint};
@@ -154,14 +154,12 @@ impl Element for NativeIconButton {
 
         // Square default size for icon buttons
         if matches!(style.size.width, Length::Auto) {
-            style.size.width = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(28.0)),
-            ));
+            style.size.width =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(28.0))));
         }
         if matches!(style.size.height, Length::Auto) {
-            style.size.height = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(28.0)),
-            ));
+            style.size.height =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(28.0))));
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -244,17 +242,16 @@ impl Element for NativeIconButton {
                             let inv = invalidator.clone();
                             let on_click = Rc::new(on_click);
                             let callback = schedule_native_callback_no_args(
-                                    on_click,
-                                    || ClickEvent::default(),
-                                    nfc,
-                                    inv,
-                                );
+                                on_click,
+                                || ClickEvent::default(),
+                                nfc,
+                                inv,
+                            );
                             unsafe {
-                                state.native_target_ptr =
-                                    native_controls::set_native_button_action(
-                                        state.native_button_ptr as cocoa::base::id,
-                                        callback,
-                                    );
+                                state.native_target_ptr = native_controls::set_native_button_action(
+                                    state.native_button_ptr as cocoa::base::id,
+                                    callback,
+                                );
                             }
                         }
 
@@ -263,9 +260,7 @@ impl Element for NativeIconButton {
                         let (button_ptr, target_ptr) = unsafe {
                             // Create button with empty title
                             let button = native_controls::create_native_button("");
-                            native_controls::set_native_button_sf_symbol(
-                                button, &sf_symbol, true,
-                            );
+                            native_controls::set_native_button_sf_symbol(button, &sf_symbol, true);
 
                             // Apply style
                             match button_style {

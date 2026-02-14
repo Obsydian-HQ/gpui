@@ -16,7 +16,8 @@ use image::RgbaImage;
 
 use core_foundation::base::TCFType;
 use core_video::{
-    metal_texture::CVMetalTextureGetTexture, metal_texture_cache::CVMetalTextureCache,
+    metal_texture::CVMetalTextureGetTexture,
+    metal_texture_cache::CVMetalTextureCache,
     pixel_buffer::{kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange},
 };
 use foreign_types::{ForeignType, ForeignTypeRef};
@@ -1197,8 +1198,7 @@ impl MetalRenderer {
             }
 
             if pixel_format == kCVPixelFormatType_32BGRA {
-                command_encoder
-                    .set_render_pipeline_state(&self.bgra_surfaces_pipeline_state);
+                command_encoder.set_render_pipeline_state(&self.bgra_surfaces_pipeline_state);
             } else {
                 command_encoder.set_render_pipeline_state(&self.surfaces_pipeline_state);
             }
@@ -1237,19 +1237,12 @@ impl MetalRenderer {
                     )
                     .unwrap();
 
-                command_encoder.set_fragment_texture(
-                    SurfaceInputIndex::YTexture as u64,
-                    unsafe {
-                        let texture =
-                            CVMetalTextureGetTexture(bgra_texture.as_concrete_TypeRef());
-                        Some(metal::TextureRef::from_ptr(texture as *mut _))
-                    },
-                );
+                command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
+                    let texture = CVMetalTextureGetTexture(bgra_texture.as_concrete_TypeRef());
+                    Some(metal::TextureRef::from_ptr(texture as *mut _))
+                });
             } else {
-                assert_eq!(
-                    pixel_format,
-                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                );
+                assert_eq!(pixel_format, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
 
                 let y_texture = self
                     .core_video_texture_cache
@@ -1274,19 +1267,14 @@ impl MetalRenderer {
                     )
                     .unwrap();
 
-                command_encoder.set_fragment_texture(
-                    SurfaceInputIndex::YTexture as u64,
-                    unsafe {
-                        let texture =
-                            CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
-                        Some(metal::TextureRef::from_ptr(texture as *mut _))
-                    },
-                );
+                command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
+                    let texture = CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
+                    Some(metal::TextureRef::from_ptr(texture as *mut _))
+                });
                 command_encoder.set_fragment_texture(
                     SurfaceInputIndex::CbCrTexture as u64,
                     unsafe {
-                        let texture =
-                            CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
+                        let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
                         Some(metal::TextureRef::from_ptr(texture as *mut _))
                     },
                 );

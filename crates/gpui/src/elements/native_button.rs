@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use crate::{
     AbsoluteLength, App, Bounds, ClickEvent, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style, StyleRefinement,
-    Styled, Window, px,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
+    StyleRefinement, Styled, Window, px,
 };
 
 use super::native_element_helpers::schedule_native_callback_no_args;
@@ -61,10 +61,7 @@ impl NativeButtonTint {
 ///
 /// The button participates in GPUI's Taffy layout system and renders as a real
 /// platform button, not a custom-drawn element.
-pub fn native_button(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-) -> NativeButton {
+pub fn native_button(id: impl Into<ElementId>, label: impl Into<SharedString>) -> NativeButton {
     NativeButton {
         id: id.into(),
         label: label.into(),
@@ -243,14 +240,12 @@ impl Element for NativeButton {
             let char_width = 8.0;
             let padding = 24.0;
             let width = (self.label.len() as f32 * char_width + padding).max(80.0);
-            style.size.width = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(width)),
-            ));
+            style.size.width =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(width))));
         }
         if matches!(style.size.height, Length::Auto) {
-            style.size.height = Length::Definite(DefiniteLength::Absolute(
-                AbsoluteLength::Pixels(px(24.0)),
-            ));
+            style.size.height =
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(24.0))));
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -323,10 +318,7 @@ impl Element for NativeButton {
                                 state.current_style = button_style;
                             }
                             if state.current_tint != tint {
-                                apply_button_tint(
-                                    state.native_button_ptr as cocoa::base::id,
-                                    tint,
-                                );
+                                apply_button_tint(state.native_button_ptr as cocoa::base::id, tint);
                                 state.current_tint = tint;
                             }
                             native_controls::set_native_control_enabled(
@@ -345,17 +337,16 @@ impl Element for NativeButton {
                             let inv = invalidator.clone();
                             let on_click = Rc::new(on_click);
                             let callback = schedule_native_callback_no_args(
-                                    on_click,
-                                    || ClickEvent::default(),
-                                    nfc,
-                                    inv,
-                                );
+                                on_click,
+                                || ClickEvent::default(),
+                                nfc,
+                                inv,
+                            );
                             unsafe {
-                                state.native_target_ptr =
-                                    native_controls::set_native_button_action(
-                                        state.native_button_ptr as cocoa::base::id,
-                                        callback,
-                                    );
+                                state.native_target_ptr = native_controls::set_native_button_action(
+                                    state.native_button_ptr as cocoa::base::id,
+                                    callback,
+                                );
                             }
                         }
 

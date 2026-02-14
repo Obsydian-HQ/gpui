@@ -22,8 +22,7 @@ static mut SEGMENTED_TARGET_CLASS: *const Class = ptr::null();
 #[ctor]
 unsafe fn build_segmented_target_class() {
     unsafe {
-        let mut decl =
-            ClassDecl::new("GPUINativeSegmentedTarget", class!(NSObject)).unwrap();
+        let mut decl = ClassDecl::new("GPUINativeSegmentedTarget", class!(NSObject)).unwrap();
         decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
 
         decl.add_method(
@@ -51,10 +50,7 @@ extern "C" fn segment_action(this: &Object, _sel: Sel, sender: id) {
 // =============================================================================
 
 /// Creates a new NSSegmentedControl with the given labels.
-pub(crate) unsafe fn create_native_segmented_control(
-    labels: &[&str],
-    selected_index: usize,
-) -> id {
+pub(crate) unsafe fn create_native_segmented_control(labels: &[&str], selected_index: usize) -> id {
     unsafe {
         use super::super::ns_string;
         let control: id = msg_send![class!(NSSegmentedControl), alloc];
@@ -93,11 +89,7 @@ pub(crate) unsafe fn set_native_segmented_style(control: id, style: i64) {
 }
 
 /// Sets an SF Symbol image on a specific segment (macOS 11+).
-pub(crate) unsafe fn set_native_segmented_image(
-    control: id,
-    segment: usize,
-    symbol_name: &str,
-) {
+pub(crate) unsafe fn set_native_segmented_image(control: id, segment: usize, symbol_name: &str) {
     unsafe {
         use super::super::ns_string;
         let image: id = msg_send![

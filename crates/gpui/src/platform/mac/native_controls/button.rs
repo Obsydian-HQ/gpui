@@ -22,8 +22,7 @@ static mut BUTTON_TARGET_CLASS: *const Class = ptr::null();
 #[ctor]
 unsafe fn build_button_target_class() {
     unsafe {
-        let mut decl =
-            ClassDecl::new("GPUINativeButtonTarget", class!(NSObject)).unwrap();
+        let mut decl = ClassDecl::new("GPUINativeButtonTarget", class!(NSObject)).unwrap();
         decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
 
         decl.add_method(
@@ -76,10 +75,7 @@ pub(crate) unsafe fn set_native_button_title(button: id, title: &str) {
 
 /// Sets the button's target/action to invoke a Rust callback.
 /// Returns a pointer to the target object (must be retained for the callback to work).
-pub(crate) unsafe fn set_native_button_action(
-    button: id,
-    callback: Box<dyn Fn()>,
-) -> *mut c_void {
+pub(crate) unsafe fn set_native_button_action(button: id, callback: Box<dyn Fn()>) -> *mut c_void {
     unsafe {
         let target: id = msg_send![BUTTON_TARGET_CLASS, alloc];
         let target: id = msg_send![target, init];
@@ -135,13 +131,7 @@ pub(crate) unsafe fn set_native_button_bordered(button: id, bordered: bool) {
 }
 
 /// Sets the bezel color of the button (macOS 10.12.2+).
-pub(crate) unsafe fn set_native_button_bezel_color(
-    button: id,
-    r: f64,
-    g: f64,
-    b: f64,
-    a: f64,
-) {
+pub(crate) unsafe fn set_native_button_bezel_color(button: id, r: f64, g: f64, b: f64, a: f64) {
     unsafe {
         let color: id = msg_send![class!(NSColor), colorWithSRGBRed:r green:g blue:b alpha:a];
         let _: () = msg_send![button, setBezelColor: color];
@@ -183,11 +173,7 @@ pub(crate) unsafe fn set_native_button_content_tint_color(
 
 /// Sets an SF Symbol image on the button (macOS 11+).
 /// Pass `image_only = true` to hide the title and show only the icon.
-pub(crate) unsafe fn set_native_button_sf_symbol(
-    button: id,
-    symbol_name: &str,
-    image_only: bool,
-) {
+pub(crate) unsafe fn set_native_button_sf_symbol(button: id, symbol_name: &str, image_only: bool) {
     unsafe {
         use super::super::ns_string;
         let image: id = msg_send![

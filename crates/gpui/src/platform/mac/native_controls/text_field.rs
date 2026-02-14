@@ -30,8 +30,7 @@ static mut TEXT_FIELD_DELEGATE_CLASS: *const Class = ptr::null();
 #[ctor]
 unsafe fn build_text_field_delegate_class() {
     unsafe {
-        let mut decl =
-            ClassDecl::new("GPUINativeTextFieldDelegate", class!(NSObject)).unwrap();
+        let mut decl = ClassDecl::new("GPUINativeTextFieldDelegate", class!(NSObject)).unwrap();
         decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
 
         decl.add_method(
