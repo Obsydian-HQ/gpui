@@ -7,6 +7,8 @@ use gpui::{
     WindowToolbarStyle, WindowToolbarSwitchOptions, WindowToolbarTrackingSeparatorOptions, div,
     prelude::*, px, rgb, size,
 };
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 
 #[cfg(target_os = "macos")]
 struct NativeToolbarExample;
@@ -54,7 +56,7 @@ fn custom(id: &str) -> WindowToolbarItemIdentifier {
 }
 
 #[cfg(target_os = "macos")]
-fn build_toolbar_options() -> WindowToolbarOptions {
+fn build_toolbar_options(split_view: *mut c_void) -> WindowToolbarOptions {
     let refresh_item = WindowToolbarItem {
         identifier: "refresh".into(),
         label: "Refresh".into(),
@@ -136,7 +138,7 @@ fn build_toolbar_options() -> WindowToolbarOptions {
         palette_label: Some("Sidebar Divider".into()),
         tool_tip: Some("Tracking separator (provide split_view pointer)".into()),
         kind: WindowToolbarItemKind::TrackingSeparator(WindowToolbarTrackingSeparatorOptions {
-            split_view: std::ptr::null_mut(),
+            split_view,
             divider_index: 0,
         }),
     };
@@ -156,6 +158,9 @@ fn build_toolbar_options() -> WindowToolbarOptions {
             tracking_separator_item,
         ],
         default_item_identifiers: vec![
+            WindowToolbarItemIdentifier::ToggleSidebar,
+            custom("tracking_separator"),
+            WindowToolbarItemIdentifier::Separator,
             custom("refresh"),
             WindowToolbarItemIdentifier::Space,
             custom("mode_group"),
@@ -188,10 +193,19 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                toolbar: Some(build_toolbar_options()),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| NativeToolbarExample),
+            |window, cx| {
+                let _ = window.install_native_sidebar(
+                    px(160.),
+                    px(260.),
+                    px(420.),
+                    Some("gpui.native_toolbar.example.sidebar"),
+                );
+                let split_view = window.raw_native_sidebar_split_view_ptr();
+                window.set_native_toolbar_options(Some(build_toolbar_options(split_view)));
+                cx.new(|_| NativeToolbarExample)
+            },
         )
         .unwrap();
         cx.activate(true);
