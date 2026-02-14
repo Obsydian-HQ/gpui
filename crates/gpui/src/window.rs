@@ -1113,6 +1113,8 @@ impl Window {
             window_decorations,
             #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             tabbing_identifier,
+            #[cfg(target_os = "macos")]
+            toolbar,
         } = options;
 
         let window_bounds = window_bounds.unwrap_or_else(|| default_bounds(display_id, cx));
@@ -1131,6 +1133,8 @@ impl Window {
                 window_min_size,
                 #[cfg(target_os = "macos")]
                 tabbing_identifier,
+                #[cfg(target_os = "macos")]
+                toolbar,
             },
         )?;
 
@@ -4780,6 +4784,12 @@ impl Window {
             .set_tabbing_identifier(tabbing_identifier)
     }
 
+    /// Installs or replaces the native macOS toolbar for this window.
+    #[cfg(target_os = "macos")]
+    pub fn set_native_toolbar_options(&self, toolbar: Option<crate::WindowToolbarOptions>) {
+        self.platform_window.set_native_toolbar_options(toolbar);
+    }
+
     /// Installs a native macOS split sidebar using NSSplitViewController.
     /// Returns `true` when the sidebar exists or is installed successfully.
     pub fn install_native_sidebar(
@@ -4826,6 +4836,12 @@ impl Window {
     /// This is intended for low-level native integrations.
     pub fn raw_native_sidebar_view_ptr(&self) -> *mut std::ffi::c_void {
         self.platform_window.raw_native_sidebar_view_ptr()
+    }
+
+    /// Returns the raw native sidebar split view pointer (NSSplitView on macOS).
+    /// This is intended for low-level native integrations.
+    pub fn raw_native_sidebar_split_view_ptr(&self) -> *mut std::ffi::c_void {
+        self.platform_window.raw_native_sidebar_split_view_ptr()
     }
 
     /// Toggles the inspector mode on this window.

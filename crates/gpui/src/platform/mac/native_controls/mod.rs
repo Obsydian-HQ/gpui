@@ -10,6 +10,7 @@ mod slider;
 mod stepper;
 mod switch;
 mod text_field;
+mod toolbar;
 
 pub(crate) use button::*;
 pub(crate) use checkbox::*;
@@ -23,6 +24,7 @@ pub(crate) use slider::*;
 pub(crate) use stepper::*;
 pub(crate) use switch::*;
 pub(crate) use text_field::*;
+pub(crate) use toolbar::*;
 
 use crate::{Bounds, Pixels};
 use cocoa::{

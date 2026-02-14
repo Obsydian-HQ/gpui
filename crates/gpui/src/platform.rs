@@ -60,6 +60,8 @@ use seahash::SeaHasher;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use std::borrow::Cow;
+#[cfg(target_os = "macos")]
+use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops;
@@ -551,6 +553,8 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn move_tab_to_new_window(&self) {}
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
+    #[cfg(target_os = "macos")]
+    fn set_native_toolbar_options(&self, _toolbar: Option<WindowToolbarOptions>) {}
     fn install_native_sidebar(
         &self,
         _min_width: Pixels,
@@ -570,6 +574,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         None
     }
     fn raw_native_sidebar_view_ptr(&self) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+    fn raw_native_sidebar_split_view_ptr(&self) -> *mut std::ffi::c_void {
         std::ptr::null_mut()
     }
 
@@ -1263,6 +1270,10 @@ pub struct WindowOptions {
 
     /// Tab group name, allows opening the window as a native tab on macOS 10.12+. Windows with the same tabbing identifier will be grouped together.
     pub tabbing_identifier: Option<String>,
+
+    /// Native toolbar configuration (macOS only).
+    #[cfg(target_os = "macos")]
+    pub toolbar: Option<WindowToolbarOptions>,
 }
 
 /// The variables that can be configured when creating a new window
@@ -1312,6 +1323,8 @@ pub(crate) struct WindowParams {
     pub window_min_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,
+    #[cfg(target_os = "macos")]
+    pub toolbar: Option<WindowToolbarOptions>,
 }
 
 /// Represents the status of how a window should be opened.
@@ -1370,6 +1383,8 @@ impl Default for WindowOptions {
             window_min_size: None,
             window_decorations: None,
             tabbing_identifier: None,
+            #[cfg(target_os = "macos")]
+            toolbar: None,
         }
     }
 }
@@ -1386,6 +1401,408 @@ pub struct TitlebarOptions {
 
     /// The position of the macOS traffic light buttons
     pub traffic_light_position: Option<Point<Pixels>>,
+}
+
+/// The toolbar style for macOS windows.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowToolbarStyle {
+    /// Use the system default style.
+    #[default]
+    Automatic,
+    /// Expanded toolbar style.
+    Expanded,
+    /// Preference-style toolbar.
+    Preference,
+    /// Unified titlebar + toolbar.
+    Unified,
+    /// Unified compact titlebar + toolbar.
+    UnifiedCompact,
+}
+
+/// The display mode for toolbar items.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowToolbarDisplayMode {
+    /// Let the system pick.
+    #[default]
+    Default,
+    /// Show icons and labels.
+    IconAndLabel,
+    /// Show icons only.
+    IconOnly,
+    /// Show labels only.
+    LabelOnly,
+}
+
+/// An identifier used by `NSToolbar` item lists.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum WindowToolbarItemIdentifier {
+    /// A custom item identifier.
+    Custom(SharedString),
+    /// `NSToolbarSpaceItemIdentifier`.
+    Space,
+    /// `NSToolbarFlexibleSpaceItemIdentifier`.
+    FlexibleSpace,
+    /// `NSToolbarSeparatorItemIdentifier`.
+    Separator,
+    /// `NSToolbarToggleSidebarItemIdentifier`.
+    ToggleSidebar,
+    /// `NSToolbarSidebarTrackingSeparatorItemIdentifier`.
+    SidebarTrackingSeparator,
+}
+
+/// A single segment entry for a segmented toolbar item.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowToolbarSegment {
+    /// Text shown for the segment.
+    pub label: SharedString,
+    /// Optional SF Symbol name for the segment.
+    pub sf_symbol: Option<SharedString>,
+}
+
+/// Native toolbar button options.
+#[cfg(target_os = "macos")]
+pub struct WindowToolbarButtonOptions {
+    /// Optional explicit button title.
+    pub title: Option<SharedString>,
+    /// Optional SF Symbol name.
+    pub sf_symbol: Option<SharedString>,
+    /// Whether the button is bordered.
+    pub bordered: bool,
+    /// Click callback.
+    pub on_click: Option<Box<dyn Fn() + 'static>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarButtonOptions {
+    fn default() -> Self {
+        Self {
+            title: None,
+            sf_symbol: None,
+            bordered: true,
+            on_click: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarButtonOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowToolbarButtonOptions")
+            .field("title", &self.title)
+            .field("sf_symbol", &self.sf_symbol)
+            .field("bordered", &self.bordered)
+            .field("has_on_click", &self.on_click.is_some())
+            .finish()
+    }
+}
+
+/// Native segmented-control toolbar options.
+#[cfg(target_os = "macos")]
+pub struct WindowToolbarSegmentedControlOptions {
+    /// Segment definitions.
+    pub segments: Vec<WindowToolbarSegment>,
+    /// Selected segment index.
+    pub selected_index: usize,
+    /// Selection change callback.
+    pub on_change: Option<Box<dyn Fn(usize) + 'static>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarSegmentedControlOptions {
+    fn default() -> Self {
+        Self {
+            segments: Vec::new(),
+            selected_index: 0,
+            on_change: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarSegmentedControlOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowToolbarSegmentedControlOptions")
+            .field("segments", &self.segments)
+            .field("selected_index", &self.selected_index)
+            .field("has_on_change", &self.on_change.is_some())
+            .finish()
+    }
+}
+
+/// Native switch toolbar options.
+#[cfg(target_os = "macos")]
+pub struct WindowToolbarSwitchOptions {
+    /// Optional switch title.
+    pub title: Option<SharedString>,
+    /// Whether the switch is currently enabled.
+    pub checked: bool,
+    /// Toggle callback.
+    pub on_toggle: Option<Box<dyn Fn(bool) + 'static>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarSwitchOptions {
+    fn default() -> Self {
+        Self {
+            title: None,
+            checked: false,
+            on_toggle: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarSwitchOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowToolbarSwitchOptions")
+            .field("title", &self.title)
+            .field("checked", &self.checked)
+            .field("has_on_toggle", &self.on_toggle.is_some())
+            .finish()
+    }
+}
+
+/// A child item definition for a toolbar item group.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WindowToolbarGroupItem {
+    /// Segment label.
+    pub label: SharedString,
+    /// Optional SF Symbol name.
+    pub sf_symbol: Option<SharedString>,
+}
+
+/// Selection mode for grouped toolbar items.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowToolbarGroupSelectionMode {
+    /// Exactly one item is selected.
+    #[default]
+    SelectOne,
+    /// Any subset of items can be selected.
+    SelectAny,
+    /// Selection is momentary.
+    Momentary,
+}
+
+/// Visual representation of a toolbar item group.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowToolbarGroupControlRepresentation {
+    /// System default representation.
+    #[default]
+    Automatic,
+    /// Expanded representation.
+    Expanded,
+    /// Collapsed representation.
+    Collapsed,
+}
+
+/// Native toolbar group options.
+#[cfg(target_os = "macos")]
+pub struct WindowToolbarGroupOptions {
+    /// Group child items.
+    pub items: Vec<WindowToolbarGroupItem>,
+    /// Group selection mode.
+    pub selection_mode: WindowToolbarGroupSelectionMode,
+    /// Group control representation.
+    pub control_representation: WindowToolbarGroupControlRepresentation,
+    /// Optional selected index.
+    pub selected_index: Option<usize>,
+    /// Selection callback.
+    pub on_change: Option<Box<dyn Fn(usize) + 'static>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarGroupOptions {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            selection_mode: WindowToolbarGroupSelectionMode::SelectOne,
+            control_representation: WindowToolbarGroupControlRepresentation::Automatic,
+            selected_index: None,
+            on_change: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarGroupOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowToolbarGroupOptions")
+            .field("items", &self.items)
+            .field("selection_mode", &self.selection_mode)
+            .field("control_representation", &self.control_representation)
+            .field("selected_index", &self.selected_index)
+            .field("has_on_change", &self.on_change.is_some())
+            .finish()
+    }
+}
+
+/// Native toolbar search field options.
+#[cfg(target_os = "macos")]
+pub struct WindowToolbarSearchFieldOptions {
+    /// Optional placeholder text.
+    pub placeholder: Option<SharedString>,
+    /// Optional initial value.
+    pub value: Option<SharedString>,
+    /// Optional preferred width.
+    pub preferred_width: Option<Pixels>,
+    /// Live text-change callback.
+    pub on_change: Option<Box<dyn Fn(String) + 'static>>,
+    /// Submit callback.
+    pub on_submit: Option<Box<dyn Fn(String) + 'static>>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarSearchFieldOptions {
+    fn default() -> Self {
+        Self {
+            placeholder: None,
+            value: None,
+            preferred_width: None,
+            on_change: None,
+            on_submit: None,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarSearchFieldOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowToolbarSearchFieldOptions")
+            .field("placeholder", &self.placeholder)
+            .field("value", &self.value)
+            .field("preferred_width", &self.preferred_width)
+            .field("has_on_change", &self.on_change.is_some())
+            .field("has_on_submit", &self.on_submit.is_some())
+            .finish()
+    }
+}
+
+/// Native tracking-separator toolbar options.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug)]
+pub struct WindowToolbarTrackingSeparatorOptions {
+    /// Raw pointer to `NSSplitView` used by `NSTrackingSeparatorToolbarItem`.
+    pub split_view: *mut c_void,
+    /// Divider index tracked by the separator.
+    pub divider_index: usize,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarTrackingSeparatorOptions {
+    fn default() -> Self {
+        Self {
+            split_view: std::ptr::null_mut(),
+            divider_index: 0,
+        }
+    }
+}
+
+/// The type of a custom toolbar item.
+#[cfg(target_os = "macos")]
+pub enum WindowToolbarItemKind {
+    /// A native button item.
+    Button(WindowToolbarButtonOptions),
+    /// A native segmented control item.
+    SegmentedControl(WindowToolbarSegmentedControlOptions),
+    /// A native switch item.
+    Switch(WindowToolbarSwitchOptions),
+    /// A grouped toolbar item (`NSToolbarItemGroup`).
+    Group(WindowToolbarGroupOptions),
+    /// A search toolbar item (`NSSearchToolbarItem`).
+    SearchField(WindowToolbarSearchFieldOptions),
+    /// A tracking separator item (`NSTrackingSeparatorToolbarItem`).
+    TrackingSeparator(WindowToolbarTrackingSeparatorOptions),
+}
+
+#[cfg(target_os = "macos")]
+impl std::fmt::Debug for WindowToolbarItemKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Button(options) => f.debug_tuple("Button").field(options).finish(),
+            Self::SegmentedControl(options) => {
+                f.debug_tuple("SegmentedControl").field(options).finish()
+            }
+            Self::Switch(options) => f.debug_tuple("Switch").field(options).finish(),
+            Self::Group(options) => f.debug_tuple("Group").field(options).finish(),
+            Self::SearchField(options) => f.debug_tuple("SearchField").field(options).finish(),
+            Self::TrackingSeparator(options) => {
+                f.debug_tuple("TrackingSeparator").field(options).finish()
+            }
+        }
+    }
+}
+
+/// A custom item definition for a native toolbar.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct WindowToolbarItem {
+    /// Custom identifier for this item.
+    pub identifier: SharedString,
+    /// Visible item label.
+    pub label: SharedString,
+    /// Optional alternate label used in customization palettes.
+    pub palette_label: Option<SharedString>,
+    /// Optional tooltip.
+    pub tool_tip: Option<SharedString>,
+    /// Item implementation.
+    pub kind: WindowToolbarItemKind,
+}
+
+/// macOS native toolbar configuration.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+pub struct WindowToolbarOptions {
+    /// Toolbar identifier.
+    pub identifier: SharedString,
+    /// Toolbar visual style.
+    pub style: WindowToolbarStyle,
+    /// Toolbar display mode.
+    pub display_mode: WindowToolbarDisplayMode,
+    /// Whether users can customize the toolbar.
+    pub allows_user_customization: bool,
+    /// Whether toolbar item layout is autosaved by the system.
+    pub autosaves_configuration: bool,
+    /// Whether the baseline separator is shown.
+    pub shows_baseline_separator: bool,
+    /// Custom item definitions keyed by `identifier`.
+    pub items: Vec<WindowToolbarItem>,
+    /// Default toolbar item ordering.
+    pub default_item_identifiers: Vec<WindowToolbarItemIdentifier>,
+    /// Allowed toolbar items.
+    pub allowed_item_identifiers: Vec<WindowToolbarItemIdentifier>,
+    /// Selectable toolbar items.
+    pub selectable_item_identifiers: Vec<WindowToolbarItemIdentifier>,
+    /// Optional centered item.
+    pub centered_item_identifier: Option<WindowToolbarItemIdentifier>,
+    /// Optional initially selected item.
+    pub selected_item_identifier: Option<WindowToolbarItemIdentifier>,
+}
+
+#[cfg(target_os = "macos")]
+impl Default for WindowToolbarOptions {
+    fn default() -> Self {
+        Self {
+            identifier: SharedString::from("gpui.window.toolbar"),
+            style: WindowToolbarStyle::Automatic,
+            display_mode: WindowToolbarDisplayMode::Default,
+            allows_user_customization: false,
+            autosaves_configuration: false,
+            shows_baseline_separator: true,
+            items: Vec::new(),
+            default_item_identifiers: Vec::new(),
+            allowed_item_identifiers: Vec::new(),
+            selectable_item_identifiers: Vec::new(),
+            centered_item_identifier: None,
+            selected_item_identifier: None,
+        }
+    }
 }
 
 /// The kind of window to create

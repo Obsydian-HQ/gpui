@@ -6,8 +6,8 @@ use crate::{
     PlatformDisplay, PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel,
     RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowParams,
-    dispatch_get_main_queue, dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point,
-    px, size,
+    WindowToolbarOptions, WindowToolbarStyle, dispatch_get_main_queue, dispatch_sys::dispatch_async_f,
+    platform::PlatformInputHandler, point, px, size,
 };
 #[cfg(any(test, feature = "test-support"))]
 use anyhow::Result;
@@ -92,6 +92,17 @@ type NSDragOperation = NSUInteger;
 const NSDragOperationNone: NSDragOperation = 0;
 #[allow(non_upper_case_globals)]
 const NSDragOperationCopy: NSDragOperation = 1;
+
+fn ns_window_toolbar_style(style: WindowToolbarStyle) -> NSInteger {
+    match style {
+        WindowToolbarStyle::Automatic => 0,
+        WindowToolbarStyle::Expanded => 1,
+        WindowToolbarStyle::Preference => 2,
+        WindowToolbarStyle::Unified => 3,
+        WindowToolbarStyle::UnifiedCompact => 4,
+    }
+}
+
 #[derive(PartialEq)]
 pub enum UserTabbingPreference {
     Never,
@@ -436,6 +447,7 @@ struct MacWindowState {
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<id>,
     native_sidebar: Option<NativeSidebarState>,
+    native_toolbar: Option<native_controls::NativeToolbarState>,
 }
 
 #[derive(Clone, Copy)]
@@ -605,6 +617,7 @@ impl MacWindow {
             display_id,
             window_min_size,
             tabbing_identifier,
+            toolbar,
         }: WindowParams,
         foreground_executor: ForegroundExecutor,
         background_executor: BackgroundExecutor,
@@ -758,6 +771,7 @@ impl MacWindow {
                 activated_least_once: false,
                 sheet_parent: None,
                 native_sidebar: None,
+                native_toolbar: None,
             })));
 
             (*native_window).set_ivar(
@@ -789,6 +803,25 @@ impl MacWindow {
             if titlebar.is_none_or(|titlebar| titlebar.appears_transparent) {
                 native_window.setTitlebarAppearsTransparent_(YES);
                 native_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden);
+            }
+
+            if !matches!(&kind, WindowKind::PopUp) {
+                if let Some(toolbar_options) = toolbar {
+                    let toolbar_style = toolbar_options.style;
+                    let native_toolbar = native_controls::install_native_window_toolbar(
+                        native_window,
+                        toolbar_options,
+                    );
+                    let can_set_toolbar_style: i8 =
+                        msg_send![native_window, respondsToSelector: sel!(setToolbarStyle:)];
+                    if can_set_toolbar_style != 0 {
+                        let _: () = msg_send![
+                            native_window,
+                            setToolbarStyle: ns_window_toolbar_style(toolbar_style)
+                        ];
+                    }
+                    window.0.lock().native_toolbar = Some(native_toolbar);
+                }
             }
 
             native_view.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable);
@@ -1100,6 +1133,30 @@ impl PlatformWindow for MacWindow {
                 let _: () = msg_send![native_window, setTabbingIdentifier: tabbing_id];
             } else {
                 let _: () = msg_send![native_window, setTabbingIdentifier:nil];
+            }
+        }
+    }
+
+    fn set_native_toolbar_options(&self, toolbar: Option<WindowToolbarOptions>) {
+        let mut this = self.0.lock();
+        let native_window = this.native_window;
+        unsafe {
+            this.native_toolbar = None;
+            let _: () = msg_send![native_window, setToolbar: nil];
+
+            if let Some(toolbar_options) = toolbar {
+                let toolbar_style = toolbar_options.style;
+                let native_toolbar =
+                    native_controls::install_native_window_toolbar(native_window, toolbar_options);
+                let can_set_toolbar_style: i8 =
+                    msg_send![native_window, respondsToSelector: sel!(setToolbarStyle:)];
+                if can_set_toolbar_style != 0 {
+                    let _: () = msg_send![
+                        native_window,
+                        setToolbarStyle: ns_window_toolbar_style(toolbar_style)
+                    ];
+                }
+                this.native_toolbar = Some(native_toolbar);
             }
         }
     }
@@ -1659,6 +1716,18 @@ impl PlatformWindow for MacWindow {
             .native_sidebar
             .map(|sidebar| sidebar.sidebar_view as *mut c_void)
             .unwrap_or(std::ptr::null_mut())
+    }
+
+    fn raw_native_sidebar_split_view_ptr(&self) -> *mut c_void {
+        let sidebar = self.0.lock().native_sidebar;
+        if let Some(sidebar) = sidebar {
+            unsafe {
+                let split_view: id = msg_send![sidebar.split_controller, splitView];
+                split_view as *mut c_void
+            }
+        } else {
+            std::ptr::null_mut()
+        }
     }
 
     fn draw(&self, scene: &crate::Scene) {
