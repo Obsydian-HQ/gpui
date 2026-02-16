@@ -51,9 +51,6 @@ async-task = "4.7"
 async_zip = { version = "0.0.18", features = ["deflate", "deflate64"] }
 backtrace = "0.3"
 bitflags = "2.6.0"
-blade-graphics = { git = "https://github.com/kvark/blade", rev = "e3cf011ca18a6dfd907d1dedd93e85e21f005fe3" }
-blade-macros = { git = "https://github.com/kvark/blade", rev = "e3cf011ca18a6dfd907d1dedd93e85e21f005fe3" }
-blade-util = { git = "https://github.com/kvark/blade", rev = "e3cf011ca18a6dfd907d1dedd93e85e21f005fe3" }
 bytes = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 circular-buffer = "1.0"
@@ -82,7 +79,7 @@ libc = "0.2"
 log = { version = "0.4.16", features = ["kv_unstable_serde", "serde"] }
 mach2 = "0.5"
 metal = "0.29"
-naga = { version = "25.0", features = ["wgsl-in"] }
+naga = { version = "28.0", features = ["wgsl-in"] }
 nix = "0.29"
 objc = "0.2"
 parking_lot = "0.12.1"
@@ -124,6 +121,7 @@ unicode-segmentation = "1.10"
 url = "2.2"
 uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde"] }
 walkdir = "2.5"
+wgpu = "28.0"
 which = "6.0.0"
 windows-core = "0.61"
 
