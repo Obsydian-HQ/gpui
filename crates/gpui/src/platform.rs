@@ -72,9 +72,9 @@ pub use keystroke::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
-pub(crate) use mac::*;
-#[cfg(target_os = "macos")]
 pub(crate) use mac::native_controls;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::*;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
 #[cfg(target_os = "windows")]

@@ -572,6 +572,7 @@ impl StateInner {
 
         if self.scroll_handler.is_some() {
             let visible_range = self.visible_range(height, scroll_top);
+            #[allow(clippy::unnecessary_unwrap)]
             self.scroll_handler.as_mut().unwrap()(
                 &ListScrollEvent {
                     visible_range,

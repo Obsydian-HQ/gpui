@@ -48,57 +48,43 @@ impl Render for ToggleGroupExample {
             .text_color(fg)
             .child(format!(
                 "View: {}  |  Sort: {}",
-                Self::VIEW_MODES[self.view_mode], Self::SORT_ORDERS[self.sort_order]
+                Self::VIEW_MODES[self.view_mode],
+                Self::SORT_ORDERS[self.sort_order]
             ))
             // View mode selector
             .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .items_center()
-                    .child("View:")
-                    .child(
-                        native_toggle_group("view_mode", &Self::VIEW_MODES)
-                            .selected_index(self.view_mode)
-                            .segment_style(segmented_style)
-                            .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
-                                this.view_mode = event.index;
-                                cx.notify();
-                            })),
-                    ),
+                div().flex().gap_3().items_center().child("View:").child(
+                    native_toggle_group("view_mode", &Self::VIEW_MODES)
+                        .selected_index(self.view_mode)
+                        .segment_style(segmented_style)
+                        .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
+                            this.view_mode = event.index;
+                            cx.notify();
+                        })),
+                ),
             )
             // Sort order selector
             .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .items_center()
-                    .child("Sort:")
-                    .child(
-                        native_toggle_group("sort_order", &Self::SORT_ORDERS)
-                            .selected_index(self.sort_order)
-                            .segment_style(segmented_style)
-                            .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
-                                this.sort_order = event.index;
-                                cx.notify();
-                            })),
-                    ),
+                div().flex().gap_3().items_center().child("Sort:").child(
+                    native_toggle_group("sort_order", &Self::SORT_ORDERS)
+                        .selected_index(self.sort_order)
+                        .segment_style(segmented_style)
+                        .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
+                            this.sort_order = event.index;
+                            cx.notify();
+                        })),
+                ),
             )
             // Style selector (segmented control to change the style of the other controls)
             .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .items_center()
-                    .child("Style:")
-                    .child(
-                        native_toggle_group("style_selector", &Self::STYLE_NAMES)
-                            .selected_index(self.style_index)
-                            .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
-                                this.style_index = event.index;
-                                cx.notify();
-                            })),
-                    ),
+                div().flex().gap_3().items_center().child("Style:").child(
+                    native_toggle_group("style_selector", &Self::STYLE_NAMES)
+                        .selected_index(self.style_index)
+                        .on_select(cx.listener(|this, event: &SegmentSelectEvent, _, cx| {
+                            this.style_index = event.index;
+                            cx.notify();
+                        })),
+                ),
             )
     }
 }
