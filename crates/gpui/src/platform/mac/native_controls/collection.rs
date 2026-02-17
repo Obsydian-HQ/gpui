@@ -278,11 +278,7 @@ unsafe fn flow_layout_from_collection(collection: id) -> id {
         let layout: id = msg_send![collection, collectionViewLayout];
         let flow_layout_class = class!(NSCollectionViewFlowLayout);
         let is_flow: i8 = msg_send![layout, isKindOfClass: flow_layout_class];
-        if is_flow != 0 {
-            layout
-        } else {
-            nil
-        }
+        if is_flow != 0 { layout } else { nil }
     }
 }
 
