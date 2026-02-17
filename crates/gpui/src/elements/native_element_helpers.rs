@@ -65,6 +65,7 @@ pub(super) fn schedule_native_focus_callback(
 ///
 /// # Safety
 /// Both pointers must be valid ObjC objects (or null for target_ptr).
+#[cfg(target_os = "macos")]
 pub(super) unsafe fn cleanup_native_control(
     control_ptr: *mut c_void,
     target_ptr: *mut c_void,
