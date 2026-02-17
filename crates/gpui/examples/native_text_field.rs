@@ -30,11 +30,7 @@ impl Render for TextFieldExample {
             .gap_4()
             .bg(bg)
             .text_color(fg)
-            .child(
-                div()
-                    .text_xl()
-                    .child("Native Text Field Demo"),
-            )
+            .child(div().text_xl().child("Native Text Field Demo"))
             // Basic text field
             .child(
                 div()
@@ -45,10 +41,12 @@ impl Render for TextFieldExample {
                     .child(
                         native_text_field("basic")
                             .placeholder("Type something...")
-                            .on_change(cx.listener(|this, event: &gpui::TextChangeEvent, _window, cx| {
-                                this.basic_text = event.text.clone();
-                                cx.notify();
-                            })),
+                            .on_change(cx.listener(
+                                |this, event: &gpui::TextChangeEvent, _window, cx| {
+                                    this.basic_text = event.text.clone();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(
                         div()
@@ -68,10 +66,12 @@ impl Render for TextFieldExample {
                         native_text_field("password")
                             .placeholder("Enter password...")
                             .secure(true)
-                            .on_change(cx.listener(|this, event: &gpui::TextChangeEvent, _window, cx| {
-                                this.password_text = event.text.clone();
-                                cx.notify();
-                            })),
+                            .on_change(cx.listener(
+                                |this, event: &gpui::TextChangeEvent, _window, cx| {
+                                    this.password_text = event.text.clone();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(
                         div()
@@ -91,10 +91,12 @@ impl Render for TextFieldExample {
                         native_text_field("search")
                             .placeholder("Search (press Enter)...")
                             .field_style(NativeTextFieldStyle::Rounded)
-                            .on_submit(cx.listener(|this, event: &gpui::TextSubmitEvent, _window, cx| {
-                                this.submitted_text = event.text.clone();
-                                cx.notify();
-                            })),
+                            .on_submit(cx.listener(
+                                |this, event: &gpui::TextSubmitEvent, _window, cx| {
+                                    this.submitted_text = event.text.clone();
+                                    cx.notify();
+                                },
+                            )),
                     )
                     .child(
                         div()
@@ -110,15 +112,14 @@ impl Render for TextFieldExample {
                     .disabled(true),
             )
             // Clear button
-            .child(
-                native_button("clear", "Clear All")
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.basic_text.clear();
-                        this.password_text.clear();
-                        this.submitted_text.clear();
-                        cx.notify();
-                    })),
-            )
+            .child(native_button("clear", "Clear All").on_click(cx.listener(
+                |this, _event, _window, cx| {
+                    this.basic_text.clear();
+                    this.password_text.clear();
+                    this.submitted_text.clear();
+                    cx.notify();
+                },
+            )))
     }
 }
 

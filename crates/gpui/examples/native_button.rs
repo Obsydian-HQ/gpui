@@ -31,19 +31,19 @@ impl Render for NativeButtonExample {
             .text_color(fg)
             .child(format!("Count: {}", self.count))
             .child(
-                native_button("increment", "Increment")
-                    .on_click(cx.listener(|this, _event, _window, cx| {
+                native_button("increment", "Increment").on_click(cx.listener(
+                    |this, _event, _window, cx| {
                         this.count += 1;
                         cx.notify();
-                    })),
+                    },
+                )),
             )
-            .child(
-                native_button("reset", "Reset")
-                    .on_click(cx.listener(|this, _event, _window, cx| {
-                        this.count = 0;
-                        cx.notify();
-                    })),
-            )
+            .child(native_button("reset", "Reset").on_click(cx.listener(
+                |this, _event, _window, cx| {
+                    this.count = 0;
+                    cx.notify();
+                },
+            )))
     }
 }
 
