@@ -359,3 +359,31 @@ path = "examples/native_switch.rs"
 [[example]]
 name = "native_toggle_group"
 path = "examples/native_toggle_group.rs"
+
+[[example]]
+name = "native_collection_view"
+path = "examples/native_collection_view.rs"
+
+[[example]]
+name = "native_table_view"
+path = "examples/native_table_view.rs"
+
+[[example]]
+name = "native_outline_view"
+path = "examples/native_outline_view.rs"
+
+[[example]]
+name = "native_menu_button"
+path = "examples/native_menu_button.rs"
+
+[[example]]
+name = "native_tab_view"
+path = "examples/native_tab_view.rs"
+
+[[example]]
+name = "native_table_styles"
+path = "examples/native_table_styles.rs"
+
+[[example]]
+name = "native_list_views"
+path = "examples/native_list_views.rs"
