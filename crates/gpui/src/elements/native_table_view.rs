@@ -46,11 +46,12 @@ impl NativeTableStyle {
 }
 
 /// AppKit `NSTableViewRowSizeStyle`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeTableRowSizeStyle {
     /// `NSTableViewRowSizeStyleDefault`.
     Default,
     /// `NSTableViewRowSizeStyleCustom`.
+    #[default]
     Custom,
     /// `NSTableViewRowSizeStyleSmall`.
     Small,
@@ -58,12 +59,6 @@ pub enum NativeTableRowSizeStyle {
     Medium,
     /// `NSTableViewRowSizeStyleLarge`.
     Large,
-}
-
-impl Default for NativeTableRowSizeStyle {
-    fn default() -> Self {
-        Self::Custom
-    }
 }
 
 impl NativeTableRowSizeStyle {
