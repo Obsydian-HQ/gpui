@@ -119,6 +119,7 @@ impl NativeToggleGroup {
 // Persisted element state
 // =============================================================================
 
+#[allow(dead_code)]
 struct NativeToggleGroupState {
     control_ptr: *mut c_void,
     target_ptr: *mut c_void,
