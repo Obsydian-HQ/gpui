@@ -13,6 +13,8 @@ members = [
     "crates/scheduler",
     "crates/refineable",
     "crates/refineable/derive_refineable",
+    "crates/perf",
+    "crates/util_macros",
 ]
 
 [workspace.package]
@@ -37,6 +39,8 @@ util = { path = "crates/util" }
 scheduler = { path = "crates/scheduler" }
 refineable = { path = "crates/refineable" }
 derive_refineable = { path = "crates/refineable/derive_refineable" }
+perf = { path = "crates/perf" }
+util_macros = { path = "crates/util_macros" }
 
 #
 # External crates

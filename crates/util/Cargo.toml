@@ -18,6 +18,7 @@ test-support = ["git2", "rand"]
 
 [dependencies]
 anyhow.workspace = true
+util_macros.workspace = true
 async-fs.workspace = true
 async_zip.workspace = true
 collections.workspace = true
