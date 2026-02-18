@@ -1,7 +1,7 @@
 use super::CALLBACK_IVAR;
 use cocoa::{
     appkit::{
-        NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
+        NSEventModifierFlags, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
         NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowStyleMask,
         NSWindowTitleVisibility,
     },
@@ -31,6 +31,7 @@ struct SidebarHostData {
     split_view_controller: id,
     split_view: id,
     sidebar_item: id,
+    scroll_view: id,
     table_view: id,
     detail_label: id,
     window: id,
@@ -38,6 +39,8 @@ struct SidebarHostData {
     previous_content_view_controller: id,
     previous_toolbar: id,
     sidebar_toolbar: id,
+    previous_content_min_size: NSSize,
+    previous_content_max_size: NSSize,
     min_width: f64,
     max_width: f64,
 }
@@ -72,6 +75,10 @@ unsafe fn build_sidebar_host_view_class() {
     unsafe {
         let mut decl = ClassDecl::new("GPUINativeSidebarHostView", class!(NSView)).unwrap();
         decl.add_ivar::<*mut c_void>(HOST_DATA_IVAR);
+        decl.add_method(
+            sel!(performKeyEquivalent:),
+            host_view_perform_key_equivalent as extern "C" fn(&Object, Sel, id) -> i8,
+        );
         SIDEBAR_HOST_VIEW_CLASS = decl.register();
     }
 }
@@ -135,6 +142,42 @@ unsafe fn set_detail_label_text(detail_label: id, text: &str) {
         if detail_label != nil {
             let _: () = msg_send![detail_label, setStringValue: ns_string(text)];
         }
+    }
+}
+
+unsafe fn sync_sidebar_table_width(host_data: &SidebarHostData) {
+    unsafe {
+        if host_data.scroll_view == nil || host_data.table_view == nil {
+            return;
+        }
+
+        let clip_view: id = msg_send![host_data.scroll_view, contentView];
+        if clip_view == nil {
+            return;
+        }
+
+        let clip_bounds: NSRect = msg_send![clip_view, bounds];
+        let table_width = (clip_bounds.size.width - 1.0).max(0.0);
+        if table_width <= 0.0 {
+            return;
+        }
+
+        let column = primary_table_column(host_data.table_view);
+        if column != nil {
+            let _: () = msg_send![column, setWidth: table_width];
+        }
+
+        let table_frame: NSRect = msg_send![host_data.table_view, frame];
+        let _: () = msg_send![
+            host_data.table_view,
+            setFrameSize: NSSize::new(table_width, table_frame.size.height)
+        ];
+
+        let _: () = msg_send![
+            clip_view,
+            scrollToPoint: NSPoint::new(0.0, clip_bounds.origin.y)
+        ];
+        let _: () = msg_send![host_data.scroll_view, reflectScrolledClipView: clip_view];
     }
 }
 
@@ -340,6 +383,40 @@ extern "C" fn selection_did_change(this: &Object, _sel: Sel, notification: id) {
     }
 }
 
+extern "C" fn host_view_perform_key_equivalent(this: &Object, _sel: Sel, event: id) -> i8 {
+    unsafe {
+        if event != nil {
+            let raw_modifiers: u64 = msg_send![event, modifierFlags];
+            let modifiers = NSEventModifierFlags::from_bits_truncate(raw_modifiers);
+            let is_sidebar_shortcut = modifiers.contains(NSEventModifierFlags::NSCommandKeyMask)
+                && modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask)
+                && !modifiers.contains(NSEventModifierFlags::NSControlKeyMask)
+                && !modifiers.contains(NSEventModifierFlags::NSFunctionKeyMask);
+
+            if is_sidebar_shortcut {
+                let key_code: u16 = msg_send![event, keyCode];
+                if key_code == 1 {
+                    // Hardware keycode 1 maps to the physical "S" key across layouts.
+                    let window: id = msg_send![this, window];
+                    let sender = if window != nil {
+                        window
+                    } else {
+                        this as *const Object as id
+                    };
+                    let app: id = msg_send![class!(NSApplication), sharedApplication];
+                    let handled: i8 =
+                        msg_send![app, sendAction: sel!(toggleSidebar:) to: nil from: sender];
+                    if handled != 0 {
+                        return 1;
+                    }
+                }
+            }
+        }
+
+        msg_send![super(this, class!(NSView)), performKeyEquivalent: event]
+    }
+}
+
 pub(crate) unsafe fn create_native_sidebar_view(
     sidebar_width: f64,
     min_width: f64,
@@ -356,7 +433,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
             NSPoint::new(0.0, 0.0),
             NSSize::new(760.0, 420.0),
         )];
-        let _: () = msg_send![host_view, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
         let _: () =
             msg_send![host_view, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
@@ -389,8 +465,15 @@ pub(crate) unsafe fn create_native_sidebar_view(
         )];
         let _: () = msg_send![scroll, setHasVerticalScroller: 1i8];
         let _: () = msg_send![scroll, setHasHorizontalScroller: 0i8];
+        let _: () = msg_send![scroll, setAutohidesScrollers: 1i8];
+        // NSScrollElasticityNone
+        let _: () = msg_send![scroll, setHorizontalScrollElasticity: 2i64];
         let _: () = msg_send![scroll, setBorderType: 0u64];
         let _: () = msg_send![scroll, setDrawsBackground: 0i8];
+        let clip_view: id = msg_send![scroll, contentView];
+        if clip_view != nil {
+            let _: () = msg_send![clip_view, setDrawsBackground: 0i8];
+        }
         let _: () =
             msg_send![scroll, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
@@ -403,6 +486,12 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () = msg_send![table, setBackgroundColor: clear_color];
         let _: () = msg_send![table, setUsesAlternatingRowBackgroundColors: 0i8];
         let _: () = msg_send![table, setAllowsMultipleSelection: 0i8];
+        let _: () = msg_send![table, setAllowsColumnSelection: 0i8];
+        let _: () = msg_send![table, setAllowsColumnReordering: 0i8];
+        let _: () = msg_send![table, setAllowsColumnResizing: 0i8];
+        let _: () = msg_send![table, setIntercellSpacing: NSSize::new(0.0, 2.0)];
+        // NSTableViewFirstColumnOnlyAutoresizingStyle
+        let _: () = msg_send![table, setColumnAutoresizingStyle: 5u64];
         let _: () = msg_send![table, setHeaderView: nil];
         // NSFocusRingTypeNone
         let _: () = msg_send![table, setFocusRingType: 1i64];
@@ -413,6 +502,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let column: id = msg_send![class!(NSTableColumn), alloc];
         let column: id = msg_send![column, initWithIdentifier: ns_string("sidebar-item")];
         let _: () = msg_send![column, setWidth: initial_width];
+        // NSTableColumnAutoresizingMask
+        let _: () = msg_send![column, setResizingMask: 1u64];
         let _: () = msg_send![column, setEditable: 0i8];
         let _: () = msg_send![table, addTableColumn: column];
         let _: () = msg_send![column, release];
@@ -442,8 +533,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let sidebar_vc: id = msg_send![class!(NSViewController), alloc];
         let sidebar_vc: id = msg_send![sidebar_vc, init];
         let _: () = msg_send![sidebar_vc, setView: sidebar_container];
-        let _: () =
-            msg_send![sidebar_vc, setPreferredContentSize: NSSize::new(initial_width, 420.0)];
 
         let content_vc: id = msg_send![class!(NSViewController), alloc];
         let content_vc: id = msg_send![content_vc, init];
@@ -461,8 +550,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () = msg_send![split_view_controller, addSplitViewItem: content_item];
 
         let split_controller_view: id = msg_send![split_view_controller, view];
-        let _: () =
-            msg_send![split_controller_view, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
         let _: () = msg_send![split_controller_view, setFrame: NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(760.0, 420.0),
@@ -474,6 +561,7 @@ pub(crate) unsafe fn create_native_sidebar_view(
             split_view_controller,
             split_view,
             sidebar_item,
+            scroll_view: scroll,
             table_view: table,
             detail_label,
             window: nil,
@@ -481,6 +569,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
             previous_content_view_controller: nil,
             previous_toolbar: nil,
             sidebar_toolbar: nil,
+            previous_content_min_size: NSSize::new(0.0, 0.0),
+            previous_content_max_size: NSSize::new(0.0, 0.0),
             min_width,
             max_width,
         };
@@ -542,6 +632,8 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
             }
 
             host_data.window = window;
+            host_data.previous_content_min_size = msg_send![window, contentMinSize];
+            host_data.previous_content_max_size = msg_send![window, contentMaxSize];
 
             let previous_content_view_controller: id = msg_send![window, contentViewController];
             if previous_content_view_controller != nil
@@ -617,10 +709,14 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
         if current_content_view_controller != host_data.split_view_controller {
             let _: () = msg_send![window, setContentViewController: host_data.split_view_controller];
             let _: () = msg_send![window, setContentSize: content_size];
+            let _: () = msg_send![window, setContentMinSize: host_data.previous_content_min_size];
+            let _: () = msg_send![window, setContentMaxSize: host_data.previous_content_max_size];
             let _: () = msg_send![host_data.split_view, adjustSubviews];
             let split_view_controller_view: id = msg_send![host_data.split_view_controller, view];
             let _: () = msg_send![split_view_controller_view, layoutSubtreeIfNeeded];
         }
+
+        sync_sidebar_table_width(host_data);
 
         if host_data.sidebar_toolbar != nil {
             let active_toolbar: id = msg_send![window, toolbar];
@@ -654,16 +750,7 @@ pub(crate) unsafe fn set_native_sidebar_width(
             clamped_sidebar_width(host_data.split_view, sidebar_width, min_width, max_width);
         let _: () = msg_send![host_data.split_view, setPosition: width ofDividerAtIndex: 0i64];
         let _: () = msg_send![host_data.split_view, adjustSubviews];
-
-        let column = primary_table_column(host_data.table_view);
-        if column != nil {
-            let _: () = msg_send![column, setWidth: width];
-        }
-
-        let sidebar_vc: id = msg_send![host_data.sidebar_item, viewController];
-        if sidebar_vc != nil {
-            let _: () = msg_send![sidebar_vc, setPreferredContentSize: NSSize::new(width, 420.0)];
-        }
+        sync_sidebar_table_width(host_data);
     }
 }
 
@@ -720,6 +807,7 @@ pub(crate) unsafe fn set_native_sidebar_items(
         let _: () = msg_send![host_data.table_view, setDataSource: delegate];
         let _: () = msg_send![host_data.table_view, setDelegate: delegate];
         let _: () = msg_send![host_data.table_view, reloadData];
+        sync_sidebar_table_width(host_data);
 
         let row_count: i64 = msg_send![host_data.table_view, numberOfRows];
         if row_count > 0 {
@@ -770,6 +858,14 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
         if !host_data_ptr.is_null() {
             let host_data = Box::from_raw(host_data_ptr);
             if host_data.window != nil {
+                let _: () = msg_send![
+                    host_data.window,
+                    setContentMinSize: host_data.previous_content_min_size
+                ];
+                let _: () = msg_send![
+                    host_data.window,
+                    setContentMaxSize: host_data.previous_content_max_size
+                ];
                 let current_content_view_controller: id =
                     msg_send![host_data.window, contentViewController];
                 if current_content_view_controller == host_data.split_view_controller {
