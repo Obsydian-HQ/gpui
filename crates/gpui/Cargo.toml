@@ -387,3 +387,7 @@ path = "examples/native_table_styles.rs"
 [[example]]
 name = "native_list_views"
 path = "examples/native_list_views.rs"
+
+[[example]]
+name = "native_sidebar"
+path = "examples/native_sidebar.rs"
