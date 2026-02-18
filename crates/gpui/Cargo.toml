@@ -329,6 +329,10 @@ name = "native_search_field"
 path = "examples/native_search_field.rs"
 
 [[example]]
+name = "native_toolbar"
+path = "examples/native_toolbar.rs"
+
+[[example]]
 name = "native_stepper"
 path = "examples/native_stepper.rs"
 

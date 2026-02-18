@@ -9,15 +9,18 @@ use crate::{
     KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
-    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
-    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
-    ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite,
-    SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap,
-    TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    PlatformInputHandler, PlatformNativeToolbar, PlatformNativeToolbarButtonItem,
+    PlatformNativeToolbarDisplayMode, PlatformNativeToolbarItem,
+    PlatformNativeToolbarSearchFieldItem, PlatformNativeToolbarSizeMode, PlatformWindow, Point,
+    PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
+    RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems, size,
+    transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -522,6 +525,373 @@ impl<M: Focusable + EventEmitter<DismissEvent> + Render> ManagedView for M {}
 
 /// Emitted by implementers of [`ManagedView`] to indicate the view should be dismissed, such as when a view is presented as a modal.
 pub struct DismissEvent;
+
+/// Event emitted when a native toolbar button is clicked.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarClickEvent {
+    /// The identifier of the toolbar item that was clicked.
+    pub item_id: SharedString,
+}
+
+/// Event emitted when a native toolbar search field changes or is submitted.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarSearchEvent {
+    /// The identifier of the search field item.
+    pub item_id: SharedString,
+    /// The current text of the search field.
+    pub text: String,
+}
+
+/// Display mode for the native macOS toolbar.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum NativeToolbarDisplayMode {
+    /// Let the system decide.
+    #[default]
+    Default,
+    /// Show icon and label when applicable.
+    IconAndLabel,
+    /// Show icon only.
+    IconOnly,
+    /// Show label only.
+    LabelOnly,
+}
+
+impl From<NativeToolbarDisplayMode> for PlatformNativeToolbarDisplayMode {
+    fn from(value: NativeToolbarDisplayMode) -> Self {
+        match value {
+            NativeToolbarDisplayMode::Default => PlatformNativeToolbarDisplayMode::Default,
+            NativeToolbarDisplayMode::IconAndLabel => {
+                PlatformNativeToolbarDisplayMode::IconAndLabel
+            }
+            NativeToolbarDisplayMode::IconOnly => PlatformNativeToolbarDisplayMode::IconOnly,
+            NativeToolbarDisplayMode::LabelOnly => PlatformNativeToolbarDisplayMode::LabelOnly,
+        }
+    }
+}
+
+/// Size mode for the native macOS toolbar.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub enum NativeToolbarSizeMode {
+    /// Let the system decide.
+    #[default]
+    Default,
+    /// Standard toolbar sizing.
+    Regular,
+    /// Compact toolbar sizing.
+    Small,
+}
+
+impl From<NativeToolbarSizeMode> for PlatformNativeToolbarSizeMode {
+    fn from(value: NativeToolbarSizeMode) -> Self {
+        match value {
+            NativeToolbarSizeMode::Default => PlatformNativeToolbarSizeMode::Default,
+            NativeToolbarSizeMode::Regular => PlatformNativeToolbarSizeMode::Regular,
+            NativeToolbarSizeMode::Small => PlatformNativeToolbarSizeMode::Small,
+        }
+    }
+}
+
+/// A native toolbar button item.
+pub struct NativeToolbarButton {
+    id: SharedString,
+    label: SharedString,
+    tool_tip: Option<SharedString>,
+    on_click: Option<Box<dyn Fn(&NativeToolbarClickEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarButton {
+    /// Creates a button item with an identifier and label.
+    pub fn new(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            tool_tip: None,
+            on_click: None,
+        }
+    }
+
+    /// Sets a tooltip for this button.
+    pub fn tool_tip(mut self, tool_tip: impl Into<SharedString>) -> Self {
+        self.tool_tip = Some(tool_tip.into());
+        self
+    }
+
+    /// Registers a callback invoked when this button is clicked.
+    pub fn on_click(
+        mut self,
+        listener: impl Fn(&NativeToolbarClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_click = Some(Box::new(listener));
+        self
+    }
+}
+
+/// A native toolbar search field item.
+pub struct NativeToolbarSearchField {
+    id: SharedString,
+    placeholder: SharedString,
+    text: SharedString,
+    min_width: Pixels,
+    max_width: Pixels,
+    on_change: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_submit: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarSearchField {
+    /// Creates a search field item with an identifier.
+    pub fn new(id: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            placeholder: SharedString::default(),
+            text: SharedString::default(),
+            min_width: px(180.0),
+            max_width: px(320.0),
+            on_change: None,
+            on_submit: None,
+        }
+    }
+
+    /// Sets placeholder text.
+    pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Sets the initial text.
+    pub fn text(mut self, text: impl Into<SharedString>) -> Self {
+        self.text = text.into();
+        self
+    }
+
+    /// Sets the minimum width of the search field.
+    pub fn min_width(mut self, min_width: Pixels) -> Self {
+        self.min_width = min_width;
+        self
+    }
+
+    /// Sets the maximum width of the search field.
+    pub fn max_width(mut self, max_width: Pixels) -> Self {
+        self.max_width = max_width;
+        self
+    }
+
+    /// Registers a callback invoked when the text changes.
+    pub fn on_change(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_change = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when Enter is pressed.
+    pub fn on_submit(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_submit = Some(Box::new(listener));
+        self
+    }
+}
+
+/// A native toolbar item.
+pub enum NativeToolbarItem {
+    /// A button item.
+    Button(NativeToolbarButton),
+    /// A fixed-width spacer item.
+    Space,
+    /// A flexible spacer item.
+    FlexibleSpace,
+    /// A search field item.
+    SearchField(NativeToolbarSearchField),
+}
+
+impl NativeToolbarItem {
+    /// Creates a button item.
+    pub fn button(id: impl Into<SharedString>, label: impl Into<SharedString>) -> Self {
+        Self::Button(NativeToolbarButton::new(id, label))
+    }
+
+    /// Creates a search field item.
+    pub fn search_field(id: impl Into<SharedString>) -> Self {
+        Self::SearchField(NativeToolbarSearchField::new(id))
+    }
+}
+
+/// Configuration for a native macOS toolbar.
+pub struct NativeToolbar {
+    identifier: SharedString,
+    title: Option<SharedString>,
+    display_mode: NativeToolbarDisplayMode,
+    size_mode: NativeToolbarSizeMode,
+    shows_baseline_separator: bool,
+    items: Vec<NativeToolbarItem>,
+}
+
+impl NativeToolbar {
+    /// Creates a toolbar configuration with a stable identifier.
+    pub fn new(identifier: impl Into<SharedString>) -> Self {
+        Self {
+            identifier: identifier.into(),
+            title: None,
+            display_mode: NativeToolbarDisplayMode::Default,
+            size_mode: NativeToolbarSizeMode::Default,
+            shows_baseline_separator: true,
+            items: Vec::new(),
+        }
+    }
+
+    /// Sets an optional title to apply to the window when this toolbar is installed.
+    pub fn title(mut self, title: impl Into<SharedString>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    /// Sets the toolbar display mode.
+    pub fn display_mode(mut self, mode: NativeToolbarDisplayMode) -> Self {
+        self.display_mode = mode;
+        self
+    }
+
+    /// Sets the toolbar size mode.
+    pub fn size_mode(mut self, mode: NativeToolbarSizeMode) -> Self {
+        self.size_mode = mode;
+        self
+    }
+
+    /// Controls whether the baseline separator is shown.
+    pub fn shows_baseline_separator(mut self, shows: bool) -> Self {
+        self.shows_baseline_separator = shows;
+        self
+    }
+
+    /// Appends one toolbar item.
+    pub fn item(mut self, item: NativeToolbarItem) -> Self {
+        self.items.push(item);
+        self
+    }
+
+    /// Appends several toolbar items.
+    pub fn items(mut self, items: impl IntoIterator<Item = NativeToolbarItem>) -> Self {
+        self.items.extend(items);
+        self
+    }
+
+    fn into_platform(
+        self,
+        next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+        invalidator: WindowInvalidator,
+    ) -> PlatformNativeToolbar {
+        let items = self
+            .items
+            .into_iter()
+            .map(|item| match item {
+                NativeToolbarItem::Button(button) => {
+                    let on_click = button.on_click.map(|handler| {
+                        let item_id = button.id.clone();
+                        schedule_native_toolbar_callback_no_args(
+                            Rc::new(handler),
+                            move || NativeToolbarClickEvent {
+                                item_id: item_id.clone(),
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    PlatformNativeToolbarItem::Button(PlatformNativeToolbarButtonItem {
+                        id: button.id,
+                        label: button.label,
+                        tool_tip: button.tool_tip,
+                        on_click,
+                    })
+                }
+                NativeToolbarItem::Space => PlatformNativeToolbarItem::Space,
+                NativeToolbarItem::FlexibleSpace => PlatformNativeToolbarItem::FlexibleSpace,
+                NativeToolbarItem::SearchField(search) => {
+                    let search_id = search.id.clone();
+                    let on_change = search.on_change.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |text: String| NativeToolbarSearchEvent {
+                                item_id: search_id.clone(),
+                                text,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let submit_id = search.id.clone();
+                    let on_submit = search.on_submit.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |text: String| NativeToolbarSearchEvent {
+                                item_id: submit_id.clone(),
+                                text,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    PlatformNativeToolbarItem::SearchField(PlatformNativeToolbarSearchFieldItem {
+                        id: search.id,
+                        placeholder: search.placeholder,
+                        text: search.text,
+                        min_width: search.min_width,
+                        max_width: search.max_width,
+                        on_change,
+                        on_submit,
+                    })
+                }
+            })
+            .collect();
+
+        PlatformNativeToolbar {
+            identifier: self.identifier,
+            title: self.title,
+            display_mode: self.display_mode.into(),
+            size_mode: self.size_mode.into(),
+            shows_baseline_separator: self.shows_baseline_separator,
+            items,
+        }
+    }
+}
+
+fn schedule_native_toolbar_callback_no_args<Event: 'static>(
+    handler: Rc<Box<dyn Fn(&Event, &mut Window, &mut App)>>,
+    make_event: impl Fn() -> Event + 'static,
+    next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    invalidator: WindowInvalidator,
+) -> Box<dyn Fn()> {
+    Box::new(move || {
+        let handler = handler.clone();
+        let event = make_event();
+        let callback: FrameCallback = Box::new(move |window, cx| {
+            handler(&event, window, cx);
+        });
+        RefCell::borrow_mut(&next_frame_callbacks).push(callback);
+        invalidator.set_dirty(true);
+    })
+}
+
+fn schedule_native_toolbar_callback<P: 'static, Event: 'static>(
+    handler: Rc<Box<dyn Fn(&Event, &mut Window, &mut App)>>,
+    make_event: impl Fn(P) -> Event + 'static,
+    next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+    invalidator: WindowInvalidator,
+) -> Box<dyn Fn(P)> {
+    Box::new(move |param| {
+        let handler = handler.clone();
+        let event = make_event(param);
+        let callback: FrameCallback = Box::new(move |window, cx| {
+            handler(&event, window, cx);
+        });
+        RefCell::borrow_mut(&next_frame_callbacks).push(callback);
+        invalidator.set_dirty(true);
+    })
+}
 
 type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
 
@@ -1999,6 +2369,17 @@ impl Window {
     /// Updates the window's title at the platform level.
     pub fn set_window_title(&mut self, title: &str) {
         self.platform_window.set_title(title);
+    }
+
+    /// Configures the native toolbar for this window.
+    ///
+    /// On macOS this installs an `NSToolbar` with native items.
+    /// On other platforms this is currently a no-op.
+    pub fn set_native_toolbar(&mut self, toolbar: Option<NativeToolbar>) {
+        let toolbar = toolbar.map(|toolbar| {
+            toolbar.into_platform(self.next_frame_callbacks.clone(), self.invalidator.clone())
+        });
+        self.platform_window.set_native_toolbar(toolbar);
     }
 
     /// Sets the application identifier.

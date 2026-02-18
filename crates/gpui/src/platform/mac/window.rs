@@ -3,8 +3,9 @@ use crate::{
     AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DisplayLink, ExternalPaths,
     FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformWindow, Point, PromptButton, PromptLevel,
-    RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
+    PlatformDisplay, PlatformInput, PlatformNativeToolbar, PlatformNativeToolbarDisplayMode,
+    PlatformNativeToolbarItem, PlatformNativeToolbarSizeMode, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowParams,
     dispatch_get_main_queue, dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point,
     px, size,
@@ -58,11 +59,13 @@ use std::{
 use util::ResultExt;
 
 const WINDOW_STATE_IVAR: &str = "windowState";
+const TOOLBAR_STATE_IVAR: &str = "toolbarState";
 
 static mut WINDOW_CLASS: *const Class = ptr::null();
 static mut PANEL_CLASS: *const Class = ptr::null();
 static mut VIEW_CLASS: *const Class = ptr::null();
 static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
+static mut TOOLBAR_DELEGATE_CLASS: *const Class = ptr::null();
 
 #[allow(non_upper_case_globals)]
 const NSWindowStyleMaskNonactivatingPanel: NSWindowStyleMask =
@@ -86,6 +89,20 @@ const NSTrackingInVisibleRect: NSUInteger = 0x200;
 const NSWindowAnimationBehaviorUtilityWindow: NSInteger = 4;
 #[allow(non_upper_case_globals)]
 const NSViewLayerContentsRedrawDuringViewResize: NSInteger = 2;
+#[allow(non_upper_case_globals)]
+const NSToolbarDisplayModeDefault: NSUInteger = 0;
+#[allow(non_upper_case_globals)]
+const NSToolbarDisplayModeIconAndLabel: NSUInteger = 1;
+#[allow(non_upper_case_globals)]
+const NSToolbarDisplayModeIconOnly: NSUInteger = 2;
+#[allow(non_upper_case_globals)]
+const NSToolbarDisplayModeLabelOnly: NSUInteger = 3;
+#[allow(non_upper_case_globals)]
+const NSToolbarSizeModeDefault: NSUInteger = 0;
+#[allow(non_upper_case_globals)]
+const NSToolbarSizeModeRegular: NSUInteger = 1;
+#[allow(non_upper_case_globals)]
+const NSToolbarSizeModeSmall: NSUInteger = 2;
 // https://developer.apple.com/documentation/appkit/nsdragoperation
 type NSDragOperation = NSUInteger;
 #[allow(non_upper_case_globals)]
@@ -108,6 +125,9 @@ unsafe extern "C" {
         window_id: NSInteger,
         radius: i64,
     ) -> i32;
+
+    static NSToolbarFlexibleSpaceItemIdentifier: id;
+    static NSToolbarSpaceItemIdentifier: id;
 }
 
 #[ctor]
@@ -278,6 +298,23 @@ unsafe fn build_classes() {
                 decl.register()
             }
         };
+        TOOLBAR_DELEGATE_CLASS = {
+            let mut decl = ClassDecl::new("GPUINativeToolbarDelegate", class!(NSObject)).unwrap();
+            decl.add_ivar::<*mut c_void>(TOOLBAR_STATE_IVAR);
+            decl.add_method(
+                sel!(toolbarAllowedItemIdentifiers:),
+                toolbar_allowed_item_identifiers as extern "C" fn(&Object, Sel, id) -> id,
+            );
+            decl.add_method(
+                sel!(toolbarDefaultItemIdentifiers:),
+                toolbar_default_item_identifiers as extern "C" fn(&Object, Sel, id) -> id,
+            );
+            decl.add_method(
+                sel!(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:),
+                toolbar_item_for_identifier as extern "C" fn(&Object, Sel, id, id, BOOL) -> id,
+            );
+            decl.register()
+        };
     }
 }
 
@@ -397,6 +434,60 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
     }
 }
 
+enum ToolbarNativeResource {
+    Button { button: id, target: *mut c_void },
+    SearchField { field: id, delegate: *mut c_void },
+}
+
+struct ToolbarState {
+    allowed_item_identifiers: Vec<SharedString>,
+    default_item_identifiers: Vec<SharedString>,
+    items: Vec<PlatformNativeToolbarItem>,
+    resources: Vec<ToolbarNativeResource>,
+}
+
+impl ToolbarState {
+    fn item_for_identifier(&self, identifier: &str) -> Option<&PlatformNativeToolbarItem> {
+        self.items.iter().find(|item| match item {
+            PlatformNativeToolbarItem::Button(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::SearchField(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::Space | PlatformNativeToolbarItem::FlexibleSpace => false,
+        })
+    }
+}
+
+struct MacToolbarState {
+    toolbar: id,
+    delegate: id,
+    state_ptr: *mut c_void,
+}
+
+impl MacToolbarState {
+    unsafe fn cleanup(&mut self) {
+        unsafe {
+            let state = Box::from_raw(self.state_ptr as *mut ToolbarState);
+            for resource in state.resources {
+                match resource {
+                    ToolbarNativeResource::Button { button, target } => {
+                        crate::platform::native_controls::release_native_button_target(target);
+                        crate::platform::native_controls::release_native_button(button);
+                    }
+                    ToolbarNativeResource::SearchField { field, delegate } => {
+                        crate::platform::native_controls::release_native_text_field_delegate(
+                            delegate,
+                        );
+                        crate::platform::native_controls::release_native_search_field(field);
+                    }
+                }
+            }
+
+            let _: () = msg_send![self.toolbar, setDelegate: nil];
+            let _: () = msg_send![self.delegate, release];
+            let _: () = msg_send![self.toolbar, release];
+        }
+    }
+}
+
 struct MacWindowState {
     handle: AnyWindowHandle,
     foreground_executor: ForegroundExecutor,
@@ -432,6 +523,7 @@ struct MacWindowState {
     select_next_tab_callback: Option<Box<dyn FnMut()>>,
     select_previous_tab_callback: Option<Box<dyn FnMut()>>,
     toggle_tab_bar_callback: Option<Box<dyn FnMut()>>,
+    toolbar: Option<MacToolbarState>,
     activated_least_once: bool,
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<id>,
@@ -748,6 +840,7 @@ impl MacWindow {
                 select_next_tab_callback: None,
                 select_previous_tab_callback: None,
                 toggle_tab_bar_callback: None,
+                toolbar: None,
                 activated_least_once: false,
                 sheet_parent: None,
             })));
@@ -982,16 +1075,26 @@ impl MacWindow {
 
 impl Drop for MacWindow {
     fn drop(&mut self) {
-        let mut this = self.0.lock();
-        this.renderer.destroy();
-        let window = this.native_window;
-        let sheet_parent = this.sheet_parent.take();
-        this.display_link.take();
+        let (window, sheet_parent, foreground_executor, toolbar) = {
+            let mut this = self.0.lock();
+            this.renderer.destroy();
+            let window = this.native_window;
+            let sheet_parent = this.sheet_parent.take();
+            let foreground_executor = this.foreground_executor.clone();
+            let toolbar = this.toolbar.take();
+            this.display_link.take();
+            unsafe {
+                this.native_window.setDelegate_(nil);
+            }
+            this.input_handler.take();
+            (window, sheet_parent, foreground_executor, toolbar)
+        };
+
         unsafe {
-            this.native_window.setDelegate_(nil);
+            clear_native_toolbar_for_window(window, toolbar);
         }
-        this.input_handler.take();
-        this.foreground_executor
+
+        foreground_executor
             .spawn(async move {
                 unsafe {
                     if let Some(parent) = sheet_parent {
@@ -1094,6 +1197,20 @@ impl PlatformWindow for MacWindow {
                 let _: () = msg_send![native_window, setTabbingIdentifier:nil];
             }
         }
+    }
+
+    fn set_native_toolbar(&self, toolbar: Option<PlatformNativeToolbar>) {
+        let (native_window, old_toolbar) = {
+            let mut this = self.0.lock();
+            (this.native_window, this.toolbar.take())
+        };
+
+        let new_toolbar = unsafe {
+            clear_native_toolbar_for_window(native_window, old_toolbar);
+            toolbar.map(|toolbar| build_native_toolbar_for_window(native_window, toolbar))
+        };
+
+        self.0.lock().toolbar = new_toolbar;
     }
 
     fn scale_factor(&self) -> f32 {
@@ -2576,6 +2693,301 @@ unsafe fn display_id_for_screen(screen: id) -> CGDirectDisplayID {
         let screen_number = device_description.objectForKey_(screen_number_key);
         let screen_number: NSUInteger = msg_send![screen_number, unsignedIntegerValue];
         screen_number as CGDirectDisplayID
+    }
+}
+
+fn toolbar_display_mode_to_native(mode: PlatformNativeToolbarDisplayMode) -> NSUInteger {
+    match mode {
+        PlatformNativeToolbarDisplayMode::Default => NSToolbarDisplayModeDefault,
+        PlatformNativeToolbarDisplayMode::IconAndLabel => NSToolbarDisplayModeIconAndLabel,
+        PlatformNativeToolbarDisplayMode::IconOnly => NSToolbarDisplayModeIconOnly,
+        PlatformNativeToolbarDisplayMode::LabelOnly => NSToolbarDisplayModeLabelOnly,
+    }
+}
+
+fn toolbar_size_mode_to_native(mode: PlatformNativeToolbarSizeMode) -> NSUInteger {
+    match mode {
+        PlatformNativeToolbarSizeMode::Default => NSToolbarSizeModeDefault,
+        PlatformNativeToolbarSizeMode::Regular => NSToolbarSizeModeRegular,
+        PlatformNativeToolbarSizeMode::Small => NSToolbarSizeModeSmall,
+    }
+}
+
+unsafe fn clear_native_toolbar_for_window(native_window: id, toolbar: Option<MacToolbarState>) {
+    unsafe {
+        let _: () = msg_send![native_window, setToolbar: nil];
+        if let Some(mut toolbar) = toolbar {
+            toolbar.cleanup();
+        }
+    }
+}
+
+unsafe fn build_native_toolbar_for_window(
+    native_window: id,
+    toolbar: PlatformNativeToolbar,
+) -> MacToolbarState {
+    unsafe {
+        if let Some(title) = toolbar.title.as_ref() {
+            let _: () = msg_send![native_window, setTitle: ns_string(title.as_ref())];
+        }
+
+        let mut allowed_item_identifiers = Vec::with_capacity(toolbar.items.len());
+        let mut default_item_identifiers = Vec::with_capacity(toolbar.items.len());
+        for item in &toolbar.items {
+            match item {
+                PlatformNativeToolbarItem::Button(button) => {
+                    allowed_item_identifiers.push(button.id.clone());
+                    default_item_identifiers.push(button.id.clone());
+                }
+                PlatformNativeToolbarItem::SearchField(search) => {
+                    allowed_item_identifiers.push(search.id.clone());
+                    default_item_identifiers.push(search.id.clone());
+                }
+                PlatformNativeToolbarItem::Space => {
+                    let identifier = SharedString::from("NSToolbarSpaceItem");
+                    allowed_item_identifiers.push(identifier.clone());
+                    default_item_identifiers.push(identifier);
+                }
+                PlatformNativeToolbarItem::FlexibleSpace => {
+                    let identifier = SharedString::from("NSToolbarFlexibleSpaceItem");
+                    allowed_item_identifiers.push(identifier.clone());
+                    default_item_identifiers.push(identifier);
+                }
+            }
+        }
+
+        let state = ToolbarState {
+            allowed_item_identifiers,
+            default_item_identifiers,
+            items: toolbar.items,
+            resources: Vec::new(),
+        };
+        let state_ptr = Box::into_raw(Box::new(state)) as *mut c_void;
+
+        let delegate: id = msg_send![TOOLBAR_DELEGATE_CLASS, alloc];
+        let delegate: id = msg_send![delegate, init];
+        (*delegate).set_ivar(TOOLBAR_STATE_IVAR, state_ptr);
+
+        let toolbar_obj: id = msg_send![class!(NSToolbar), alloc];
+        let toolbar_obj: id =
+            msg_send![toolbar_obj, initWithIdentifier: ns_string(toolbar.identifier.as_ref())];
+        let _: () = msg_send![toolbar_obj, setDelegate: delegate];
+        let _: () = msg_send![toolbar_obj, setShowsBaselineSeparator: toolbar.shows_baseline_separator.to_objc()];
+        let _: () = msg_send![
+            toolbar_obj,
+            setDisplayMode: toolbar_display_mode_to_native(toolbar.display_mode)
+        ];
+        let _: () =
+            msg_send![toolbar_obj, setSizeMode: toolbar_size_mode_to_native(toolbar.size_mode)];
+
+        let _: () = msg_send![native_window, setToolbar: toolbar_obj];
+
+        MacToolbarState {
+            toolbar: toolbar_obj,
+            delegate,
+            state_ptr,
+        }
+    }
+}
+
+unsafe fn get_toolbar_state(this: &Object) -> &'static mut ToolbarState {
+    unsafe {
+        let raw: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        &mut *(raw as *mut ToolbarState)
+    }
+}
+
+unsafe fn ns_string_to_owned(ns_string: id) -> String {
+    unsafe {
+        let cstr: *const std::os::raw::c_char = msg_send![ns_string, UTF8String];
+        if cstr.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(cstr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+unsafe fn toolbar_identifiers_to_ns_array(identifiers: &[SharedString]) -> id {
+    unsafe {
+        let array: id = msg_send![class!(NSMutableArray), array];
+        for identifier in identifiers {
+            let _: () = msg_send![array, addObject: ns_string(identifier.as_ref())];
+        }
+        array
+    }
+}
+
+extern "C" fn toolbar_allowed_item_identifiers(this: &Object, _: Sel, _: id) -> id {
+    unsafe {
+        let state = get_toolbar_state(this);
+        toolbar_identifiers_to_ns_array(&state.allowed_item_identifiers)
+    }
+}
+
+extern "C" fn toolbar_default_item_identifiers(this: &Object, _: Sel, _: id) -> id {
+    unsafe {
+        let state = get_toolbar_state(this);
+        toolbar_identifiers_to_ns_array(&state.default_item_identifiers)
+    }
+}
+
+extern "C" fn toolbar_item_for_identifier(
+    this: &Object,
+    _: Sel,
+    _: id,
+    identifier: id,
+    _: BOOL,
+) -> id {
+    unsafe {
+        let is_space: BOOL = msg_send![identifier, isEqual: NSToolbarSpaceItemIdentifier];
+        let is_flexible_space: BOOL =
+            msg_send![identifier, isEqual: NSToolbarFlexibleSpaceItemIdentifier];
+        if is_space == YES || is_flexible_space == YES {
+            return nil;
+        }
+
+        let identifier_string = ns_string_to_owned(identifier);
+        let state = get_toolbar_state(this);
+
+        match state.item_for_identifier(&identifier_string) {
+            Some(PlatformNativeToolbarItem::Button(_)) => {
+                create_toolbar_button_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::SearchField(_)) => {
+                create_toolbar_search_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::Space)
+            | Some(PlatformNativeToolbarItem::FlexibleSpace)
+            | None => nil,
+        }
+    }
+}
+
+unsafe fn create_toolbar_button_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::Button(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let label = item.label.clone();
+        let tool_tip = item.tool_tip.clone();
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+        let button = crate::platform::native_controls::create_native_button(label.as_ref());
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let callback_identifier = identifier_string.to_owned();
+        let action = Box::new(move || {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::Button(button_item)) =
+                state.item_for_identifier(&callback_identifier)
+                && let Some(callback) = button_item.on_click.as_ref()
+            {
+                callback();
+            }
+        });
+        let target = crate::platform::native_controls::set_native_button_action(button, action);
+        if let Some(tool_tip) = tool_tip.as_ref() {
+            crate::platform::native_controls::set_native_view_tooltip(button, tool_tip.as_ref());
+        }
+
+        let _: () = msg_send![toolbar_item, setLabel: ns_string(label.as_ref())];
+        let size: NSSize = msg_send![button, fittingSize];
+        let _: () = msg_send![toolbar_item, setMinSize: size];
+        let _: () = msg_send![toolbar_item, setMaxSize: size];
+        let _: () = msg_send![toolbar_item, setView: button];
+
+        state
+            .resources
+            .push(ToolbarNativeResource::Button { button, target });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+unsafe fn create_toolbar_search_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::SearchField(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let placeholder = item.placeholder.clone();
+        let text = item.text.clone();
+        let min_width = item.min_width;
+        let max_width = item.max_width;
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+        let field =
+            crate::platform::native_controls::create_native_search_field(placeholder.as_ref());
+        crate::platform::native_controls::set_native_search_field_string_value(field, &text);
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let change_identifier = identifier_string.to_owned();
+        let submit_identifier = identifier_string.to_owned();
+
+        let on_change = Some(Box::new(move |text: String| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&change_identifier)
+                && let Some(callback) = search_item.on_change.as_ref()
+            {
+                callback(text);
+            }
+        }) as Box<dyn Fn(String)>);
+
+        let on_submit = Some(Box::new(move |text: String| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&submit_identifier)
+                && let Some(callback) = search_item.on_submit.as_ref()
+            {
+                callback(text);
+            }
+        }) as Box<dyn Fn(String)>);
+
+        let callbacks = crate::platform::native_controls::TextFieldCallbacks {
+            on_change,
+            on_begin_editing: None,
+            on_end_editing: None,
+            on_submit,
+        };
+        let delegate =
+            crate::platform::native_controls::set_native_text_field_delegate(field, callbacks);
+
+        let frame: NSRect = msg_send![field, frame];
+        let min_size = NSSize {
+            width: min_width.to_f64(),
+            height: frame.size.height,
+        };
+        let max_size = NSSize {
+            width: max_width.to_f64(),
+            height: frame.size.height,
+        };
+
+        let _: () = msg_send![toolbar_item, setMinSize: min_size];
+        let _: () = msg_send![toolbar_item, setMaxSize: max_size];
+        let _: () = msg_send![toolbar_item, setView: field];
+
+        state
+            .resources
+            .push(ToolbarNativeResource::SearchField { field, delegate });
+
+        msg_send![toolbar_item, autorelease]
     }
 }
 
