@@ -25,15 +25,12 @@ unsafe extern "C" {
     static NSToolbarFlexibleSpaceItemIdentifier: id;
     static NSToolbarToggleSidebarItemIdentifier: id;
     static NSToolbarSidebarTrackingSeparatorItemIdentifier: id;
-    static NSToolbarSpaceItemIdentifier: id;
 }
 
 struct SidebarHostData {
     split_view_controller: id,
     split_view: id,
     sidebar_item: id,
-    content_item: id,
-    content_placeholder_view: id,
     table_view: id,
     detail_label: id,
     window: id,
@@ -41,8 +38,6 @@ struct SidebarHostData {
     previous_content_view_controller: id,
     previous_toolbar: id,
     sidebar_toolbar: id,
-    toolbar_delegate: id,
-    owns_toolbar: bool,
     min_width: f64,
     max_width: f64,
 }
@@ -56,7 +51,6 @@ struct SidebarCallbacks {
 
 static mut SIDEBAR_HOST_VIEW_CLASS: *const Class = ptr::null();
 static mut SIDEBAR_DELEGATE_CLASS: *const Class = ptr::null();
-static mut SIDEBAR_TOOLBAR_DELEGATE_CLASS: *const Class = ptr::null();
 
 #[inline]
 unsafe fn toolbar_flexible_space_identifier() -> id {
@@ -71,11 +65,6 @@ unsafe fn toolbar_toggle_sidebar_identifier() -> id {
 #[inline]
 unsafe fn toolbar_sidebar_tracking_separator_identifier() -> id {
     unsafe { NSToolbarSidebarTrackingSeparatorItemIdentifier }
-}
-
-#[inline]
-unsafe fn toolbar_space_identifier() -> id {
-    unsafe { NSToolbarSpaceItemIdentifier }
 }
 
 #[ctor]
@@ -107,29 +96,6 @@ unsafe fn build_sidebar_delegate_class() {
         );
 
         SIDEBAR_DELEGATE_CLASS = decl.register();
-    }
-}
-
-#[ctor]
-unsafe fn build_sidebar_toolbar_delegate_class() {
-    unsafe {
-        let mut decl =
-            ClassDecl::new("GPUINativeSidebarToolbarDelegate", class!(NSObject)).unwrap();
-
-        decl.add_method(
-            sel!(toolbarAllowedItemIdentifiers:),
-            toolbar_allowed_item_identifiers as extern "C" fn(&Object, Sel, id) -> id,
-        );
-        decl.add_method(
-            sel!(toolbarDefaultItemIdentifiers:),
-            toolbar_default_item_identifiers as extern "C" fn(&Object, Sel, id) -> id,
-        );
-        decl.add_method(
-            sel!(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:),
-            toolbar_item_for_identifier as extern "C" fn(&Object, Sel, id, id, i8) -> id,
-        );
-
-        SIDEBAR_TOOLBAR_DELEGATE_CLASS = decl.register();
     }
 }
 
@@ -189,17 +155,6 @@ fn clamped_sidebar_width(split_view: id, width: f64, min_width: f64, max_width: 
         } else {
             width
         }
-    }
-}
-
-unsafe fn toolbar_identifier_array(with_separator: bool) -> id {
-    unsafe {
-        let array: id = msg_send![class!(NSMutableArray), arrayWithCapacity: 3u64];
-        let _: () = msg_send![array, addObject: toolbar_toggle_sidebar_identifier()];
-        if with_separator {
-            let _: () = msg_send![array, addObject: toolbar_sidebar_tracking_separator_identifier()];
-        }
-        array
     }
 }
 
@@ -279,7 +234,7 @@ unsafe fn ensure_sidebar_toggle_items(toolbar: id) {
     }
 }
 
-unsafe fn create_sidebar_toolbar() -> (id, id) {
+unsafe fn create_sidebar_toolbar() -> id {
     unsafe {
         use super::super::ns_string;
 
@@ -290,80 +245,7 @@ unsafe fn create_sidebar_toolbar() -> (id, id) {
         // NSToolbarDisplayModeIconOnly
         let _: () = msg_send![toolbar, setDisplayMode: 2u64];
 
-        (toolbar, nil)
-    }
-}
-
-extern "C" fn toolbar_allowed_item_identifiers(_this: &Object, _sel: Sel, _toolbar: id) -> id {
-    unsafe {
-        let has_separator = _toolbar != nil
-            && msg_send![
-                _toolbar,
-                respondsToSelector: sel!(insertItemWithItemIdentifier:atIndex:)
-            ];
-        let allowed = toolbar_identifier_array(has_separator);
-        let _: () = msg_send![allowed, addObject: toolbar_flexible_space_identifier()];
-        let _: () = msg_send![allowed, addObject: toolbar_space_identifier()];
-        allowed
-    }
-}
-
-extern "C" fn toolbar_default_item_identifiers(_this: &Object, _sel: Sel, _toolbar: id) -> id {
-    unsafe {
-        let has_separator = _toolbar != nil
-            && msg_send![
-                _toolbar,
-                respondsToSelector: sel!(insertItemWithItemIdentifier:atIndex:)
-            ];
-        toolbar_identifier_array(has_separator)
-    }
-}
-
-extern "C" fn toolbar_item_for_identifier(
-    _this: &Object,
-    _sel: Sel,
-    _toolbar: id,
-    _identifier: id,
-    _inserted: i8,
-) -> id {
-    unsafe {
-        use super::super::ns_string;
-
-        if _identifier == nil {
-            return nil;
-        }
-
-        let toggle_identifier = toolbar_toggle_sidebar_identifier();
-        if !ns_string_equals(_identifier, toggle_identifier) {
-            return nil;
-        }
-
-        let item: id = msg_send![class!(NSToolbarItem), alloc];
-        let item: id = msg_send![item, initWithItemIdentifier: _identifier];
-        let label = ns_string("Toggle Sidebar");
-        let _: () = msg_send![item, setLabel: label];
-        let _: () = msg_send![item, setPaletteLabel: label];
-        let _: () = msg_send![item, setToolTip: label];
-        let _: () = msg_send![item, setTarget: nil];
-        let _: () = msg_send![item, setAction: sel!(toggleSidebar:)];
-
-        let supports_symbol: bool = msg_send![
-            class!(NSImage),
-            respondsToSelector: sel!(imageWithSystemSymbolName:accessibilityDescription:)
-        ];
-        if supports_symbol {
-            let image: id = msg_send![
-                class!(NSImage),
-                imageWithSystemSymbolName: ns_string("sidebar.leading")
-                accessibilityDescription: label
-            ];
-            if image != nil {
-                let _: () = msg_send![item, setImage: image];
-            }
-        }
-
-        let item: id = msg_send![item, autorelease];
-        item
+        toolbar
     }
 }
 
@@ -545,13 +427,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
             NSPoint::new(0.0, 0.0),
             NSSize::new(520.0, 420.0),
         )];
-        let _: () = msg_send![content_view, setWantsLayer: 1i8];
-        let layer: id = msg_send![content_view, layer];
-        if layer != nil {
-            let bg: id = msg_send![class!(NSColor), windowBackgroundColor];
-            let cg_color: *mut c_void = msg_send![bg, CGColor];
-            let _: () = msg_send![layer, setBackgroundColor: cg_color];
-        }
         let _: () =
             msg_send![content_view, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
@@ -579,7 +454,7 @@ pub(crate) unsafe fn create_native_sidebar_view(
         configure_sidebar_item(sidebar_item, min_width, max_width);
 
         let content_item: id =
-            msg_send![class!(NSSplitViewItem), contentListWithViewController: content_vc];
+            msg_send![class!(NSSplitViewItem), splitViewItemWithViewController: content_vc];
         configure_content_item(content_item);
 
         let _: () = msg_send![split_view_controller, addSplitViewItem: sidebar_item];
@@ -599,8 +474,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
             split_view_controller,
             split_view,
             sidebar_item,
-            content_item,
-            content_placeholder_view: content_view,
             table_view: table,
             detail_label,
             window: nil,
@@ -608,8 +481,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
             previous_content_view_controller: nil,
             previous_toolbar: nil,
             sidebar_toolbar: nil,
-            toolbar_delegate: nil,
-            owns_toolbar: false,
             min_width,
             max_width,
         };
@@ -642,23 +513,24 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
         }
 
         if host_data.window != window {
-            if host_data.owns_toolbar && host_data.window != nil {
+            if host_data.window != nil {
                 let current_toolbar: id = msg_send![host_data.window, toolbar];
                 if host_data.sidebar_toolbar != nil && current_toolbar == host_data.sidebar_toolbar {
                     let _: () = msg_send![host_data.window, setToolbar: host_data.previous_toolbar];
                 }
             }
 
-            if host_data.toolbar_delegate != nil {
-                if host_data.sidebar_toolbar != nil {
-                    let _: () = msg_send![host_data.sidebar_toolbar, setDelegate: nil];
-                }
-                let _: () = msg_send![host_data.toolbar_delegate, release];
-                host_data.toolbar_delegate = nil;
-            }
             if host_data.sidebar_toolbar != nil {
                 let _: () = msg_send![host_data.sidebar_toolbar, release];
                 host_data.sidebar_toolbar = nil;
+            }
+            if host_data.embedded_content_view != nil {
+                let current_superview: id = msg_send![host_data.embedded_content_view, superview];
+                if current_superview != nil {
+                    let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
+                }
+                let _: () = msg_send![host_data.embedded_content_view, release];
+                host_data.embedded_content_view = nil;
             }
             if host_data.previous_toolbar != nil {
                 let _: () = msg_send![host_data.previous_toolbar, release];
@@ -670,7 +542,6 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
             }
 
             host_data.window = window;
-            host_data.owns_toolbar = false;
 
             let previous_content_view_controller: id = msg_send![window, contentViewController];
             if previous_content_view_controller != nil
@@ -686,10 +557,8 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
                 host_data.previous_toolbar = previous_toolbar;
             }
 
-            let (toolbar, toolbar_delegate) = create_sidebar_toolbar();
+            let toolbar = create_sidebar_toolbar();
             host_data.sidebar_toolbar = toolbar;
-            host_data.toolbar_delegate = toolbar_delegate;
-            host_data.owns_toolbar = true;
 
             let style_mask: NSWindowStyleMask = msg_send![window, styleMask];
             if !style_mask.contains(NSWindowStyleMask::NSFullSizeContentViewWindowMask) {
@@ -714,9 +583,22 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
                 // NSTitlebarSeparatorStyleAutomatic
                 let _: () = msg_send![window, setTitlebarSeparatorStyle: 0i64];
             }
+
+            let window_bg: id = msg_send![class!(NSColor), windowBackgroundColor];
+            if window_bg != nil {
+                let _: () = msg_send![window, setBackgroundColor: window_bg];
+            }
         }
 
-        if host_data.embedded_content_view == nil {
+        if host_data.embedded_content_view != parent_view {
+            if host_data.embedded_content_view != nil {
+                let current_superview: id = msg_send![host_data.embedded_content_view, superview];
+                if current_superview != nil {
+                    let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
+                }
+                let _: () = msg_send![host_data.embedded_content_view, release];
+                host_data.embedded_content_view = nil;
+            }
             let _: () = msg_send![parent_view, retain];
             host_data.embedded_content_view = parent_view;
         }
@@ -896,18 +778,10 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                         setContentViewController: host_data.previous_content_view_controller
                     ];
                 }
-            }
-            if host_data.owns_toolbar && host_data.window != nil {
                 let toolbar: id = msg_send![host_data.window, toolbar];
                 if host_data.sidebar_toolbar != nil && toolbar == host_data.sidebar_toolbar {
                     let _: () = msg_send![host_data.window, setToolbar: host_data.previous_toolbar];
                 }
-            }
-            if host_data.toolbar_delegate != nil {
-                if host_data.sidebar_toolbar != nil {
-                    let _: () = msg_send![host_data.sidebar_toolbar, setDelegate: nil];
-                }
-                let _: () = msg_send![host_data.toolbar_delegate, release];
             }
             if host_data.sidebar_toolbar != nil {
                 let _: () = msg_send![host_data.sidebar_toolbar, release];
