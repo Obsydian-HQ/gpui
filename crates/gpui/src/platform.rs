@@ -490,6 +490,56 @@ pub(crate) struct RequestFrameOptions {
     pub(crate) force_render: bool,
 }
 
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum PlatformNativeToolbarDisplayMode {
+    #[default]
+    Default,
+    IconAndLabel,
+    IconOnly,
+    LabelOnly,
+}
+
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum PlatformNativeToolbarSizeMode {
+    #[default]
+    Default,
+    Regular,
+    Small,
+}
+
+pub(crate) struct PlatformNativeToolbar {
+    pub identifier: SharedString,
+    pub title: Option<SharedString>,
+    pub display_mode: PlatformNativeToolbarDisplayMode,
+    pub size_mode: PlatformNativeToolbarSizeMode,
+    pub shows_baseline_separator: bool,
+    pub items: Vec<PlatformNativeToolbarItem>,
+}
+
+pub(crate) enum PlatformNativeToolbarItem {
+    Button(PlatformNativeToolbarButtonItem),
+    Space,
+    FlexibleSpace,
+    SearchField(PlatformNativeToolbarSearchFieldItem),
+}
+
+pub(crate) struct PlatformNativeToolbarButtonItem {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub tool_tip: Option<SharedString>,
+    pub on_click: Option<Box<dyn Fn()>>,
+}
+
+pub(crate) struct PlatformNativeToolbarSearchFieldItem {
+    pub id: SharedString,
+    pub placeholder: SharedString,
+    pub text: SharedString,
+    pub min_width: Pixels,
+    pub max_width: Pixels,
+    pub on_change: Option<Box<dyn Fn(String)>>,
+    pub on_submit: Option<Box<dyn Fn(String)>>,
+}
+
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
     fn is_maximized(&self) -> bool;
@@ -558,6 +608,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn move_tab_to_new_window(&self) {}
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
+    fn set_native_toolbar(&self, _toolbar: Option<PlatformNativeToolbar>) {}
 
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::HWND;
