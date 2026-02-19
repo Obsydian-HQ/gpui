@@ -1004,6 +1004,82 @@ pub(crate) unsafe fn set_native_sidebar_items(
     }
 }
 
+/// Embed a secondary view (e.g. GPUISurfaceView) into the sidebar (left) pane
+/// using Auto Layout constraints pinned below the titlebar safe area.
+/// The sidebar must have been created with embed_in_sidebar=true to have
+/// the correct container (plain NSView + NSVisualEffectView background).
+pub(crate) unsafe fn embed_surface_view_in_sidebar(host_view: id, surface_view: id) {
+    unsafe {
+        if host_view == nil || surface_view == nil {
+            return;
+        }
+
+        let Some(host_data) = host_data_mut(host_view) else {
+            return;
+        };
+
+        let target_pane = host_data.sidebar_container;
+        if target_pane == nil {
+            return;
+        }
+
+        // Check if already embedded
+        let current_superview: id = msg_send![surface_view, superview];
+        if current_superview == target_pane {
+            return;
+        }
+
+        // Remove from any previous superview
+        if current_superview != nil {
+            let _: () = msg_send![surface_view, removeFromSuperview];
+        }
+
+        // Use Auto Layout to pin below the titlebar safe area
+        let _: () = msg_send![
+            surface_view,
+            setTranslatesAutoresizingMaskIntoConstraints: 0i8
+        ];
+        let _: () = msg_send![target_pane, addSubview: surface_view];
+
+        let has_safe_area: bool =
+            msg_send![target_pane, respondsToSelector: sel!(safeAreaLayoutGuide)];
+        let guide_top: id = if has_safe_area {
+            let guide: id = msg_send![target_pane, safeAreaLayoutGuide];
+            msg_send![guide, topAnchor]
+        } else {
+            msg_send![target_pane, topAnchor]
+        };
+
+        let pane_leading: id = msg_send![target_pane, leadingAnchor];
+        let pane_trailing: id = msg_send![target_pane, trailingAnchor];
+        let pane_bottom: id = msg_send![target_pane, bottomAnchor];
+
+        let view_top: id = msg_send![surface_view, topAnchor];
+        let view_leading: id = msg_send![surface_view, leadingAnchor];
+        let view_trailing: id = msg_send![surface_view, trailingAnchor];
+        let view_bottom: id = msg_send![surface_view, bottomAnchor];
+
+        let c1: id = msg_send![view_top, constraintEqualToAnchor: guide_top];
+        let c2: id = msg_send![view_leading, constraintEqualToAnchor: pane_leading];
+        let c3: id = msg_send![view_trailing, constraintEqualToAnchor: pane_trailing];
+        let c4: id = msg_send![view_bottom, constraintEqualToAnchor: pane_bottom];
+
+        let _: () = msg_send![c1, setActive: 1i8];
+        let _: () = msg_send![c2, setActive: 1i8];
+        let _: () = msg_send![c3, setActive: 1i8];
+        let _: () = msg_send![c4, setActive: 1i8];
+
+        let _: () = msg_send![target_pane, layoutSubtreeIfNeeded];
+
+        // Make the Metal layer non-opaque so the NSVisualEffectView vibrancy
+        // shows through transparent areas of the GPUI content.
+        let layer: id = msg_send![surface_view, layer];
+        if layer != nil {
+            let _: () = msg_send![layer, setOpaque: 0i8];
+        }
+    }
+}
+
 pub(crate) unsafe fn release_native_sidebar_target(target: *mut c_void) {
     unsafe {
         if target.is_null() {

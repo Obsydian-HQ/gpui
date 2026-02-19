@@ -3,10 +3,13 @@ use std::ffi::c_void;
 use std::rc::Rc;
 
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
+    AbsoluteLength, AnyView, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, Length, Pixels, Render, SharedString, Style,
     StyleRefinement, Styled, Window, px,
 };
+
+#[cfg(target_os = "macos")]
+use crate::SurfaceId;
 
 use super::native_element_helpers::schedule_native_callback;
 
@@ -38,6 +41,7 @@ pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> Na
         max_sidebar_width: 420.0,
         collapsed: false,
         embed_in_sidebar: false,
+        sidebar_view: None,
         on_select: None,
         style: StyleRefinement::default(),
     }
@@ -53,6 +57,9 @@ pub struct NativeSidebar {
     max_sidebar_width: f64,
     collapsed: bool,
     embed_in_sidebar: bool,
+    /// When set, a secondary GpuiSurface renders this view in the sidebar pane
+    /// while the main GPUI content view stays in the detail pane.
+    sidebar_view: Option<AnyView>,
     on_select: Option<Box<dyn Fn(&SidebarSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
@@ -102,6 +109,18 @@ impl NativeSidebar {
         self
     }
 
+    /// Sets a view to render in the sidebar pane via a secondary GpuiSurface.
+    /// The main GPUI content view stays in the detail (right) pane, while this
+    /// view is rendered into its own Metal layer in the sidebar (left) pane.
+    ///
+    /// This enables dual-surface mode: both panes have independent GPUI-rendered
+    /// content. Native controls painted within the sidebar view automatically
+    /// parent themselves to the surface's NSView.
+    pub fn sidebar_view<V: Render>(mut self, view: crate::Entity<V>) -> Self {
+        self.sidebar_view = Some(AnyView::from(view));
+        self
+    }
+
     /// Registers a callback fired when a sidebar row is selected.
     pub fn on_select(
         mut self,
@@ -123,6 +142,9 @@ struct NativeSidebarState {
     current_collapsed: bool,
     embed_in_sidebar: bool,
     attached: bool,
+    /// Surface ID for the dual-surface sidebar mode.
+    #[cfg(target_os = "macos")]
+    surface_id: Option<SurfaceId>,
 }
 
 impl Drop for NativeSidebarState {
@@ -174,10 +196,10 @@ impl Element for NativeSidebar {
         let mut style = Style::default();
         style.refine(&self.style);
 
-        if self.embed_in_sidebar {
-            // In embed mode the native_view is reparented into the sidebar pane,
-            // so this element is purely a side-effect — it should not consume any
-            // layout space; the sibling content div should fill the viewport.
+        if self.embed_in_sidebar || self.sidebar_view.is_some() {
+            // In embed or dual-surface mode the native_view is reparented into a
+            // sidebar pane, so this element is purely a side-effect — it should
+            // not consume any layout space; the sibling content div fills the viewport.
             style.size.width =
                 Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(0.0))));
             style.size.height =
@@ -229,6 +251,8 @@ impl Element for NativeSidebar {
             }
 
             let mut on_select = self.on_select.take();
+            let sidebar_view = self.sidebar_view.take();
+            let has_sidebar_view = sidebar_view.is_some();
             let items = self.items.clone();
             let selected_index = self.selected_index;
             let sidebar_width = self.sidebar_width.max(120.0);
@@ -237,18 +261,25 @@ impl Element for NativeSidebar {
             let collapsed = self.collapsed;
             let embed_in_sidebar = self.embed_in_sidebar;
 
+            // When sidebar_view is set, we create the sidebar container in
+            // "embed" mode (plain NSView + VFX background, no table) but
+            // configure the main GPUI view in the detail pane (not sidebar).
+            let effective_embed_for_create = embed_in_sidebar || has_sidebar_view;
+            let effective_embed_for_configure = embed_in_sidebar && !has_sidebar_view;
+            let skip_source_list = embed_in_sidebar || has_sidebar_view;
+
             let next_frame_callbacks = window.next_frame_callbacks.clone();
             let invalidator = window.invalidator.clone();
 
             window.with_optional_element_state::<NativeSidebarState, _>(
                 id,
-                |prev_state, _window| {
+                |prev_state, window| {
                     let state = if let Some(Some(mut state)) = prev_state {
                         unsafe {
                             native_controls::configure_native_sidebar_window(
                                 state.control_ptr as cocoa::base::id,
                                 native_view as cocoa::base::id,
-                                state.embed_in_sidebar,
+                                effective_embed_for_configure,
                             );
                         }
 
@@ -285,8 +316,8 @@ impl Element for NativeSidebar {
                             state.current_collapsed = collapsed;
                         }
 
-                        // In embed_in_sidebar mode, skip the source-list items
-                        if !embed_in_sidebar {
+                        // Skip the source-list items in embed or dual-surface mode
+                        if !skip_source_list {
                             let needs_rebind = state.current_items != items
                                 || state.current_selected != selected_index
                                 || on_select.is_some()
@@ -332,6 +363,13 @@ impl Element for NativeSidebar {
                             }
                         }
 
+                        // Update the surface's root view on subsequent paints
+                        if let Some(view) = sidebar_view {
+                            if let Some(surface_id) = state.surface_id {
+                                window.update_surface_root_view(surface_id, view);
+                            }
+                        }
+
                         state
                     } else {
                         let (control_ptr, target_ptr) = unsafe {
@@ -339,10 +377,10 @@ impl Element for NativeSidebar {
                                 sidebar_width,
                                 min_sidebar_width,
                                 max_sidebar_width,
-                                embed_in_sidebar,
+                                effective_embed_for_create,
                             );
 
-                            let target = if !embed_in_sidebar {
+                            let target = if !skip_source_list {
                                 let callback = on_select.take().map(|handler| {
                                     let nfc = next_frame_callbacks.clone();
                                     let inv = invalidator.clone();
@@ -385,10 +423,25 @@ impl Element for NativeSidebar {
                             native_controls::configure_native_sidebar_window(
                                 control,
                                 native_view as cocoa::base::id,
-                                embed_in_sidebar,
+                                effective_embed_for_configure,
                             );
 
                             (control as *mut c_void, target)
+                        };
+
+                        // Register a surface for the sidebar view if provided
+                        let surface_id = if let Some(view) = sidebar_view {
+                            let handle = window.register_surface(view);
+                            // Embed the surface's NSView in the sidebar container
+                            unsafe {
+                                native_controls::embed_surface_view_in_sidebar(
+                                    control_ptr as cocoa::base::id,
+                                    handle.native_view_ptr as cocoa::base::id,
+                                );
+                            }
+                            Some(handle.id)
+                        } else {
+                            None
                         };
 
                         NativeSidebarState {
@@ -400,8 +453,9 @@ impl Element for NativeSidebar {
                             current_min_sidebar_width: min_sidebar_width,
                             current_max_sidebar_width: max_sidebar_width,
                             current_collapsed: collapsed,
-                            embed_in_sidebar,
+                            embed_in_sidebar: effective_embed_for_create,
                             attached: true,
+                            surface_id,
                         }
                     };
 
@@ -414,7 +468,7 @@ impl Element for NativeSidebar {
             // window).  Re-read content_size (which now returns the native_view's
             // frame) and schedule a redraw so the next layout uses the correct
             // dimensions.
-            if embed_in_sidebar {
+            if embed_in_sidebar || has_sidebar_view {
                 let new_size = window.platform_window.content_size();
                 if window.viewport_size != new_size {
                     window.viewport_size = new_size;

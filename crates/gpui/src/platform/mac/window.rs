@@ -1685,6 +1685,12 @@ impl PlatformWindow for MacWindow {
         self.0.lock().native_view.as_ptr() as *mut c_void
     }
 
+    fn shared_render_resources(
+        &self,
+    ) -> std::sync::Arc<super::metal_renderer::SharedRenderResources> {
+        self.0.lock().renderer.shared().clone()
+    }
+
     fn titlebar_double_click(&self) {
         let this = self.0.lock();
         let window = this.native_window;

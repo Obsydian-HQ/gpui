@@ -397,5 +397,9 @@ name = "native_sidebar"
 path = "examples/native_sidebar.rs"
 
 [[example]]
+name = "native_dual_surface_sidebar"
+path = "examples/native_dual_surface_sidebar.rs"
+
+[[example]]
 name = "native_glass_dock"
 path = "examples/native_glass_dock.rs"

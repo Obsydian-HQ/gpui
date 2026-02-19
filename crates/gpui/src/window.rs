@@ -62,6 +62,38 @@ mod prompts;
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
 
+/// An identifier for a secondary GPUI rendering surface within a window.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct SurfaceId(pub(crate) u32);
+
+static NEXT_SURFACE_ID: AtomicUsize = AtomicUsize::new(0);
+
+impl SurfaceId {
+    /// Allocate a new unique SurfaceId.
+    pub fn new() -> Self {
+        Self(NEXT_SURFACE_ID.fetch_add(1, SeqCst) as u32)
+    }
+}
+
+/// A handle returned when registering a surface, providing the native view pointer
+/// for embedding in a container NSView.
+pub struct GpuiSurfaceHandle {
+    /// The SurfaceId for this surface.
+    pub id: SurfaceId,
+    /// A raw pointer to the surface's NSView (GPUISurfaceView).
+    pub native_view_ptr: *mut std::ffi::c_void,
+}
+
+/// State for a registered secondary rendering surface.
+#[cfg(target_os = "macos")]
+pub(crate) struct SurfaceState {
+    pub gpui_surface: crate::platform::gpui_surface::GpuiSurface,
+    pub root_view: AnyView,
+    pub scene: Scene,
+    pub layout_engine: Option<TaffyLayoutEngine>,
+    pub dirty: bool,
+}
+
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
@@ -1321,6 +1353,15 @@ pub struct Window {
     pub(crate) client_inset: Option<Pixels>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     inspector: Option<Entity<Inspector>>,
+    /// Stack of native view pointers for surface rendering. When a surface is being
+    /// painted, its NSView is pushed here so that `raw_native_view_ptr()` returns
+    /// the surface's view instead of the main window's view. This makes all existing
+    /// native controls (NativeButton, NativeToggleGroup, etc.) work inside surfaces
+    /// with zero changes.
+    native_view_override_stack: Vec<*mut std::ffi::c_void>,
+    /// Secondary GPUI rendering surfaces, each with their own Metal layer and element tree.
+    #[cfg(target_os = "macos")]
+    pub(crate) surfaces: FxHashMap<SurfaceId, SurfaceState>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1805,6 +1846,9 @@ impl Window {
             image_cache_stack: Vec::new(),
             #[cfg(any(feature = "inspector", debug_assertions))]
             inspector: None,
+            native_view_override_stack: Vec::new(),
+            #[cfg(target_os = "macos")]
+            surfaces: FxHashMap::default(),
         })
     }
 
@@ -2413,8 +2457,88 @@ impl Window {
 
     /// Returns a raw pointer to the platform's native view (e.g., NSView on macOS).
     /// Used by native controls to add platform subviews.
+    ///
+    /// When a GpuiSurface is being painted, this returns the surface's GPUISurfaceView
+    /// instead of the main window's view, so native controls automatically parent
+    /// themselves into the correct container.
     pub fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
-        self.platform_window.raw_native_view_ptr()
+        if let Some(&override_ptr) = self.native_view_override_stack.last() {
+            override_ptr
+        } else {
+            self.platform_window.raw_native_view_ptr()
+        }
+    }
+
+    /// Push a native view override. While active, `raw_native_view_ptr()` returns
+    /// this pointer instead of the main window's view. Used during surface paint.
+    pub(crate) fn push_native_view_override(&mut self, ptr: *mut std::ffi::c_void) {
+        self.native_view_override_stack.push(ptr);
+    }
+
+    /// Pop the most recent native view override.
+    pub(crate) fn pop_native_view_override(&mut self) {
+        self.native_view_override_stack.pop();
+    }
+
+    /// Register a secondary GPUI rendering surface. Returns a handle with the
+    /// surface's native view pointer for embedding in a container NSView.
+    ///
+    /// The surface will render the given `view` into its own Metal layer each frame.
+    /// Native controls painted within the surface's view will automatically parent
+    /// themselves to the surface's NSView.
+    #[cfg(target_os = "macos")]
+    pub fn register_surface(&mut self, view: AnyView) -> GpuiSurfaceHandle {
+        use crate::platform::gpui_surface::GpuiSurface;
+
+        let id = SurfaceId::new();
+
+        // Get shared resources from the main renderer via the platform window
+        let shared = self.platform_window.shared_render_resources();
+
+        let gpui_surface = GpuiSurface::new(shared, true);
+        let native_view_ptr = gpui_surface.native_view_ptr();
+
+        self.surfaces.insert(id, SurfaceState {
+            gpui_surface,
+            root_view: view,
+            scene: Scene::default(),
+            layout_engine: Some(TaffyLayoutEngine::new()),
+            dirty: true,
+        });
+
+        GpuiSurfaceHandle {
+            id,
+            native_view_ptr,
+        }
+    }
+
+    /// Unregister a previously registered surface.
+    #[cfg(target_os = "macos")]
+    pub fn unregister_surface(&mut self, id: SurfaceId) {
+        self.surfaces.remove(&id);
+    }
+
+    /// Get the native view pointer for a registered surface.
+    #[cfg(target_os = "macos")]
+    pub fn surface_native_view_ptr(&self, id: SurfaceId) -> Option<*mut std::ffi::c_void> {
+        self.surfaces.get(&id).map(|s| s.gpui_surface.native_view_ptr())
+    }
+
+    /// Mark a surface as needing redraw.
+    #[cfg(target_os = "macos")]
+    pub fn invalidate_surface(&mut self, id: SurfaceId) {
+        if let Some(surface) = self.surfaces.get_mut(&id) {
+            surface.dirty = true;
+        }
+    }
+
+    /// Update the root view of a registered surface and mark it dirty.
+    #[cfg(target_os = "macos")]
+    pub fn update_surface_root_view(&mut self, id: SurfaceId, view: AnyView) {
+        if let Some(surface) = self.surfaces.get_mut(&id) {
+            surface.root_view = view;
+            surface.dirty = true;
+        }
     }
 
     /// The scale factor of the display associated with the window. For example, it could
@@ -2566,6 +2690,8 @@ impl Window {
         }
         if !cx.mode.skip_drawing() {
             self.draw_roots(cx);
+            #[cfg(target_os = "macos")]
+            self.draw_surfaces(cx);
         }
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();
@@ -2648,8 +2774,14 @@ impl Window {
     }
 
     #[profiling::function]
-    fn present(&self) {
+    fn present(&mut self) {
         self.platform_window.draw(&self.rendered_frame.scene);
+        #[cfg(target_os = "macos")]
+        {
+            for surface in self.surfaces.values_mut() {
+                surface.gpui_surface.draw(&surface.scene);
+            }
+        }
         self.needs_present.set(false);
         profiling::finish_frame!();
     }
@@ -2727,6 +2859,60 @@ impl Window {
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
+    }
+
+    /// Draw all registered secondary surfaces. Each surface gets its own
+    /// prepaint/paint cycle with an isolated scene and layout engine.
+    #[cfg(target_os = "macos")]
+    fn draw_surfaces(&mut self, cx: &mut App) {
+        let surface_ids: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
+
+        for id in surface_ids {
+            let surface = self.surfaces.get_mut(&id).unwrap();
+
+            // Always redraw surfaces for now (dirty tracking can be refined later)
+            surface.dirty = false;
+
+            // Save the main window's scene — we'll restore it after the surface paints
+            let main_scene = std::mem::take(&mut self.next_frame.scene);
+
+            // Swap in the surface's layout engine
+            let surface_layout = surface.layout_engine.take();
+            let main_layout = std::mem::replace(&mut self.layout_engine, surface_layout);
+
+            // Grab what we need before releasing the borrow
+            let root_view = surface.root_view.clone();
+            let surface_size = surface.gpui_surface.content_size();
+            let native_view_ptr = surface.gpui_surface.native_view_ptr();
+
+            // Push native view override so native controls parent to the surface's NSView
+            self.push_native_view_override(native_view_ptr);
+
+            // Prepaint the surface's element tree
+            self.invalidator.set_phase(DrawPhase::Prepaint);
+            let mut root_element = root_view.into_any();
+            root_element.prepaint_as_root(
+                Point::default(),
+                surface_size.into(),
+                self,
+                cx,
+            );
+
+            // Paint the surface's element tree
+            self.invalidator.set_phase(DrawPhase::Paint);
+            root_element.paint(self, cx);
+
+            // Pop native view override
+            self.pop_native_view_override();
+
+            // Extract the surface scene and restore the main scene
+            let surface = self.surfaces.get_mut(&id).unwrap();
+            surface.scene = std::mem::replace(&mut self.next_frame.scene, main_scene);
+
+            // Restore layout engines
+            let surface_layout = std::mem::replace(&mut self.layout_engine, main_layout);
+            surface.layout_engine = surface_layout;
+        }
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {

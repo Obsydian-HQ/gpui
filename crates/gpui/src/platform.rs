@@ -75,6 +75,8 @@ pub(crate) use linux::*;
 pub(crate) use mac::*;
 #[cfg(target_os = "macos")]
 pub(crate) use mac::native_controls;
+#[cfg(target_os = "macos")]
+pub(crate) use mac::gpui_surface;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
 #[cfg(target_os = "windows")]
@@ -641,6 +643,15 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Returns null on platforms that don't support native subviews.
     fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
         std::ptr::null_mut()
+    }
+
+    /// Returns shared GPU render resources for creating secondary rendering surfaces.
+    /// Only available on macOS with Metal rendering.
+    #[cfg(target_os = "macos")]
+    fn shared_render_resources(
+        &self,
+    ) -> std::sync::Arc<crate::platform::mac::metal_renderer::SharedRenderResources> {
+        unimplemented!("shared_render_resources not available on this platform window")
     }
 
     #[cfg(any(test, feature = "test-support"))]
