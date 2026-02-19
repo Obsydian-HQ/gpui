@@ -219,15 +219,20 @@ pub(crate) unsafe fn create_native_outline_view() -> id {
         let outline: id = msg_send![class!(NSOutlineView), alloc];
         let outline: id = msg_send![outline, initWithFrame: NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(320.0, 220.0),
+            NSSize::new(200.0, 220.0),
         )];
         let _: () = msg_send![outline, setHeaderView: ptr::null_mut::<c_void>() as id];
         let _: () = msg_send![outline, setIndentationPerLevel: 14.0f64];
         let _: () = msg_send![outline, setAutoresizingMask: 0u64];
+        // NSOutlineViewUniformColumnAutoresizingStyle (1) — resize column to fill
+        let _: () = msg_send![outline, setColumnAutoresizingStyle: 1u64];
 
         let column: id = msg_send![class!(NSTableColumn), alloc];
         let column: id = msg_send![column, initWithIdentifier: ns_string("title")];
-        let _: () = msg_send![column, setWidth: 320.0f64];
+        let _: () = msg_send![column, setWidth: 100.0f64];
+        let _: () = msg_send![column, setMinWidth: 20.0f64];
+        // NSTableColumnAutoresizingMask (1) — allow column to auto-resize
+        let _: () = msg_send![column, setResizingMask: 1u64];
         let _: () = msg_send![outline, addTableColumn: column];
         let _: () = msg_send![outline, setOutlineTableColumn: column];
         let _: () = msg_send![column, release];
@@ -235,13 +240,23 @@ pub(crate) unsafe fn create_native_outline_view() -> id {
         let scroll: id = msg_send![class!(NSScrollView), alloc];
         let scroll: id = msg_send![scroll, initWithFrame: NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(320.0, 220.0),
+            NSSize::new(200.0, 220.0),
         )];
         let _: () = msg_send![scroll, setHasVerticalScroller: 1i8];
         let _: () = msg_send![scroll, setHasHorizontalScroller: 0i8];
-        let _: () = msg_send![scroll, setBorderType: 1u64];
+        let _: () = msg_send![scroll, setAutohidesScrollers: 1i8];
+        let _: () = msg_send![scroll, setBorderType: 0u64]; // no border
+        let _: () = msg_send![scroll, setDrawsBackground: 0i8]; // transparent for glass
         let _: () = msg_send![scroll, setDocumentView: outline];
         let _: () = msg_send![scroll, setAutoresizingMask: 0u64];
+        let _: () = msg_send![scroll, setHorizontalScrollElasticity: 1i64]; // none
+
+        // Make the outline view background transparent too
+        let clear_color: id = msg_send![class!(NSColor), clearColor];
+        let _: () = msg_send![outline, setBackgroundColor: clear_color];
+
+        // Fit the column to the scroll view width
+        let _: () = msg_send![outline, sizeLastColumnToFit];
 
         scroll
     }
@@ -292,6 +307,40 @@ pub(crate) unsafe fn set_native_outline_items(
         }
 
         delegate as *mut c_void
+    }
+}
+
+/// Syncs the outline column width to match the scroll view's visible width.
+/// Call after `set_native_view_frame` to keep the column from overflowing.
+pub(crate) unsafe fn sync_native_outline_column_width(scroll_view: id) {
+    unsafe {
+        let outline = outline_from_scroll(scroll_view);
+        if outline == nil {
+            return;
+        }
+
+        let clip_view: id = msg_send![scroll_view, contentView];
+        if clip_view == nil {
+            return;
+        }
+
+        let clip_bounds: NSRect = msg_send![clip_view, bounds];
+        let available_width = clip_bounds.size.width;
+        if available_width <= 0.0 {
+            return;
+        }
+
+        // Get the first (only) column and resize it to fill the visible width
+        let columns: id = msg_send![outline, tableColumns];
+        let count: u64 = msg_send![columns, count];
+        if count > 0 {
+            let column: id = msg_send![columns, objectAtIndex: 0u64];
+            if column != nil {
+                let _: () = msg_send![column, setWidth: available_width];
+            }
+        }
+
+        let _: () = msg_send![outline, sizeLastColumnToFit];
     }
 }
 

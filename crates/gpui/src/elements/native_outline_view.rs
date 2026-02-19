@@ -177,10 +177,6 @@ impl Element for NativeOutlineView {
         let mut style = Style::default();
         style.refine(&self.style);
 
-        if matches!(style.size.width, Length::Auto) {
-            style.size.width =
-                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(380.0))));
-        }
         if matches!(style.size.height, Length::Auto) {
             style.size.height =
                 Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(260.0))));
@@ -240,6 +236,9 @@ impl Element for NativeOutlineView {
                                 bounds,
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
+                            );
+                            native_controls::sync_native_outline_column_width(
+                                state.control_ptr as cocoa::base::id,
                             );
                         }
 
@@ -333,6 +332,9 @@ impl Element for NativeOutlineView {
                                 bounds,
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
+                            );
+                            native_controls::sync_native_outline_column_width(
+                                control,
                             );
 
                             (control as *mut c_void, target)
