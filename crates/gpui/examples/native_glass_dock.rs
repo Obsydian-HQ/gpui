@@ -1,11 +1,11 @@
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
-    MenuItemSelectEvent, NativeButtonStyle, NativeButtonTint, NativeMenuItem, NativeOutlineNode,
-    NativeOutlineHighlight, NativeSegmentedStyle, OutlineRowSelectEvent, SegmentSelectEvent,
-    TextChangeEvent,
-    TextSubmitEvent, Window, WindowAppearance, WindowBounds, WindowOptions, actions, div,
-    native_button, native_icon_button, native_menu_button, native_outline_view, native_sidebar,
-    native_text_field, native_toggle_group, prelude::*, px, rgb, size,
+    App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
+    MenuItem, MenuItemSelectEvent, NativeButtonStyle, NativeButtonTint, NativeMenuItem,
+    NativeOutlineHighlight, NativeOutlineNode, NativeSegmentedStyle, OutlineRowSelectEvent,
+    SegmentSelectEvent, TextChangeEvent, TextSubmitEvent, Window, WindowAppearance, WindowBounds,
+    WindowOptions, actions, div, native_button, native_icon_button, native_menu_button,
+    native_outline_view, native_sidebar, native_text_field, native_toggle_group, prelude::*, px,
+    rgb, size,
 };
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ actions!(
 );
 
 // ---------------------------------------------------------------------------
-// Panel enum — maps to sidebar source-list rows
+// Panel enum — maps to sidebar tab rows
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,11 +65,10 @@ impl Panel {
 }
 
 // ---------------------------------------------------------------------------
-// App state
+// SidebarContent — rendered in the secondary GpuiSurface (sidebar pane)
 // ---------------------------------------------------------------------------
 
-struct GlassDock {
-    collapsed: bool,
+struct SidebarContent {
     active_panel: usize,
     focus_handle: FocusHandle,
 
@@ -88,7 +87,7 @@ struct GlassDock {
 // Data helpers
 // ---------------------------------------------------------------------------
 
-impl GlassDock {
+impl SidebarContent {
     const VIEW_MODES: [&str; 2] = ["Tree", "Flat"];
     const SORT_MODES: [&str; 2] = ["Path", "Status"];
 
@@ -157,6 +156,8 @@ impl GlassDock {
                                 NativeOutlineNode::branch(
                                     "platform/mac",
                                     vec![
+                                        NativeOutlineNode::leaf("gpui_surface.rs"),
+                                        NativeOutlineNode::leaf("metal_renderer.rs"),
                                         NativeOutlineNode::leaf("native_controls.rs"),
                                         NativeOutlineNode::leaf("window.rs"),
                                     ],
@@ -237,10 +238,10 @@ impl GlassDock {
 }
 
 // ---------------------------------------------------------------------------
-// Render — native sidebar with GPUI content in the detail pane
+// Render — SidebarContent in its own GpuiSurface
 // ---------------------------------------------------------------------------
 
-impl Render for GlassDock {
+impl Render for SidebarContent {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_dark = matches!(
             window.appearance(),
@@ -253,12 +254,10 @@ impl Render for GlassDock {
         };
 
         div()
+            .flex()
+            .flex_col()
             .size_full()
-            .track_focus(&self.focus_handle)
-            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
-                this.collapsed = !this.collapsed;
-                cx.notify();
-            }))
+            .text_color(fg)
             .on_action(cx.listener(|this, _: &StageAll, _, cx| {
                 this.status_text = "All changes staged.".into();
                 cx.notify();
@@ -276,49 +275,29 @@ impl Render for GlassDock {
                 this.status_text = "Changes refreshed.".into();
                 cx.notify();
             }))
-            // The native sidebar embeds the GPUI content view inside the sidebar
-            // (left) pane of the NSSplitViewController. All children below render
-            // there with the native vibrancy / blur effect behind them.
-            .child(
-                native_sidebar("dock_sidebar", &Panel::LABELS)
-                    .embed_content_in_sidebar(true)
-                    .sidebar_width(280.0)
-                    .min_sidebar_width(220.0)
-                    .max_sidebar_width(400.0)
-                    .collapsed(self.collapsed)
-                    .size_full(),
-            )
-            // This renders inside the sidebar pane (left side) thanks to
-            // embed_content_in_sidebar(true).
+            // Panel switcher — native segmented control
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .size_full()
-                    .text_color(fg)
-                    // Panel switcher — native segmented control
+                    .items_center()
+                    .justify_center()
+                    .pt(px(8.0))
+                    .pb(px(4.0))
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .pt(px(8.0))
-                            .pb(px(4.0))
-                            .child(
-                                native_toggle_group("panel_switcher", &Panel::LABELS)
-                                    .sf_symbols(&Panel::ICONS)
-                                    .selected_index(self.active_panel)
-                                    .segment_style(NativeSegmentedStyle::Automatic)
-                                    .on_select(cx.listener(|this, ev: &SegmentSelectEvent, _, cx| {
-                                        this.active_panel = ev.index;
-                                        this.status_text = format!("{}", Panel::ALL[ev.index].label());
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(div().h(px(1.0)).w_full().bg(border))
-                    .child(self.render_active_panel(muted, border, cx)),
+                        native_toggle_group("panel_switcher", &Panel::LABELS)
+                            .sf_symbols(&Panel::ICONS)
+                            .selected_index(self.active_panel)
+                            .segment_style(NativeSegmentedStyle::Automatic)
+                            .on_select(cx.listener(|this, ev: &SegmentSelectEvent, _, cx| {
+                                this.active_panel = ev.index;
+                                this.status_text =
+                                    format!("{}", Panel::ALL[ev.index].label());
+                                cx.notify();
+                            })),
+                    ),
             )
+            .child(div().h(px(1.0)).w_full().bg(border))
+            .child(self.render_active_panel(muted, border, cx))
     }
 }
 
@@ -326,7 +305,7 @@ impl Render for GlassDock {
 // Panel dispatch + renderers
 // ---------------------------------------------------------------------------
 
-impl GlassDock {
+impl SidebarContent {
     fn render_active_panel(
         &mut self,
         muted: gpui::Rgba,
@@ -334,7 +313,9 @@ impl GlassDock {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         match Panel::ALL[self.active_panel] {
-            Panel::SourceControl => self.render_source_control(muted, border, cx).into_any_element(),
+            Panel::SourceControl => {
+                self.render_source_control(muted, border, cx).into_any_element()
+            }
             Panel::Explorer => self.render_explorer(muted, cx).into_any_element(),
             Panel::Search => self.render_search(muted, cx).into_any_element(),
             Panel::Branches => self.render_branches(muted, cx).into_any_element(),
@@ -848,9 +829,142 @@ impl GlassDock {
     }
 }
 
+impl Focusable for SidebarContent {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Focusable
+// GlassDock — main app rendered in the primary GPUI surface (detail pane)
 // ---------------------------------------------------------------------------
+
+struct GlassDock {
+    collapsed: bool,
+    sidebar_content: Entity<SidebarContent>,
+    focus_handle: FocusHandle,
+}
+
+impl Render for GlassDock {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        let (fg, muted, border, bg) = if is_dark {
+            (rgb(0xffffff), rgb(0x8e8e93), rgb(0x3a3a3c), rgb(0x1e1e1e))
+        } else {
+            (rgb(0x1d1d1f), rgb(0x86868b), rgb(0xd2d2d7), rgb(0xffffff))
+        };
+
+        div()
+            .size_full()
+            .bg(bg)
+            .text_color(fg)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.collapsed = !this.collapsed;
+                cx.notify();
+            }))
+            // The native sidebar renders the sidebar_content entity in its own
+            // GpuiSurface (secondary Metal layer) in the sidebar pane, while the
+            // main GPUI content view stays in the detail (right) pane.
+            .child(
+                native_sidebar("dock_sidebar", &[""; 0])
+                    .sidebar_view(self.sidebar_content.clone())
+                    .sidebar_width(280.0)
+                    .min_sidebar_width(220.0)
+                    .max_sidebar_width(400.0)
+                    .collapsed(self.collapsed)
+                    .size_full(),
+            )
+            // Detail pane content — rendered in the main GPUI surface
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .size_full()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_grow()
+                            .items_center()
+                            .justify_center()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("Dual Surface Mode"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("Sidebar renders in its own Metal surface"),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("Detail pane renders in the main surface"),
+                            )
+                            .child(
+                                div()
+                                    .mt_4()
+                                    .p_4()
+                                    .rounded(px(8.0))
+                                    .border_1()
+                                    .border_color(border)
+                                    .max_w(px(500.0))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_sm()
+                                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                    .child("How it works"),
+                                            )
+                                            .child(
+                                                div().text_xs().text_color(muted).child(
+                                                    "The sidebar pane uses a secondary GpuiSurface \
+                                                     with its own CAMetalLayer, layout engine, and \
+                                                     element tree. GPU resources (device, pipelines, \
+                                                     atlas) are shared with the main renderer.",
+                                                ),
+                                            )
+                                            .child(
+                                                div().text_xs().text_color(muted).child(
+                                                    "Native controls (buttons, segmented controls, \
+                                                     outline views, text fields) work in both panes \
+                                                     thanks to the native_view_override_stack.",
+                                                ),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    // Status bar
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .h(px(24.0))
+                            .px_3()
+                            .bg(border)
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child("GPUI Dual Surface — Cmd+Alt+S to toggle sidebar"),
+                            ),
+                    ),
+            )
+    }
+}
 
 impl Focusable for GlassDock {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
@@ -893,19 +1007,24 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
+                let sidebar_content = cx.new(|cx| SidebarContent {
+                    active_panel: 0,
+                    focus_handle: cx.focus_handle(),
+                    view_mode: 0,
+                    sort_mode: 0,
+                    selected_file: String::new(),
+                    commit_message: String::new(),
+                    status_text: String::new(),
+                    explorer_selected: String::new(),
+                });
+
                 cx.new(|cx| {
                     let focus_handle = cx.focus_handle();
                     focus_handle.focus(window, cx);
                     GlassDock {
                         collapsed: false,
-                        active_panel: 0,
+                        sidebar_content,
                         focus_handle,
-                        view_mode: 0,
-                        sort_mode: 0,
-                        selected_file: String::new(),
-                        commit_message: String::new(),
-                        status_text: String::new(),
-                        explorer_selected: String::new(),
                     }
                 })
             },
