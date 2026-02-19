@@ -46,6 +46,28 @@ pub struct OutlineRowSelectEvent {
     pub title: SharedString,
 }
 
+/// Selection highlight style for the outline view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeOutlineHighlight {
+    /// Standard blue highlight (default).
+    #[default]
+    Regular,
+    /// Source-list style highlight (translucent, adapts to vibrancy).
+    SourceList,
+    /// No selection highlight at all.
+    None,
+}
+
+impl NativeOutlineHighlight {
+    fn to_ns_style(self) -> i64 {
+        match self {
+            NativeOutlineHighlight::Regular => 0,
+            NativeOutlineHighlight::SourceList => 1,
+            NativeOutlineHighlight::None => -1,
+        }
+    }
+}
+
 /// Creates a native outline view (NSOutlineView) for tree/expandable lists.
 pub fn native_outline_view(
     id: impl Into<ElementId>,
@@ -57,6 +79,7 @@ pub fn native_outline_view(
         selected_row: None,
         row_height: 22.0,
         expand_all: true,
+        highlight: NativeOutlineHighlight::default(),
         on_select: None,
         style: StyleRefinement::default(),
     }
@@ -69,6 +92,7 @@ pub struct NativeOutlineView {
     selected_row: Option<usize>,
     row_height: f64,
     expand_all: bool,
+    highlight: NativeOutlineHighlight,
     on_select: Option<Box<dyn Fn(&OutlineRowSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
@@ -92,6 +116,12 @@ impl NativeOutlineView {
         self
     }
 
+    /// Sets the selection highlight style.
+    pub fn highlight(mut self, highlight: NativeOutlineHighlight) -> Self {
+        self.highlight = highlight;
+        self
+    }
+
     /// Registers a callback fired when a row is selected.
     pub fn on_select(
         mut self,
@@ -109,6 +139,7 @@ struct NativeOutlineViewState {
     current_selected_row: Option<usize>,
     current_row_height: f64,
     current_expand_all: bool,
+    current_highlight: NativeOutlineHighlight,
     attached: bool,
 }
 
@@ -222,6 +253,7 @@ impl Element for NativeOutlineView {
             let selected_row = self.selected_row;
             let row_height = self.row_height;
             let expand_all = self.expand_all;
+            let highlight = self.highlight;
 
             let next_frame_callbacks = window.next_frame_callbacks.clone();
             let invalidator = window.invalidator.clone();
@@ -250,6 +282,16 @@ impl Element for NativeOutlineView {
                                 );
                             }
                             state.current_row_height = row_height;
+                        }
+
+                        if state.current_highlight != highlight {
+                            unsafe {
+                                native_controls::set_native_outline_highlight_style(
+                                    state.control_ptr as cocoa::base::id,
+                                    highlight.to_ns_style(),
+                                );
+                            }
+                            state.current_highlight = highlight;
                         }
 
                         let needs_rebind = state.current_nodes != nodes
@@ -314,6 +356,10 @@ impl Element for NativeOutlineView {
                         let (control_ptr, target_ptr) = unsafe {
                             let control = native_controls::create_native_outline_view();
                             native_controls::set_native_outline_row_height(control, row_height);
+                            native_controls::set_native_outline_highlight_style(
+                                control,
+                                highlight.to_ns_style(),
+                            );
 
                             let target = native_controls::set_native_outline_items(
                                 control,
@@ -347,6 +393,7 @@ impl Element for NativeOutlineView {
                             current_selected_row: selected_row,
                             current_row_height: row_height,
                             current_expand_all: expand_all,
+                            current_highlight: highlight,
                             attached: true,
                         }
                     };

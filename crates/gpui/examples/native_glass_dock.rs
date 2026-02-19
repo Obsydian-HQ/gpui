@@ -1,7 +1,8 @@
 use gpui::{
     App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
     MenuItemSelectEvent, NativeButtonStyle, NativeButtonTint, NativeMenuItem, NativeOutlineNode,
-    NativeSegmentedStyle, OutlineRowSelectEvent, SegmentSelectEvent, TextChangeEvent,
+    NativeOutlineHighlight, NativeSegmentedStyle, OutlineRowSelectEvent, SegmentSelectEvent,
+    TextChangeEvent,
     TextSubmitEvent, Window, WindowAppearance, WindowBounds, WindowOptions, actions, div,
     native_button, native_icon_button, native_menu_button, native_outline_view, native_sidebar,
     native_text_field, native_toggle_group, prelude::*, px, rgb, size,
@@ -454,6 +455,7 @@ impl GlassDock {
                 native_outline_view("sc_tree", &changes)
                     .expand_all(true)
                     .row_height(22.0)
+                    .highlight(NativeOutlineHighlight::None)
                     .on_select(cx.listener(|this, ev: &OutlineRowSelectEvent, _, cx| {
                         this.selected_file = ev.title.to_string();
                         this.status_text = format!("Selected: {}", ev.title);
@@ -579,6 +581,7 @@ impl GlassDock {
                 native_outline_view("ex_tree", &Self::project_tree())
                     .expand_all(true)
                     .row_height(22.0)
+                    .highlight(NativeOutlineHighlight::None)
                     .on_select(cx.listener(|this, ev: &OutlineRowSelectEvent, _, cx| {
                         this.explorer_selected = ev.title.to_string();
                         this.status_text = format!("Opened: {}", ev.title);
@@ -702,6 +705,7 @@ impl GlassDock {
                 native_outline_view("br_tree", &Self::branches_tree())
                     .expand_all(true)
                     .row_height(22.0)
+                    .highlight(NativeOutlineHighlight::None)
                     .on_select(cx.listener(|this, ev: &OutlineRowSelectEvent, _, cx| {
                         this.status_text = format!("Checkout: {}", ev.title);
                         cx.notify();
@@ -753,6 +757,7 @@ impl GlassDock {
             .child(
                 native_outline_view("st_list", &Self::stashes_list())
                     .row_height(22.0)
+                    .highlight(NativeOutlineHighlight::None)
                     .on_select(cx.listener(|this, ev: &OutlineRowSelectEvent, _, cx| {
                         this.status_text = format!("Selected: {}", ev.title);
                         cx.notify();

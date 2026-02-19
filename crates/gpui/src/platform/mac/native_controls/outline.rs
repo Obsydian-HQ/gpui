@@ -13,6 +13,8 @@ use objc::{
 };
 use std::{ffi::c_void, ptr};
 
+const SUPPRESS_HIGHLIGHT_IVAR: &str = "suppressHighlight";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NativeOutlineNodeData {
     pub title: String,
@@ -34,7 +36,36 @@ impl Drop for OutlineCallbacks {
     }
 }
 
+static mut OUTLINE_VIEW_CLASS: *const Class = ptr::null();
 static mut OUTLINE_DELEGATE_CLASS: *const Class = ptr::null();
+
+#[ctor]
+unsafe fn build_outline_view_class() {
+    unsafe {
+        let mut decl =
+            ClassDecl::new("GPUINativeOutlineView", class!(NSOutlineView)).unwrap();
+        decl.add_ivar::<i8>(SUPPRESS_HIGHLIGHT_IVAR);
+
+        decl.add_method(
+            sel!(highlightSelectionInClipRect:),
+            highlight_selection_in_clip_rect as extern "C" fn(&Object, Sel, NSRect),
+        );
+
+        OUTLINE_VIEW_CLASS = decl.register();
+    }
+}
+
+extern "C" fn highlight_selection_in_clip_rect(this: &Object, _sel: Sel, _clip_rect: NSRect) {
+    unsafe {
+        let suppress: i8 = *this.get_ivar(SUPPRESS_HIGHLIGHT_IVAR);
+        if suppress != 0 {
+            return;
+        }
+        // Call super
+        let superclass = class!(NSOutlineView);
+        let _: () = msg_send![super(this, superclass), highlightSelectionInClipRect: _clip_rect];
+    }
+}
 
 #[ctor]
 unsafe fn build_outline_delegate_class() {
@@ -216,11 +247,13 @@ pub(crate) unsafe fn create_native_outline_view() -> id {
     unsafe {
         use super::super::ns_string;
 
-        let outline: id = msg_send![class!(NSOutlineView), alloc];
+        let outline: id = msg_send![OUTLINE_VIEW_CLASS, alloc];
         let outline: id = msg_send![outline, initWithFrame: NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(200.0, 220.0),
         )];
+        // Default: highlight enabled
+        (*outline).set_ivar::<i8>(SUPPRESS_HIGHLIGHT_IVAR, 0);
         let _: () = msg_send![outline, setHeaderView: ptr::null_mut::<c_void>() as id];
         let _: () = msg_send![outline, setIndentationPerLevel: 14.0f64];
         let _: () = msg_send![outline, setAutoresizingMask: 0u64];
@@ -341,6 +374,23 @@ pub(crate) unsafe fn sync_native_outline_column_width(scroll_view: id) {
         }
 
         let _: () = msg_send![outline, sizeLastColumnToFit];
+    }
+}
+
+/// Configures the outline view highlight and focus ring.
+/// `style`: 0 = Regular, 1 = SourceList, -1 = None (suppress both).
+pub(crate) unsafe fn set_native_outline_highlight_style(scroll_view: id, style: i64) {
+    unsafe {
+        let outline = outline_from_scroll(scroll_view);
+        let suppress: i8 = if style == -1 { 1 } else { 0 };
+        (*outline).set_ivar::<i8>(SUPPRESS_HIGHLIGHT_IVAR, suppress);
+
+        // NSFocusRingTypeNone = 1, NSFocusRingTypeDefault = 0
+        let ring_type: u64 = if style == -1 { 1 } else { 0 };
+        let _: () = msg_send![outline, setFocusRingType: ring_type];
+        let _: () = msg_send![scroll_view, setFocusRingType: ring_type];
+
+        let _: () = msg_send![outline, setNeedsDisplay: 1i8];
     }
 }
 
