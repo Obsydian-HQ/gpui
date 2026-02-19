@@ -70,6 +70,7 @@ pub fn native_toggle_group(
             .iter()
             .map(|l| SharedString::from(l.as_ref().to_string()))
             .collect(),
+        symbols: None,
         selected_index: 0,
         on_select: None,
         style: StyleRefinement::default(),
@@ -85,6 +86,7 @@ pub fn native_toggle_group(
 pub struct NativeToggleGroup {
     id: ElementId,
     labels: Vec<SharedString>,
+    symbols: Option<Vec<SharedString>>,
     selected_index: usize,
     on_select: Option<Box<dyn Fn(&SegmentSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
@@ -113,6 +115,18 @@ impl NativeToggleGroup {
         self.segment_style = style;
         self
     }
+
+    /// Set SF Symbol names for each segment, replacing text labels with icons.
+    /// The number of symbols should match the number of labels.
+    pub fn sf_symbols(mut self, symbols: &[impl AsRef<str>]) -> Self {
+        self.symbols = Some(
+            symbols
+                .iter()
+                .map(|s| SharedString::from(s.as_ref().to_string()))
+                .collect(),
+        );
+        self
+    }
 }
 
 // =============================================================================
@@ -124,6 +138,7 @@ struct NativeToggleGroupState {
     target_ptr: *mut c_void,
     current_selected: usize,
     current_labels: Vec<SharedString>,
+    current_symbols: Option<Vec<SharedString>>,
     current_segment_style: NativeSegmentedStyle,
     attached: bool,
 }
@@ -182,8 +197,8 @@ impl Element for NativeToggleGroup {
         style.refine(&self.style);
 
         if matches!(style.size.width, Length::Auto) {
-            // Estimate width: ~70px per segment
-            let width = (self.labels.len() as f32 * 70.0).max(140.0);
+            let per_segment = if self.symbols.is_some() { 36.0 } else { 70.0 };
+            let width = (self.labels.len() as f32 * per_segment).max(72.0);
             style.size.width =
                 Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(width))));
         }
@@ -229,6 +244,7 @@ impl Element for NativeToggleGroup {
 
             let on_select = self.on_select.take();
             let labels = self.labels.clone();
+            let symbols = self.symbols.clone();
             let selected_index = self.selected_index;
             let segment_style = self.segment_style;
 
@@ -272,6 +288,20 @@ impl Element for NativeToggleGroup {
                                 );
                                 state.current_selected = selected_index;
                             }
+                            if state.current_symbols != symbols {
+                                if let Some(ref syms) = symbols {
+                                    for (i, sym) in syms.iter().enumerate() {
+                                        if !sym.is_empty() {
+                                            native_controls::set_native_segmented_image(
+                                                state.control_ptr as cocoa::base::id,
+                                                i,
+                                                sym.as_ref(),
+                                            );
+                                        }
+                                    }
+                                }
+                                state.current_symbols = symbols.clone();
+                            }
                         }
 
                         // Update callback
@@ -311,6 +341,16 @@ impl Element for NativeToggleGroup {
                                 segment_style.to_ns_style(),
                             );
 
+                            if let Some(ref syms) = symbols {
+                                for (i, sym) in syms.iter().enumerate() {
+                                    if !sym.is_empty() {
+                                        native_controls::set_native_segmented_image(
+                                            control, i, sym.as_ref(),
+                                        );
+                                    }
+                                }
+                            }
+
                             native_controls::attach_native_view_to_parent(
                                 control,
                                 native_view as cocoa::base::id,
@@ -345,6 +385,7 @@ impl Element for NativeToggleGroup {
                             target_ptr,
                             current_selected: selected_index,
                             current_labels: labels,
+                            current_symbols: symbols,
                             current_segment_style: segment_style,
                             attached: true,
                         }

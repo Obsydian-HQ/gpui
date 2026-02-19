@@ -395,3 +395,7 @@ path = "examples/native_list_views.rs"
 [[example]]
 name = "native_sidebar"
 path = "examples/native_sidebar.rs"
+
+[[example]]
+name = "native_glass_dock"
+path = "examples/native_glass_dock.rs"

@@ -645,8 +645,11 @@ impl MacWindowState {
     }
 
     fn content_size(&self) -> Size<Pixels> {
+        // Use the native_view's frame rather than the window's contentView frame.
+        // When a native sidebar reparents the native_view into a split-view pane,
+        // the native_view's frame reflects the actual rendering area.
         let NSSize { width, height, .. } =
-            unsafe { NSView::frame(self.native_window.contentView()) }.size;
+            unsafe { NSView::frame(self.native_view.as_ptr() as id) }.size;
         size(px(width as f32), px(height as f32))
     }
 

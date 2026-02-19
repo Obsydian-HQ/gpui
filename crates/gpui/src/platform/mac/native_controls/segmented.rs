@@ -88,7 +88,7 @@ pub(crate) unsafe fn set_native_segmented_style(control: id, style: i64) {
     }
 }
 
-/// Sets an SF Symbol image on a specific segment (macOS 11+).
+/// Sets an SF Symbol image on a specific segment and clears its text label (macOS 11+).
 pub(crate) unsafe fn set_native_segmented_image(control: id, segment: usize, symbol_name: &str) {
     unsafe {
         use super::super::ns_string;
@@ -99,6 +99,7 @@ pub(crate) unsafe fn set_native_segmented_image(control: id, segment: usize, sym
         ];
         if image != nil {
             let _: () = msg_send![control, setImage: image forSegment: segment as i64];
+            let _: () = msg_send![control, setLabel: ns_string("") forSegment: segment as i64];
         }
     }
 }

@@ -34,6 +34,8 @@ struct SidebarHostData {
     scroll_view: id,
     table_view: id,
     detail_label: id,
+    detail_content_view: id,
+    sidebar_container: id,
     window: id,
     embedded_content_view: id,
     previous_content_view_controller: id,
@@ -43,6 +45,7 @@ struct SidebarHostData {
     previous_content_max_size: NSSize,
     min_width: f64,
     max_width: f64,
+    embed_in_sidebar: bool,
 }
 
 struct SidebarCallbacks {
@@ -421,6 +424,7 @@ pub(crate) unsafe fn create_native_sidebar_view(
     sidebar_width: f64,
     min_width: f64,
     max_width: f64,
+    embed_in_sidebar: bool,
 ) -> id {
     unsafe {
         use super::super::ns_string;
@@ -442,76 +446,132 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () = msg_send![split_view, setVertical: 1i8];
         let _: () = msg_send![split_view, setDividerStyle: 1u64];
 
-        let sidebar_container: id = msg_send![class!(NSVisualEffectView), alloc];
-        let sidebar_container: id = msg_send![sidebar_container, initWithFrame: NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(initial_width, 420.0),
-        )];
-        NSVisualEffectView::setMaterial_(sidebar_container, NSVisualEffectMaterial::Sidebar);
-        NSVisualEffectView::setBlendingMode_(
-            sidebar_container,
-            NSVisualEffectBlendingMode::BehindWindow,
-        );
-        NSVisualEffectView::setState_(
-            sidebar_container,
-            NSVisualEffectState::FollowsWindowActiveState,
-        );
-        let _: () = msg_send![sidebar_container, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+        // The sidebar pane's view hierarchy depends on embed_in_sidebar:
+        //
+        // Non-embed (source list):
+        //   sidebar_container (NSVisualEffectView)
+        //     └── NSScrollView → NSTableView
+        //
+        // Embed (GPUI content):
+        //   sidebar_container (plain NSView)  ← sidebar VC's view; MTKView target
+        //     └── NSVisualEffectView           ← background vibrancy only
+        //
+        // The MTKView cannot be a direct child of NSVisualEffectView because its
+        // special layer compositing breaks Metal rendering (shows black).
 
-        let scroll: id = msg_send![class!(NSScrollView), alloc];
-        let scroll: id = msg_send![scroll, initWithFrame: NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(initial_width, 420.0),
-        )];
-        let _: () = msg_send![scroll, setHasVerticalScroller: 1i8];
-        let _: () = msg_send![scroll, setHasHorizontalScroller: 0i8];
-        let _: () = msg_send![scroll, setAutohidesScrollers: 1i8];
-        // NSScrollElasticityNone
-        let _: () = msg_send![scroll, setHorizontalScrollElasticity: 2i64];
-        let _: () = msg_send![scroll, setBorderType: 0u64];
-        let _: () = msg_send![scroll, setDrawsBackground: 0i8];
-        let clip_view: id = msg_send![scroll, contentView];
-        if clip_view != nil {
-            let _: () = msg_send![clip_view, setDrawsBackground: 0i8];
-        }
-        let _: () =
-            msg_send![scroll, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+        let (sidebar_container, sidebar_visual_effect) = if embed_in_sidebar {
+            // Plain NSView wrapper — safe target for the MTKView.
+            let wrapper: id = msg_send![class!(NSView), alloc];
+            let wrapper: id = msg_send![wrapper, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(initial_width, 420.0),
+            )];
+            let _: () =
+                msg_send![wrapper, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
-        let table: id = msg_send![class!(NSTableView), alloc];
-        let table: id = msg_send![table, initWithFrame: NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(initial_width, 420.0),
-        )];
-        let clear_color: id = msg_send![class!(NSColor), clearColor];
-        let _: () = msg_send![table, setBackgroundColor: clear_color];
-        let _: () = msg_send![table, setUsesAlternatingRowBackgroundColors: 0i8];
-        let _: () = msg_send![table, setAllowsMultipleSelection: 0i8];
-        let _: () = msg_send![table, setAllowsColumnSelection: 0i8];
-        let _: () = msg_send![table, setAllowsColumnReordering: 0i8];
-        let _: () = msg_send![table, setAllowsColumnResizing: 0i8];
-        let _: () = msg_send![table, setIntercellSpacing: NSSize::new(0.0, 2.0)];
-        // NSTableViewFirstColumnOnlyAutoresizingStyle
-        let _: () = msg_send![table, setColumnAutoresizingStyle: 5u64];
-        let _: () = msg_send![table, setHeaderView: nil];
-        // NSFocusRingTypeNone
-        let _: () = msg_send![table, setFocusRingType: 1i64];
-        // NSTableViewStyleSourceList
-        let _: () = msg_send![table, setStyle: 3i64];
-        let _: () = msg_send![table, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+            // NSVisualEffectView as a background subview for native vibrancy.
+            let vfx: id = msg_send![class!(NSVisualEffectView), alloc];
+            let vfx: id = msg_send![vfx, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(initial_width, 420.0),
+            )];
+            NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
+            NSVisualEffectView::setBlendingMode_(
+                vfx,
+                NSVisualEffectBlendingMode::BehindWindow,
+            );
+            NSVisualEffectView::setState_(
+                vfx,
+                NSVisualEffectState::FollowsWindowActiveState,
+            );
+            let _: () =
+                msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+            // Insert as the bottom-most subview so it stays behind the MTKView.
+            let _: () = msg_send![wrapper, addSubview: vfx positioned: -1i64 /* NSWindowBelow */ relativeTo: nil];
+            let _: () = msg_send![vfx, release];
 
-        let column: id = msg_send![class!(NSTableColumn), alloc];
-        let column: id = msg_send![column, initWithIdentifier: ns_string("sidebar-item")];
-        let _: () = msg_send![column, setWidth: initial_width];
-        // NSTableColumnAutoresizingMask
-        let _: () = msg_send![column, setResizingMask: 1u64];
-        let _: () = msg_send![column, setEditable: 0i8];
-        let _: () = msg_send![table, addTableColumn: column];
-        let _: () = msg_send![column, release];
+            (wrapper, vfx)
+        } else {
+            // Classic source-list mode: NSVisualEffectView is both the sidebar
+            // VC's view and the container for the scroll/table.
+            let vfx: id = msg_send![class!(NSVisualEffectView), alloc];
+            let vfx: id = msg_send![vfx, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(initial_width, 420.0),
+            )];
+            NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
+            NSVisualEffectView::setBlendingMode_(
+                vfx,
+                NSVisualEffectBlendingMode::BehindWindow,
+            );
+            NSVisualEffectView::setState_(
+                vfx,
+                NSVisualEffectState::FollowsWindowActiveState,
+            );
+            let _: () =
+                msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+            (vfx, vfx)
+        };
+        let _ = sidebar_visual_effect; // retained by sidebar_container as subview
 
-        let _: () = msg_send![scroll, setDocumentView: table];
-        let _: () = msg_send![table, release];
-        let _: () = msg_send![sidebar_container, addSubview: scroll];
-        let _: () = msg_send![scroll, release];
+        // Only create the source-list table when NOT embedding custom content in the sidebar.
+        let (scroll, table) = if !embed_in_sidebar {
+            let scroll: id = msg_send![class!(NSScrollView), alloc];
+            let scroll: id = msg_send![scroll, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(initial_width, 420.0),
+            )];
+            let _: () = msg_send![scroll, setHasVerticalScroller: 1i8];
+            let _: () = msg_send![scroll, setHasHorizontalScroller: 0i8];
+            let _: () = msg_send![scroll, setAutohidesScrollers: 1i8];
+            let _: () = msg_send![scroll, setHorizontalScrollElasticity: 2i64];
+            let _: () = msg_send![scroll, setBorderType: 0u64];
+            let _: () = msg_send![scroll, setDrawsBackground: 0i8];
+            let clip_view: id = msg_send![scroll, contentView];
+            if clip_view != nil {
+                let _: () = msg_send![clip_view, setDrawsBackground: 0i8];
+            }
+            let _: () =
+                msg_send![scroll, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+
+            let table: id = msg_send![class!(NSTableView), alloc];
+            let table: id = msg_send![table, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(initial_width, 420.0),
+            )];
+            let clear_color: id = msg_send![class!(NSColor), clearColor];
+            let _: () = msg_send![table, setBackgroundColor: clear_color];
+            let _: () = msg_send![table, setUsesAlternatingRowBackgroundColors: 0i8];
+            let _: () = msg_send![table, setAllowsMultipleSelection: 0i8];
+            let _: () = msg_send![table, setAllowsColumnSelection: 0i8];
+            let _: () = msg_send![table, setAllowsColumnReordering: 0i8];
+            let _: () = msg_send![table, setAllowsColumnResizing: 0i8];
+            let _: () = msg_send![table, setIntercellSpacing: NSSize::new(0.0, 2.0)];
+            let _: () = msg_send![table, setColumnAutoresizingStyle: 5u64];
+            let _: () = msg_send![table, setHeaderView: nil];
+            let _: () = msg_send![table, setFocusRingType: 1i64];
+            let _: () = msg_send![table, setStyle: 3i64];
+            let _: () = msg_send![table, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+
+            let column: id = msg_send![class!(NSTableColumn), alloc];
+            let column: id = msg_send![column, initWithIdentifier: ns_string("sidebar-item")];
+            let _: () = msg_send![column, setWidth: initial_width];
+            let _: () = msg_send![column, setResizingMask: 1u64];
+            let _: () = msg_send![column, setEditable: 0i8];
+            let _: () = msg_send![table, addTableColumn: column];
+            let _: () = msg_send![column, release];
+
+            let _: () = msg_send![scroll, setDocumentView: table];
+            let _: () = msg_send![table, release];
+            let _: () = msg_send![sidebar_container, addSubview: scroll];
+            let _: () = msg_send![scroll, release];
+
+            (scroll, table)
+        } else {
+            // In embed mode, the sidebar container stays empty — GPUI content
+            // will be embedded here via configure_native_sidebar_window.
+            (nil, nil)
+        };
 
         let content_view: id = msg_send![class!(NSView), alloc];
         let content_view: id = msg_send![content_view, initWithFrame: NSRect::new(
@@ -521,14 +581,19 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () =
             msg_send![content_view, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
-        let detail_label: id =
-            msg_send![class!(NSTextField), labelWithString: ns_string("Select an item")];
-        let _: () = msg_send![detail_label, setFrame: NSRect::new(
-            NSPoint::new(20.0, 360.0),
-            NSSize::new(480.0, 24.0),
-        )];
-        let _: () = msg_send![detail_label, setAutoresizingMask: NSViewWidthSizable];
-        let _: () = msg_send![content_view, addSubview: detail_label];
+        let detail_label: id = if !embed_in_sidebar {
+            let label: id =
+                msg_send![class!(NSTextField), labelWithString: ns_string("Select an item")];
+            let _: () = msg_send![label, setFrame: NSRect::new(
+                NSPoint::new(20.0, 360.0),
+                NSSize::new(480.0, 24.0),
+            )];
+            let _: () = msg_send![label, setAutoresizingMask: NSViewWidthSizable];
+            let _: () = msg_send![content_view, addSubview: label];
+            label
+        } else {
+            nil
+        };
 
         let sidebar_vc: id = msg_send![class!(NSViewController), alloc];
         let sidebar_vc: id = msg_send![sidebar_vc, init];
@@ -557,6 +622,9 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () = msg_send![split_controller_view, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
         let _: () = msg_send![host_view, addSubview: split_controller_view];
 
+        // Retain sidebar_container so we can embed GPUI content into it later.
+        let _: () = msg_send![sidebar_container, retain];
+
         let host_data = SidebarHostData {
             split_view_controller,
             split_view,
@@ -564,6 +632,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
             scroll_view: scroll,
             table_view: table,
             detail_label,
+            detail_content_view: content_view,
+            sidebar_container,
             window: nil,
             embedded_content_view: nil,
             previous_content_view_controller: nil,
@@ -573,6 +643,7 @@ pub(crate) unsafe fn create_native_sidebar_view(
             previous_content_max_size: NSSize::new(0.0, 0.0),
             min_width,
             max_width,
+            embed_in_sidebar,
         };
         let host_data_ptr = Box::into_raw(Box::new(host_data)) as *mut c_void;
         (*(host_view as *mut Object)).set_ivar::<*mut c_void>(HOST_DATA_IVAR, host_data_ptr);
@@ -587,7 +658,11 @@ pub(crate) unsafe fn create_native_sidebar_view(
     }
 }
 
-pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view: id) {
+pub(crate) unsafe fn configure_native_sidebar_window(
+    host_view: id,
+    parent_view: id,
+    embed_in_sidebar: bool,
+) {
     unsafe {
         if host_view == nil || parent_view == nil {
             return;
@@ -665,14 +740,12 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
             let supports_toolbar_style: bool =
                 msg_send![window, respondsToSelector: sel!(setToolbarStyle:)];
             if supports_toolbar_style {
-                // NSWindowToolbarStyleUnified
                 let _: () = msg_send![window, setToolbarStyle: 3i64];
             }
 
             let supports_separator_style: bool =
                 msg_send![window, respondsToSelector: sel!(setTitlebarSeparatorStyle:)];
             if supports_separator_style {
-                // NSTitlebarSeparatorStyleAutomatic
                 let _: () = msg_send![window, setTitlebarSeparatorStyle: 0i64];
             }
 
@@ -716,7 +789,109 @@ pub(crate) unsafe fn configure_native_sidebar_window(host_view: id, parent_view:
             let _: () = msg_send![split_view_controller_view, layoutSubtreeIfNeeded];
         }
 
-        sync_sidebar_table_width(host_data);
+        // Embed the GPUI content view into the appropriate pane.
+        if host_data.embedded_content_view != nil {
+            let target_pane = if embed_in_sidebar {
+                // Embed in the sidebar (left) pane — the NSVisualEffectView container.
+                host_data.sidebar_container
+            } else {
+                // Embed in the detail (right) pane.
+                host_data.detail_content_view
+            };
+
+            if target_pane != nil {
+                let current_superview: id =
+                    msg_send![host_data.embedded_content_view, superview];
+                if current_superview != target_pane {
+                    if current_superview != nil {
+                        let _: () =
+                            msg_send![host_data.embedded_content_view, removeFromSuperview];
+                    }
+
+                    if embed_in_sidebar {
+                        // Use Auto Layout to pin below the titlebar safe area.
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setTranslatesAutoresizingMaskIntoConstraints: 0i8
+                        ];
+                        let _: () = msg_send![
+                            target_pane,
+                            addSubview: host_data.embedded_content_view
+                        ];
+
+                        let has_safe_area: bool = msg_send![
+                            target_pane,
+                            respondsToSelector: sel!(safeAreaLayoutGuide)
+                        ];
+                        let guide_top: id = if has_safe_area {
+                            let guide: id = msg_send![target_pane, safeAreaLayoutGuide];
+                            msg_send![guide, topAnchor]
+                        } else {
+                            msg_send![target_pane, topAnchor]
+                        };
+
+                        let pane_leading: id = msg_send![target_pane, leadingAnchor];
+                        let pane_trailing: id = msg_send![target_pane, trailingAnchor];
+                        let pane_bottom: id = msg_send![target_pane, bottomAnchor];
+
+                        let view_top: id =
+                            msg_send![host_data.embedded_content_view, topAnchor];
+                        let view_leading: id =
+                            msg_send![host_data.embedded_content_view, leadingAnchor];
+                        let view_trailing: id =
+                            msg_send![host_data.embedded_content_view, trailingAnchor];
+                        let view_bottom: id =
+                            msg_send![host_data.embedded_content_view, bottomAnchor];
+
+                        let c1: id =
+                            msg_send![view_top, constraintEqualToAnchor: guide_top];
+                        let c2: id =
+                            msg_send![view_leading, constraintEqualToAnchor: pane_leading];
+                        let c3: id =
+                            msg_send![view_trailing, constraintEqualToAnchor: pane_trailing];
+                        let c4: id =
+                            msg_send![view_bottom, constraintEqualToAnchor: pane_bottom];
+
+                        let _: () = msg_send![c1, setActive: 1i8];
+                        let _: () = msg_send![c2, setActive: 1i8];
+                        let _: () = msg_send![c3, setActive: 1i8];
+                        let _: () = msg_send![c4, setActive: 1i8];
+
+                        let _: () = msg_send![target_pane, layoutSubtreeIfNeeded];
+
+                        // Make the Metal layer non-opaque so the
+                        // NSVisualEffectView vibrancy shows through
+                        // transparent areas of the GPUI content.
+                        let layer: id = msg_send![host_data.embedded_content_view, layer];
+                        if layer != nil {
+                            let _: () = msg_send![layer, setOpaque: 0i8];
+                        }
+                    } else {
+                        let pane_bounds: NSRect = msg_send![target_pane, bounds];
+                        let _: () = msg_send![
+                            host_data.embedded_content_view, setFrame: pane_bounds
+                        ];
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+                        ];
+                        let _: () = msg_send![
+                            target_pane,
+                            addSubview: host_data.embedded_content_view
+                        ];
+                    }
+                }
+            }
+
+            // Hide the placeholder label when content is embedded in the detail pane.
+            if !embed_in_sidebar && host_data.detail_label != nil {
+                let _: () = msg_send![host_data.detail_label, setHidden: 1i8];
+            }
+        }
+
+        if !embed_in_sidebar {
+            sync_sidebar_table_width(host_data);
+        }
 
         if host_data.sidebar_toolbar != nil {
             let active_toolbar: id = msg_send![window, toolbar];
@@ -889,6 +1064,15 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                 let _: () = msg_send![host_data.previous_content_view_controller, release];
             }
             if host_data.embedded_content_view != nil {
+                // Restore autoresizing before removing from sidebar hierarchy
+                let _: () = msg_send![
+                    host_data.embedded_content_view,
+                    setTranslatesAutoresizingMaskIntoConstraints: 1i8
+                ];
+                let _: () = msg_send![
+                    host_data.embedded_content_view,
+                    setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+                ];
                 let current_superview: id = msg_send![host_data.embedded_content_view, superview];
                 if current_superview != nil {
                     let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
@@ -898,6 +1082,9 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
             if host_data.table_view != nil {
                 let _: () = msg_send![host_data.table_view, setDataSource: nil];
                 let _: () = msg_send![host_data.table_view, setDelegate: nil];
+            }
+            if host_data.sidebar_container != nil {
+                let _: () = msg_send![host_data.sidebar_container, release];
             }
 
             let _: () = msg_send![host_data.split_view_controller, release];

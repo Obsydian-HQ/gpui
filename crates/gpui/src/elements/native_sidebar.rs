@@ -20,6 +20,11 @@ pub struct SidebarSelectEvent {
 }
 
 /// Creates a native macOS-style sidebar control backed by `NSSplitViewController`.
+///
+/// By default, the sidebar's left pane shows a source-list with the provided `items`.
+/// Call `.embed_content_in_sidebar(true)` to replace the source list with the GPUI
+/// content view, allowing you to render arbitrary native controls (segmented controls,
+/// outline views, text fields, buttons, etc.) in the sidebar pane.
 pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> NativeSidebar {
     NativeSidebar {
         id: id.into(),
@@ -32,6 +37,7 @@ pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> Na
         min_sidebar_width: 180.0,
         max_sidebar_width: 420.0,
         collapsed: false,
+        embed_in_sidebar: false,
         on_select: None,
         style: StyleRefinement::default(),
     }
@@ -46,6 +52,7 @@ pub struct NativeSidebar {
     min_sidebar_width: f64,
     max_sidebar_width: f64,
     collapsed: bool,
+    embed_in_sidebar: bool,
     on_select: Option<Box<dyn Fn(&SidebarSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
@@ -84,6 +91,17 @@ impl NativeSidebar {
         self
     }
 
+    /// When `true`, the GPUI content view is embedded inside the sidebar (left)
+    /// pane instead of the detail (right) pane.  This replaces the source-list
+    /// table and lets you render arbitrary GPUI elements — segmented controls,
+    /// outline views, text fields, buttons — directly inside the sidebar.
+    ///
+    /// The items / on_select source-list will be skipped in this mode.
+    pub fn embed_content_in_sidebar(mut self, embed: bool) -> Self {
+        self.embed_in_sidebar = embed;
+        self
+    }
+
     /// Registers a callback fired when a sidebar row is selected.
     pub fn on_select(
         mut self,
@@ -103,6 +121,7 @@ struct NativeSidebarState {
     current_min_sidebar_width: f64,
     current_max_sidebar_width: f64,
     current_collapsed: bool,
+    embed_in_sidebar: bool,
     attached: bool,
 }
 
@@ -155,13 +174,23 @@ impl Element for NativeSidebar {
         let mut style = Style::default();
         style.refine(&self.style);
 
-        if matches!(style.size.width, Length::Auto) {
+        if self.embed_in_sidebar {
+            // In embed mode the native_view is reparented into the sidebar pane,
+            // so this element is purely a side-effect — it should not consume any
+            // layout space; the sibling content div should fill the viewport.
             style.size.width =
-                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(760.0))));
-        }
-        if matches!(style.size.height, Length::Auto) {
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(0.0))));
             style.size.height =
-                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(420.0))));
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(0.0))));
+        } else {
+            if matches!(style.size.width, Length::Auto) {
+                style.size.width =
+                    Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(760.0))));
+            }
+            if matches!(style.size.height, Length::Auto) {
+                style.size.height =
+                    Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(420.0))));
+            }
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -206,6 +235,7 @@ impl Element for NativeSidebar {
             let min_sidebar_width = self.min_sidebar_width.max(120.0);
             let max_sidebar_width = self.max_sidebar_width.max(min_sidebar_width);
             let collapsed = self.collapsed;
+            let embed_in_sidebar = self.embed_in_sidebar;
 
             let next_frame_callbacks = window.next_frame_callbacks.clone();
             let invalidator = window.invalidator.clone();
@@ -218,6 +248,7 @@ impl Element for NativeSidebar {
                             native_controls::configure_native_sidebar_window(
                                 state.control_ptr as cocoa::base::id,
                                 native_view as cocoa::base::id,
+                                state.embed_in_sidebar,
                             );
                         }
 
@@ -254,81 +285,92 @@ impl Element for NativeSidebar {
                             state.current_collapsed = collapsed;
                         }
 
-                        let needs_rebind = state.current_items != items
-                            || state.current_selected != selected_index
-                            || on_select.is_some()
-                            || min_max_changed;
+                        // In embed_in_sidebar mode, skip the source-list items
+                        if !embed_in_sidebar {
+                            let needs_rebind = state.current_items != items
+                                || state.current_selected != selected_index
+                                || on_select.is_some()
+                                || min_max_changed;
 
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_sidebar_target(state.target_ptr);
+                            if needs_rebind {
+                                unsafe {
+                                    native_controls::release_native_sidebar_target(
+                                        state.target_ptr,
+                                    );
+                                }
+
+                                let callback = on_select.take().map(|handler| {
+                                    let nfc = next_frame_callbacks.clone();
+                                    let inv = invalidator.clone();
+                                    let handler = Rc::new(handler);
+                                    schedule_native_callback(
+                                        handler,
+                                        |(index, title): (usize, String)| SidebarSelectEvent {
+                                            index,
+                                            title: SharedString::from(title),
+                                        },
+                                        nfc,
+                                        inv,
+                                    )
+                                });
+
+                                let item_strs: Vec<&str> =
+                                    items.iter().map(|item| item.as_ref()).collect();
+                                unsafe {
+                                    state.target_ptr =
+                                        native_controls::set_native_sidebar_items(
+                                            state.control_ptr as cocoa::base::id,
+                                            &item_strs,
+                                            selected_index,
+                                            min_sidebar_width,
+                                            max_sidebar_width,
+                                            callback,
+                                        );
+                                }
+                                state.current_items = items.clone();
+                                state.current_selected = selected_index;
                             }
-
-                            let callback = on_select.take().map(|handler| {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let handler = Rc::new(handler);
-                                schedule_native_callback(
-                                    handler,
-                                    |(index, title): (usize, String)| SidebarSelectEvent {
-                                        index,
-                                        title: SharedString::from(title),
-                                    },
-                                    nfc,
-                                    inv,
-                                )
-                            });
-
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_sidebar_items(
-                                    state.control_ptr as cocoa::base::id,
-                                    &item_strs,
-                                    selected_index,
-                                    min_sidebar_width,
-                                    max_sidebar_width,
-                                    callback,
-                                );
-                            }
-                            state.current_items = items.clone();
-                            state.current_selected = selected_index;
                         }
 
                         state
                     } else {
-                        let callback = on_select.take().map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            schedule_native_callback(
-                                handler,
-                                |(index, title): (usize, String)| SidebarSelectEvent {
-                                    index,
-                                    title: SharedString::from(title),
-                                },
-                                nfc,
-                                inv,
-                            )
-                        });
-
                         let (control_ptr, target_ptr) = unsafe {
                             let control = native_controls::create_native_sidebar_view(
                                 sidebar_width,
                                 min_sidebar_width,
                                 max_sidebar_width,
+                                embed_in_sidebar,
                             );
 
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            let target = native_controls::set_native_sidebar_items(
-                                control,
-                                &item_strs,
-                                selected_index,
-                                min_sidebar_width,
-                                max_sidebar_width,
-                                callback,
-                            );
+                            let target = if !embed_in_sidebar {
+                                let callback = on_select.take().map(|handler| {
+                                    let nfc = next_frame_callbacks.clone();
+                                    let inv = invalidator.clone();
+                                    let handler = Rc::new(handler);
+                                    schedule_native_callback(
+                                        handler,
+                                        |(index, title): (usize, String)| SidebarSelectEvent {
+                                            index,
+                                            title: SharedString::from(title),
+                                        },
+                                        nfc,
+                                        inv,
+                                    )
+                                });
+
+                                let item_strs: Vec<&str> =
+                                    items.iter().map(|item| item.as_ref()).collect();
+                                native_controls::set_native_sidebar_items(
+                                    control,
+                                    &item_strs,
+                                    selected_index,
+                                    min_sidebar_width,
+                                    max_sidebar_width,
+                                    callback,
+                                )
+                            } else {
+                                std::ptr::null_mut()
+                            };
 
                             if collapsed {
                                 native_controls::set_native_sidebar_collapsed(
@@ -343,6 +385,7 @@ impl Element for NativeSidebar {
                             native_controls::configure_native_sidebar_window(
                                 control,
                                 native_view as cocoa::base::id,
+                                embed_in_sidebar,
                             );
 
                             (control as *mut c_void, target)
@@ -357,6 +400,7 @@ impl Element for NativeSidebar {
                             current_min_sidebar_width: min_sidebar_width,
                             current_max_sidebar_width: max_sidebar_width,
                             current_collapsed: collapsed,
+                            embed_in_sidebar,
                             attached: true,
                         }
                     };
@@ -364,6 +408,19 @@ impl Element for NativeSidebar {
                     ((), Some(state))
                 },
             );
+
+            // After the native_view has been reparented into the sidebar pane,
+            // GPUI's viewport_size may be stale (still reflecting the full
+            // window).  Re-read content_size (which now returns the native_view's
+            // frame) and schedule a redraw so the next layout uses the correct
+            // dimensions.
+            if embed_in_sidebar {
+                let new_size = window.platform_window.content_size();
+                if window.viewport_size != new_size {
+                    window.viewport_size = new_size;
+                    window.invalidator.set_dirty(true);
+                }
+            }
         }
     }
 }
