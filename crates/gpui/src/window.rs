@@ -3687,6 +3687,11 @@ impl Window {
         self.appearance
     }
 
+    /// Returns the height of the titlebar area (including any native toolbar).
+    pub fn titlebar_height(&self) -> Pixels {
+        self.platform_window.titlebar_height()
+    }
+
     /// Returns the size of the drawable area within the window.
     pub fn viewport_size(&self) -> Size<Pixels> {
         self.viewport_size
