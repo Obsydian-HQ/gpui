@@ -3104,6 +3104,116 @@ extern "C" fn toolbar_item_for_identifier(
     }
 }
 
+struct ToolbarImageContext {
+    toolbar_item: id,
+    image: id,
+}
+
+unsafe extern "C" fn set_toolbar_image_on_main(context: *mut c_void) {
+    unsafe {
+        let ctx = Box::from_raw(context as *mut ToolbarImageContext);
+        let _: () = msg_send![ctx.toolbar_item, setImage: ctx.image];
+        let _: () = msg_send![ctx.image, release];
+        let _: () = msg_send![ctx.toolbar_item, release];
+    }
+}
+
+unsafe extern "C" fn release_toolbar_item_on_main(context: *mut c_void) {
+    unsafe {
+        let item = context as id;
+        let _: () = msg_send![item, release];
+    }
+}
+
+/// Asynchronously loads an image from a URL and sets it on an NSToolbarItem.
+/// If `circular` is true, the image is clipped to a circle (for avatars).
+unsafe fn load_toolbar_image_from_url(toolbar_item: id, url_str: &str, circular: bool) {
+    unsafe {
+        let ns_url_string = ns_string(url_str);
+        let url: id = msg_send![class!(NSURL), URLWithString: ns_url_string];
+        if url == nil {
+            return;
+        }
+
+        // Retain the toolbar item so it stays alive during the async load
+        let _: () = msg_send![toolbar_item, retain];
+
+        let session: id = msg_send![class!(NSURLSession), sharedSession];
+        let block = ConcreteBlock::new(move |data: id, _response: id, error: id| {
+            if error != nil || data == nil {
+                // Release on main thread since NSToolbarItem isn't thread-safe
+                dispatch_async_f(
+                    dispatch_get_main_queue(),
+                    toolbar_item as *mut c_void,
+                    Some(release_toolbar_item_on_main as unsafe extern "C" fn(*mut c_void)),
+                );
+                return;
+            }
+
+            let image: id = msg_send![class!(NSImage), alloc];
+            let image: id = msg_send![image, initWithData: data];
+            if image == nil {
+                dispatch_async_f(
+                    dispatch_get_main_queue(),
+                    toolbar_item as *mut c_void,
+                    Some(release_toolbar_item_on_main as unsafe extern "C" fn(*mut c_void)),
+                );
+                return;
+            }
+
+            // Scale image to toolbar-appropriate size (24x24 points)
+            let toolbar_size = 24.0_f64;
+            let target_size = NSSize {
+                width: toolbar_size,
+                height: toolbar_size,
+            };
+
+            let new_image: id = msg_send![class!(NSImage), alloc];
+            let new_image: id = msg_send![new_image, initWithSize: target_size];
+            let _: () = msg_send![new_image, lockFocus];
+
+            if circular {
+                let oval_rect = NSRect::new(NSPoint::new(0.0, 0.0), target_size);
+                let path: id =
+                    msg_send![class!(NSBezierPath), bezierPathWithOvalInRect: oval_rect];
+                let _: () = msg_send![path, addClip];
+            }
+
+            let dst_rect = NSRect::new(NSPoint::new(0.0, 0.0), target_size);
+            let zero_rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize { width: 0.0, height: 0.0 });
+            // NSCompositingOperationSourceOver = 2
+            let _: () = msg_send![
+                image,
+                drawInRect: dst_rect
+                fromRect: zero_rect
+                operation: 2u64
+                fraction: 1.0f64
+            ];
+
+            let _: () = msg_send![new_image, unlockFocus];
+            // Mark as template: NO so AppKit renders the actual image colors
+            let _: () = msg_send![new_image, setTemplate: false];
+            let _: () = msg_send![image, release];
+            let final_image = new_image;
+
+            // Dispatch to main thread to set the image on the toolbar item
+            let ctx = Box::new(ToolbarImageContext {
+                toolbar_item,
+                image: final_image,
+            });
+            dispatch_async_f(
+                dispatch_get_main_queue(),
+                Box::into_raw(ctx) as *mut c_void,
+                Some(set_toolbar_image_on_main as unsafe extern "C" fn(*mut c_void)),
+            );
+        });
+        let block = block.copy();
+
+        let task: id = msg_send![session, dataTaskWithURL: url completionHandler: &*block];
+        let _: () = msg_send![task, resume];
+    }
+}
+
 unsafe fn create_toolbar_button_item(
     this: &Object,
     state: &mut ToolbarState,
@@ -3118,6 +3228,9 @@ unsafe fn create_toolbar_button_item(
         };
         let label = item.label.clone();
         let tool_tip = item.tool_tip.clone();
+        let icon = item.icon.clone();
+        let image_url = item.image_url.clone();
+        let image_circular = item.image_circular;
 
         let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
         let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
@@ -3137,6 +3250,24 @@ unsafe fn create_toolbar_button_item(
         let target = crate::platform::native_controls::set_native_button_action(button, action);
         if let Some(tool_tip) = tool_tip.as_ref() {
             crate::platform::native_controls::set_native_view_tooltip(button, tool_tip.as_ref());
+        }
+
+        // Set SF Symbol icon on the toolbar item if provided
+        if let Some(icon) = icon.as_ref() {
+            let symbol_name = ns_string(icon.as_ref());
+            let image: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: symbol_name
+                accessibilityDescription: nil
+            ];
+            if image != nil {
+                let _: () = msg_send![toolbar_item, setImage: image];
+            }
+        }
+
+        // Load image from URL asynchronously if provided
+        if let Some(url_str) = image_url.as_ref() {
+            load_toolbar_image_from_url(toolbar_item, url_str, image_circular);
         }
 
         let _: () = msg_send![toolbar_item, setLabel: ns_string(label.as_ref())];
@@ -3445,19 +3576,24 @@ fn convert_platform_menu_items_to_native(
     items
         .iter()
         .map(|item| match item {
-            PlatformNativeToolbarMenuItemData::Action { title, enabled } => {
-                crate::platform::native_controls::NativeMenuItemData::Action {
-                    title: title.to_string(),
-                    enabled: *enabled,
-                }
-            }
+            PlatformNativeToolbarMenuItemData::Action {
+                title,
+                enabled,
+                icon,
+            } => crate::platform::native_controls::NativeMenuItemData::Action {
+                title: title.to_string(),
+                enabled: *enabled,
+                icon: icon.as_ref().map(|s| s.to_string()),
+            },
             PlatformNativeToolbarMenuItemData::Submenu {
                 title,
                 enabled,
+                icon,
                 items,
             } => crate::platform::native_controls::NativeMenuItemData::Submenu {
                 title: title.to_string(),
                 enabled: *enabled,
+                icon: icon.as_ref().map(|s| s.to_string()),
                 items: convert_platform_menu_items_to_native(items),
             },
             PlatformNativeToolbarMenuItemData::Separator => {

@@ -13,15 +13,17 @@ use objc::{
 };
 use std::{ffi::c_void, ptr};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NativeMenuItemData {
     Action {
         title: String,
         enabled: bool,
+        icon: Option<String>,
     },
     Submenu {
         title: String,
         enabled: bool,
+        icon: Option<String>,
         items: Vec<NativeMenuItemData>,
     },
     Separator,
@@ -135,7 +137,11 @@ unsafe fn build_menu(
                     let sep: id = msg_send![class!(NSMenuItem), separatorItem];
                     let _: () = msg_send![menu, addItem: sep];
                 }
-                NativeMenuItemData::Action { title, enabled } => {
+                NativeMenuItemData::Action {
+                    title,
+                    enabled,
+                    icon,
+                } => {
                     let menu_item: id = msg_send![class!(NSMenuItem), alloc];
                     let menu_item: id = msg_send![
                         menu_item,
@@ -146,6 +152,17 @@ unsafe fn build_menu(
                     let _: () = msg_send![menu_item, setTag: *next_action_index as i64];
                     let _: () = msg_send![menu_item, setTarget: target];
                     let _: () = msg_send![menu_item, setEnabled: *enabled as i8];
+                    if let Some(icon) = icon {
+                        let symbol_name = ns_string(icon);
+                        let image: id = msg_send![
+                            class!(NSImage),
+                            imageWithSystemSymbolName: symbol_name
+                            accessibilityDescription: nil
+                        ];
+                        if image != nil {
+                            let _: () = msg_send![menu_item, setImage: image];
+                        }
+                    }
                     let _: () = msg_send![menu, addItem: menu_item];
                     let _: () = msg_send![menu_item, release];
                     *next_action_index += 1;
@@ -153,6 +170,7 @@ unsafe fn build_menu(
                 NativeMenuItemData::Submenu {
                     title,
                     enabled,
+                    icon,
                     items,
                 } => {
                     let submenu = build_menu(title, items, target, next_action_index);
@@ -168,6 +186,17 @@ unsafe fn build_menu(
                     let _: () = msg_send![parent_item, setEnabled: *enabled as i8];
                     let _: () = msg_send![parent_item, setTarget: nil];
                     let _: () = msg_send![parent_item, setSubmenu: submenu];
+                    if let Some(icon) = icon {
+                        let symbol_name = ns_string(icon);
+                        let image: id = msg_send![
+                            class!(NSImage),
+                            imageWithSystemSymbolName: symbol_name
+                            accessibilityDescription: nil
+                        ];
+                        if image != nil {
+                            let _: () = msg_send![parent_item, setImage: image];
+                        }
+                    }
                     let _: () = msg_send![menu, addItem: parent_item];
 
                     let _: () = msg_send![submenu, release];

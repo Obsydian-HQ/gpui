@@ -34,10 +34,10 @@ impl Render for MenuToolbarExample {
                             "file_menu",
                             "File",
                             vec![
-                                NativeToolbarMenuItem::action("New Document"),
-                                NativeToolbarMenuItem::action("Open..."),
+                                NativeToolbarMenuItem::action("New Document").icon("doc.badge.plus"),
+                                NativeToolbarMenuItem::action("Open...").icon("folder"),
                                 NativeToolbarMenuItem::separator(),
-                                NativeToolbarMenuItem::action("Save"),
+                                NativeToolbarMenuItem::action("Save").icon("square.and.arrow.down"),
                                 NativeToolbarMenuItem::action("Save As..."),
                                 NativeToolbarMenuItem::separator(),
                                 NativeToolbarMenuItem::submenu(
@@ -47,9 +47,12 @@ impl Render for MenuToolbarExample {
                                         NativeToolbarMenuItem::action("HTML"),
                                         NativeToolbarMenuItem::action("Markdown"),
                                     ],
-                                ),
+                                )
+                                .icon("square.and.arrow.up"),
                                 NativeToolbarMenuItem::separator(),
-                                NativeToolbarMenuItem::action("Close").enabled(false),
+                                NativeToolbarMenuItem::action("Close")
+                                    .icon("xmark.circle")
+                                    .enabled(false),
                             ],
                         )
                         .icon("doc.text")

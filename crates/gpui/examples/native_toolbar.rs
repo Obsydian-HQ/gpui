@@ -24,6 +24,7 @@ impl Render for NativeToolbarExample {
                     .item(NativeToolbarItem::Button(
                         NativeToolbarButton::new("increment", "Increment")
                             .tool_tip("Increase the counter")
+                            .icon("plus.circle")
                             .on_click(cx.listener(
                                 |this, event: &NativeToolbarClickEvent, _, cx| {
                                     this.count += 1;
@@ -35,10 +36,23 @@ impl Render for NativeToolbarExample {
                     .item(NativeToolbarItem::Button(
                         NativeToolbarButton::new("reset", "Reset")
                             .tool_tip("Reset the counter")
+                            .icon("arrow.counterclockwise")
                             .on_click(cx.listener(
                                 |this, event: &NativeToolbarClickEvent, _, cx| {
                                     this.count = 0;
                                     this.last_action = format!("clicked {}", event.item_id);
+                                    cx.notify();
+                                },
+                            )),
+                    ))
+                    .item(NativeToolbarItem::Button(
+                        NativeToolbarButton::new("avatar", "Avatar")
+                            .tool_tip("Image loaded from URL (circular)")
+                            .image_url("https://avatars.githubusercontent.com/u/1714999")
+                            .image_circular(true)
+                            .on_click(cx.listener(
+                                |this, _event: &NativeToolbarClickEvent, _, cx| {
+                                    this.last_action = "clicked avatar".to_string();
                                     cx.notify();
                                 },
                             )),

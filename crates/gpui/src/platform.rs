@@ -533,6 +533,9 @@ pub(crate) struct PlatformNativeToolbarButtonItem {
     pub id: SharedString,
     pub label: SharedString,
     pub tool_tip: Option<SharedString>,
+    pub icon: Option<SharedString>,
+    pub image_url: Option<SharedString>,
+    pub image_circular: bool,
     pub on_click: Option<Box<dyn Fn()>>,
 }
 
@@ -587,10 +590,12 @@ pub(crate) enum PlatformNativeToolbarMenuItemData {
     Action {
         title: SharedString,
         enabled: bool,
+        icon: Option<SharedString>,
     },
     Submenu {
         title: SharedString,
         enabled: bool,
+        icon: Option<SharedString>,
         items: Vec<PlatformNativeToolbarMenuItemData>,
     },
     Separator,

@@ -677,6 +677,9 @@ pub struct NativeToolbarButton {
     id: SharedString,
     label: SharedString,
     tool_tip: Option<SharedString>,
+    icon: Option<SharedString>,
+    image_url: Option<SharedString>,
+    image_circular: bool,
     on_click: Option<Box<dyn Fn(&NativeToolbarClickEvent, &mut Window, &mut App) + 'static>>,
 }
 
@@ -687,6 +690,9 @@ impl NativeToolbarButton {
             id: id.into(),
             label: label.into(),
             tool_tip: None,
+            icon: None,
+            image_url: None,
+            image_circular: false,
             on_click: None,
         }
     }
@@ -694,6 +700,25 @@ impl NativeToolbarButton {
     /// Sets a tooltip for this button.
     pub fn tool_tip(mut self, tool_tip: impl Into<SharedString>) -> Self {
         self.tool_tip = Some(tool_tip.into());
+        self
+    }
+
+    /// Sets an SF Symbol name to display as the button icon.
+    pub fn icon(mut self, symbol_name: impl Into<SharedString>) -> Self {
+        self.icon = Some(symbol_name.into());
+        self
+    }
+
+    /// Sets a URL for an image to display as the button icon.
+    /// The image is loaded asynchronously and cached.
+    pub fn image_url(mut self, url: impl Into<SharedString>) -> Self {
+        self.image_url = Some(url.into());
+        self
+    }
+
+    /// When true, the loaded image is clipped to a circle (for avatars).
+    pub fn image_circular(mut self, circular: bool) -> Self {
+        self.image_circular = circular;
         self
     }
 
@@ -972,6 +997,8 @@ pub enum NativeToolbarMenuItem {
         title: SharedString,
         /// Whether this item is enabled.
         enabled: bool,
+        /// Optional SF Symbol name to display as an icon.
+        icon: Option<SharedString>,
     },
     /// A submenu containing nested items.
     Submenu {
@@ -979,6 +1006,8 @@ pub enum NativeToolbarMenuItem {
         title: SharedString,
         /// Whether this submenu is enabled.
         enabled: bool,
+        /// Optional SF Symbol name to display as an icon.
+        icon: Option<SharedString>,
         /// Nested menu items.
         items: Vec<NativeToolbarMenuItem>,
     },
@@ -992,6 +1021,7 @@ impl NativeToolbarMenuItem {
         Self::Action {
             title: title.into(),
             enabled: true,
+            icon: None,
         }
     }
 
@@ -1000,6 +1030,7 @@ impl NativeToolbarMenuItem {
         Self::Submenu {
             title: title.into(),
             enabled: true,
+            icon: None,
             items,
         }
     }
@@ -1009,13 +1040,44 @@ impl NativeToolbarMenuItem {
         Self::Separator
     }
 
+    /// Sets an SF Symbol name to display as an icon on this menu item.
+    pub fn icon(self, symbol_name: impl Into<SharedString>) -> Self {
+        let icon = Some(symbol_name.into());
+        match self {
+            Self::Action { title, enabled, .. } => Self::Action {
+                title,
+                enabled,
+                icon,
+            },
+            Self::Submenu {
+                title,
+                enabled,
+                items,
+                ..
+            } => Self::Submenu {
+                title,
+                enabled,
+                icon,
+                items,
+            },
+            Self::Separator => Self::Separator,
+        }
+    }
+
     /// Sets enabled state on action and submenu items.
     pub fn enabled(self, enabled: bool) -> Self {
         match self {
-            Self::Action { title, .. } => Self::Action { title, enabled },
-            Self::Submenu { title, items, .. } => Self::Submenu {
+            Self::Action { title, icon, .. } => Self::Action {
                 title,
                 enabled,
+                icon,
+            },
+            Self::Submenu {
+                title, items, icon, ..
+            } => Self::Submenu {
+                title,
+                enabled,
+                icon,
                 items,
             },
             Self::Separator => Self::Separator,
@@ -1225,6 +1287,9 @@ impl NativeToolbar {
                         id: button.id,
                         label: button.label,
                         tool_tip: button.tool_tip,
+                        icon: button.icon,
+                        image_url: button.image_url,
+                        image_circular: button.image_circular,
                         on_click,
                     })
                 }
@@ -1413,19 +1478,24 @@ fn convert_toolbar_menu_items(
     items
         .iter()
         .map(|item| match item {
-            NativeToolbarMenuItem::Action { title, enabled } => {
-                PlatformNativeToolbarMenuItemData::Action {
-                    title: title.clone(),
-                    enabled: *enabled,
-                }
-            }
+            NativeToolbarMenuItem::Action {
+                title,
+                enabled,
+                icon,
+            } => PlatformNativeToolbarMenuItemData::Action {
+                title: title.clone(),
+                enabled: *enabled,
+                icon: icon.clone(),
+            },
             NativeToolbarMenuItem::Submenu {
                 title,
                 enabled,
+                icon,
                 items,
             } => PlatformNativeToolbarMenuItemData::Submenu {
                 title: title.clone(),
                 enabled: *enabled,
+                icon: icon.clone(),
                 items: convert_toolbar_menu_items(items),
             },
             NativeToolbarMenuItem::Separator => PlatformNativeToolbarMenuItemData::Separator,

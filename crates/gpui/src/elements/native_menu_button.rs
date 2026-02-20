@@ -184,6 +184,7 @@ fn map_items(
                 crate::platform::native_controls::NativeMenuItemData::Action {
                     title: title.to_string(),
                     enabled: *enabled,
+                    icon: None,
                 }
             }
             NativeMenuItem::Submenu {
@@ -193,6 +194,7 @@ fn map_items(
             } => crate::platform::native_controls::NativeMenuItemData::Submenu {
                 title: title.to_string(),
                 enabled: *enabled,
+                icon: None,
                 items: items.iter().map(convert).collect(),
             },
             NativeMenuItem::Separator => {
