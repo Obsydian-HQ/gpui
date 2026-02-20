@@ -411,6 +411,7 @@ fn build_combo_box_callbacks(
     crate::platform::native_controls::ComboBoxCallbacks {
         on_select: select_cb,
         on_change: change_cb,
+        on_submit: None,
     }
 }
 

@@ -242,6 +242,31 @@ pub(crate) unsafe fn set_native_menu_button_items(
     }
 }
 
+/// Creates a GPUINativeMenuTarget with an NSMenu built from the given items.
+/// Returns `(menu, target_ptr)`. The caller owns the menu (retained) and
+/// must eventually call `release_native_menu_button_target` on the target.
+pub(crate) unsafe fn create_native_menu_target(
+    items: &[NativeMenuItemData],
+    on_select: Option<Box<dyn Fn(usize)>>,
+) -> (id, *mut c_void) {
+    unsafe {
+        let target: id = msg_send![MENU_TARGET_CLASS, alloc];
+        let target: id = msg_send![target, init];
+
+        let mut next_action_index = 0;
+        let menu = build_menu("menu", items, target, &mut next_action_index);
+
+        let callbacks = MenuCallbacks { menu, on_select };
+        let callbacks_ptr = Box::into_raw(Box::new(callbacks)) as *mut c_void;
+        (*target).set_ivar::<*mut c_void>(CALLBACK_IVAR, callbacks_ptr);
+
+        // Retain the menu for the caller (MenuCallbacks also holds a reference)
+        let _: () = msg_send![menu, retain];
+
+        (menu, target as *mut c_void)
+    }
+}
+
 pub(crate) unsafe fn release_native_menu_button_target(target: *mut c_void) {
     unsafe {
         if target.is_null() {

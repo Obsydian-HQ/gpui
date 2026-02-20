@@ -403,3 +403,11 @@ path = "examples/native_dual_surface_sidebar.rs"
 [[example]]
 name = "native_glass_dock"
 path = "examples/native_glass_dock.rs"
+
+[[example]]
+name = "native_toolbar_menu"
+path = "examples/native_toolbar_menu.rs"
+
+[[example]]
+name = "native_toolbar_popover"
+path = "examples/native_toolbar_popover.rs"

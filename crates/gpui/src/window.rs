@@ -10,8 +10,12 @@ use crate::{
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformNativeToolbar, PlatformNativeToolbarButtonItem,
-    PlatformNativeToolbarDisplayMode, PlatformNativeToolbarItem,
-    PlatformNativeToolbarSearchFieldItem, PlatformNativeToolbarSizeMode, PlatformWindow, Point,
+    PlatformNativeToolbarComboBoxItem, PlatformNativeToolbarDisplayMode, PlatformNativeToolbarItem,
+    PlatformNativeToolbarMenuButtonItem, PlatformNativeToolbarMenuItemData,
+    PlatformNativeToolbarPopUpItem, PlatformNativeToolbarSearchFieldItem,
+    PlatformNativeToolbarSegmentedItem, PlatformNativeToolbarSizeMode,
+    PlatformNativePopover, PlatformNativePopoverAnchor, PlatformNativePopoverBehavior,
+    PlatformNativePopoverContentItem, PlatformWindow, Point,
     PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
@@ -574,6 +578,51 @@ pub struct NativeToolbarSearchEvent {
     pub text: String,
 }
 
+/// Event emitted when a native toolbar segmented control selection changes.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarSegmentedEvent {
+    /// The identifier of the segmented control item.
+    pub item_id: SharedString,
+    /// The index of the newly selected segment.
+    pub selected_index: usize,
+}
+
+/// Event emitted when a native toolbar popup button selection changes.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarPopUpEvent {
+    /// The identifier of the popup button item.
+    pub item_id: SharedString,
+    /// The index of the newly selected item.
+    pub selected_index: usize,
+}
+
+/// Event emitted when a native toolbar combo box text changes.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarComboBoxChangeEvent {
+    /// The identifier of the combo box item.
+    pub item_id: SharedString,
+    /// The current text of the combo box.
+    pub text: String,
+}
+
+/// Event emitted when a native toolbar combo box item is selected.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarComboBoxSelectEvent {
+    /// The identifier of the combo box item.
+    pub item_id: SharedString,
+    /// The index of the selected item.
+    pub selected_index: usize,
+}
+
+/// Event emitted when a native toolbar menu button item is selected.
+#[derive(Clone, Debug)]
+pub struct NativeToolbarMenuButtonSelectEvent {
+    /// The identifier of the menu button item.
+    pub item_id: SharedString,
+    /// The zero-based action index (depth-first across all action items).
+    pub index: usize,
+}
+
 /// Display mode for the native macOS toolbar.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub enum NativeToolbarDisplayMode {
@@ -726,6 +775,312 @@ impl NativeToolbarSearchField {
     }
 }
 
+/// A single segment within a native toolbar segmented control.
+pub struct NativeToolbarSegment {
+    /// The text label for this segment.
+    pub label: SharedString,
+    /// An optional SF Symbol name to display as an icon.
+    pub icon: Option<SharedString>,
+}
+
+impl NativeToolbarSegment {
+    /// Creates a segment with a label.
+    pub fn new(label: impl Into<SharedString>) -> Self {
+        Self {
+            label: label.into(),
+            icon: None,
+        }
+    }
+
+    /// Sets an SF Symbol icon for this segment.
+    pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+}
+
+/// A native toolbar segmented control item.
+pub struct NativeToolbarSegmentedControl {
+    id: SharedString,
+    segments: Vec<NativeToolbarSegment>,
+    selected_index: usize,
+    on_select:
+        Option<Box<dyn Fn(&NativeToolbarSegmentedEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarSegmentedControl {
+    /// Creates a segmented control with an identifier and segments.
+    pub fn new(
+        id: impl Into<SharedString>,
+        segments: Vec<NativeToolbarSegment>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            segments,
+            selected_index: 0,
+            on_select: None,
+        }
+    }
+
+    /// Sets which segment is initially selected.
+    pub fn selected_index(mut self, index: usize) -> Self {
+        self.selected_index = index;
+        self
+    }
+
+    /// Registers a callback invoked when the selected segment changes.
+    pub fn on_select(
+        mut self,
+        listener: impl Fn(&NativeToolbarSegmentedEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(listener));
+        self
+    }
+}
+
+/// A native toolbar popup button item.
+pub struct NativeToolbarPopUpButton {
+    id: SharedString,
+    items: Vec<SharedString>,
+    selected_index: usize,
+    on_select: Option<Box<dyn Fn(&NativeToolbarPopUpEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarPopUpButton {
+    /// Creates a popup button with an identifier and menu items.
+    pub fn new(id: impl Into<SharedString>, items: Vec<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            items,
+            selected_index: 0,
+            on_select: None,
+        }
+    }
+
+    /// Sets which item is initially selected.
+    pub fn selected_index(mut self, index: usize) -> Self {
+        self.selected_index = index;
+        self
+    }
+
+    /// Registers a callback invoked when the selected item changes.
+    pub fn on_select(
+        mut self,
+        listener: impl Fn(&NativeToolbarPopUpEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(listener));
+        self
+    }
+}
+
+/// A native toolbar combo box item (editable text field with dropdown suggestions).
+pub struct NativeToolbarComboBox {
+    id: SharedString,
+    placeholder: SharedString,
+    text: SharedString,
+    items: Vec<SharedString>,
+    min_width: Pixels,
+    max_width: Pixels,
+    on_change:
+        Option<Box<dyn Fn(&NativeToolbarComboBoxChangeEvent, &mut Window, &mut App) + 'static>>,
+    on_select:
+        Option<Box<dyn Fn(&NativeToolbarComboBoxSelectEvent, &mut Window, &mut App) + 'static>>,
+    on_submit:
+        Option<Box<dyn Fn(&NativeToolbarComboBoxChangeEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarComboBox {
+    /// Creates a combo box item with an identifier.
+    pub fn new(id: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            placeholder: SharedString::default(),
+            text: SharedString::default(),
+            items: Vec::new(),
+            min_width: px(200.0),
+            max_width: px(400.0),
+            on_change: None,
+            on_select: None,
+            on_submit: None,
+        }
+    }
+
+    /// Sets placeholder text.
+    pub fn placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    /// Sets the current text value.
+    pub fn text(mut self, text: impl Into<SharedString>) -> Self {
+        self.text = text.into();
+        self
+    }
+
+    /// Sets the dropdown suggestion items.
+    pub fn items(mut self, items: Vec<SharedString>) -> Self {
+        self.items = items;
+        self
+    }
+
+    /// Sets the minimum width of the combo box.
+    pub fn min_width(mut self, min_width: Pixels) -> Self {
+        self.min_width = min_width;
+        self
+    }
+
+    /// Sets the maximum width of the combo box.
+    pub fn max_width(mut self, max_width: Pixels) -> Self {
+        self.max_width = max_width;
+        self
+    }
+
+    /// Registers a callback invoked when the text changes.
+    pub fn on_change(
+        mut self,
+        listener: impl Fn(&NativeToolbarComboBoxChangeEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_change = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when a dropdown item is selected.
+    pub fn on_select(
+        mut self,
+        listener: impl Fn(&NativeToolbarComboBoxSelectEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when Enter is pressed.
+    pub fn on_submit(
+        mut self,
+        listener: impl Fn(&NativeToolbarComboBoxChangeEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_submit = Some(Box::new(listener));
+        self
+    }
+}
+
+/// A menu item for use in a native toolbar menu button.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeToolbarMenuItem {
+    /// A clickable action item.
+    Action {
+        /// Visible title.
+        title: SharedString,
+        /// Whether this item is enabled.
+        enabled: bool,
+    },
+    /// A submenu containing nested items.
+    Submenu {
+        /// Visible title.
+        title: SharedString,
+        /// Whether this submenu is enabled.
+        enabled: bool,
+        /// Nested menu items.
+        items: Vec<NativeToolbarMenuItem>,
+    },
+    /// A visual separator line.
+    Separator,
+}
+
+impl NativeToolbarMenuItem {
+    /// Creates an enabled action item.
+    pub fn action(title: impl Into<SharedString>) -> Self {
+        Self::Action {
+            title: title.into(),
+            enabled: true,
+        }
+    }
+
+    /// Creates an enabled submenu.
+    pub fn submenu(title: impl Into<SharedString>, items: Vec<NativeToolbarMenuItem>) -> Self {
+        Self::Submenu {
+            title: title.into(),
+            enabled: true,
+            items,
+        }
+    }
+
+    /// Creates a separator item.
+    pub fn separator() -> Self {
+        Self::Separator
+    }
+
+    /// Sets enabled state on action and submenu items.
+    pub fn enabled(self, enabled: bool) -> Self {
+        match self {
+            Self::Action { title, .. } => Self::Action { title, enabled },
+            Self::Submenu { title, items, .. } => Self::Submenu {
+                title,
+                enabled,
+                items,
+            },
+            Self::Separator => Self::Separator,
+        }
+    }
+}
+
+/// A native toolbar button that opens a dropdown menu (NSMenuToolbarItem).
+pub struct NativeToolbarMenuButton {
+    id: SharedString,
+    label: SharedString,
+    tool_tip: Option<SharedString>,
+    icon: Option<SharedString>,
+    shows_indicator: bool,
+    items: Vec<NativeToolbarMenuItem>,
+    on_select:
+        Option<Box<dyn Fn(&NativeToolbarMenuButtonSelectEvent, &mut Window, &mut App) + 'static>>,
+}
+
+impl NativeToolbarMenuButton {
+    /// Creates a new menu button with the given identifier, label, and menu items.
+    pub fn new(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        items: Vec<NativeToolbarMenuItem>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            tool_tip: None,
+            icon: None,
+            shows_indicator: true,
+            items,
+            on_select: None,
+        }
+    }
+
+    /// Sets an optional tooltip.
+    pub fn tool_tip(mut self, tip: impl Into<SharedString>) -> Self {
+        self.tool_tip = Some(tip.into());
+        self
+    }
+
+    /// Sets an SF Symbol name to display as the button icon.
+    pub fn icon(mut self, symbol_name: impl Into<SharedString>) -> Self {
+        self.icon = Some(symbol_name.into());
+        self
+    }
+
+    /// Controls whether the dropdown chevron indicator is visible.
+    pub fn shows_indicator(mut self, shows: bool) -> Self {
+        self.shows_indicator = shows;
+        self
+    }
+
+    /// Registers a callback invoked when a menu action item is selected.
+    pub fn on_select(
+        mut self,
+        listener: impl Fn(&NativeToolbarMenuButtonSelectEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_select = Some(Box::new(listener));
+        self
+    }
+}
+
 /// A native toolbar item.
 pub enum NativeToolbarItem {
     /// A button item.
@@ -736,6 +1091,14 @@ pub enum NativeToolbarItem {
     FlexibleSpace,
     /// A search field item.
     SearchField(NativeToolbarSearchField),
+    /// A segmented control item.
+    SegmentedControl(NativeToolbarSegmentedControl),
+    /// A popup button item.
+    PopUpButton(NativeToolbarPopUpButton),
+    /// A combo box item.
+    ComboBox(NativeToolbarComboBox),
+    /// A button that opens a dropdown menu (NSMenuToolbarItem).
+    MenuButton(NativeToolbarMenuButton),
 }
 
 impl NativeToolbarItem {
@@ -747,6 +1110,33 @@ impl NativeToolbarItem {
     /// Creates a search field item.
     pub fn search_field(id: impl Into<SharedString>) -> Self {
         Self::SearchField(NativeToolbarSearchField::new(id))
+    }
+
+    /// Creates a segmented control item.
+    pub fn segmented_control(
+        id: impl Into<SharedString>,
+        segments: Vec<NativeToolbarSegment>,
+    ) -> Self {
+        Self::SegmentedControl(NativeToolbarSegmentedControl::new(id, segments))
+    }
+
+    /// Creates a popup button item.
+    pub fn popup_button(id: impl Into<SharedString>, items: Vec<SharedString>) -> Self {
+        Self::PopUpButton(NativeToolbarPopUpButton::new(id, items))
+    }
+
+    /// Creates a combo box item.
+    pub fn combo_box(id: impl Into<SharedString>) -> Self {
+        Self::ComboBox(NativeToolbarComboBox::new(id))
+    }
+
+    /// Creates a menu button item (toolbar button that opens a dropdown menu).
+    pub fn menu_button(
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        items: Vec<NativeToolbarMenuItem>,
+    ) -> Self {
+        Self::MenuButton(NativeToolbarMenuButton::new(id, label, items))
     }
 }
 
@@ -877,6 +1267,132 @@ impl NativeToolbar {
                         on_submit,
                     })
                 }
+                NativeToolbarItem::SegmentedControl(segmented) => {
+                    let seg_id = segmented.id.clone();
+                    let on_select = segmented.on_select.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |selected_index: usize| NativeToolbarSegmentedEvent {
+                                item_id: seg_id.clone(),
+                                selected_index,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let labels: Vec<SharedString> =
+                        segmented.segments.iter().map(|s| s.label.clone()).collect();
+                    let icons: Vec<Option<SharedString>> =
+                        segmented.segments.into_iter().map(|s| s.icon).collect();
+
+                    PlatformNativeToolbarItem::SegmentedControl(
+                        PlatformNativeToolbarSegmentedItem {
+                            id: segmented.id,
+                            labels,
+                            icons,
+                            selected_index: segmented.selected_index,
+                            on_select,
+                        },
+                    )
+                }
+                NativeToolbarItem::PopUpButton(popup) => {
+                    let popup_id = popup.id.clone();
+                    let on_select = popup.on_select.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |selected_index: usize| NativeToolbarPopUpEvent {
+                                item_id: popup_id.clone(),
+                                selected_index,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    PlatformNativeToolbarItem::PopUpButton(PlatformNativeToolbarPopUpItem {
+                        id: popup.id,
+                        items: popup.items,
+                        selected_index: popup.selected_index,
+                        on_select,
+                    })
+                }
+                NativeToolbarItem::ComboBox(combo) => {
+                    let change_id = combo.id.clone();
+                    let on_change = combo.on_change.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |text: String| NativeToolbarComboBoxChangeEvent {
+                                item_id: change_id.clone(),
+                                text,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let select_id = combo.id.clone();
+                    let on_select = combo.on_select.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |selected_index: usize| NativeToolbarComboBoxSelectEvent {
+                                item_id: select_id.clone(),
+                                selected_index,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let submit_id = combo.id.clone();
+                    let on_submit = combo.on_submit.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |text: String| NativeToolbarComboBoxChangeEvent {
+                                item_id: submit_id.clone(),
+                                text,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    PlatformNativeToolbarItem::ComboBox(PlatformNativeToolbarComboBoxItem {
+                        id: combo.id,
+                        placeholder: combo.placeholder,
+                        text: combo.text,
+                        items: combo.items,
+                        min_width: combo.min_width,
+                        max_width: combo.max_width,
+                        on_change,
+                        on_select,
+                        on_submit,
+                    })
+                }
+                NativeToolbarItem::MenuButton(menu_button) => {
+                    let btn_id = menu_button.id.clone();
+                    let on_select = menu_button.on_select.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |index: usize| NativeToolbarMenuButtonSelectEvent {
+                                item_id: btn_id.clone(),
+                                index,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    PlatformNativeToolbarItem::MenuButton(PlatformNativeToolbarMenuButtonItem {
+                        id: menu_button.id,
+                        label: menu_button.label,
+                        tool_tip: menu_button.tool_tip,
+                        icon: menu_button.icon,
+                        shows_indicator: menu_button.shows_indicator,
+                        items: convert_toolbar_menu_items(&menu_button.items),
+                        on_select,
+                    })
+                }
             })
             .collect();
 
@@ -889,6 +1405,32 @@ impl NativeToolbar {
             items,
         }
     }
+}
+
+fn convert_toolbar_menu_items(
+    items: &[NativeToolbarMenuItem],
+) -> Vec<PlatformNativeToolbarMenuItemData> {
+    items
+        .iter()
+        .map(|item| match item {
+            NativeToolbarMenuItem::Action { title, enabled } => {
+                PlatformNativeToolbarMenuItemData::Action {
+                    title: title.clone(),
+                    enabled: *enabled,
+                }
+            }
+            NativeToolbarMenuItem::Submenu {
+                title,
+                enabled,
+                items,
+            } => PlatformNativeToolbarMenuItemData::Submenu {
+                title: title.clone(),
+                enabled: *enabled,
+                items: convert_toolbar_menu_items(items),
+            },
+            NativeToolbarMenuItem::Separator => PlatformNativeToolbarMenuItemData::Separator,
+        })
+        .collect()
 }
 
 fn schedule_native_toolbar_callback_no_args<Event: 'static>(
@@ -923,6 +1465,264 @@ fn schedule_native_toolbar_callback<P: 'static, Event: 'static>(
         RefCell::borrow_mut(&next_frame_callbacks).push(callback);
         invalidator.set_dirty(true);
     })
+}
+
+// =============================================================================
+// Native Popover
+// =============================================================================
+
+/// Event emitted when a native popover is closed.
+#[derive(Clone, Debug)]
+pub struct NativePopoverCloseEvent;
+
+/// Event emitted when a native popover is shown.
+#[derive(Clone, Debug)]
+pub struct NativePopoverShowEvent;
+
+/// Behavior of a native popover.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NativePopoverBehavior {
+    /// The app controls when the popover closes.
+    ApplicationDefined,
+    /// The popover closes when the user clicks outside of it.
+    #[default]
+    Transient,
+    /// The popover closes when the user clicks outside, but not in the popover's
+    /// positioning view.
+    Semitransient,
+}
+
+/// Specifies where a popover should appear relative to its anchor.
+#[derive(Clone, Debug)]
+pub enum NativePopoverAnchor {
+    /// Anchor the popover to a toolbar item with the given identifier.
+    /// Uses `showRelativeToToolbarItem:` on macOS 14+.
+    ToolbarItem(SharedString),
+}
+
+/// A content item to display inside a native popover.
+pub enum NativePopoverContentItem {
+    /// A non-editable text label.
+    Label {
+        /// The text to display.
+        text: SharedString,
+        /// Whether the label should be bold (heading style).
+        bold: bool,
+    },
+    /// A smaller, secondary text label (for metadata/details).
+    SmallLabel {
+        /// The text to display.
+        text: SharedString,
+    },
+    /// A label with an SF Symbol icon to its left.
+    IconLabel {
+        /// SF Symbol name (e.g. "arrow.triangle.branch", "globe").
+        icon: SharedString,
+        /// The text to display next to the icon.
+        text: SharedString,
+    },
+    /// A clickable button.
+    Button {
+        /// The button's title text.
+        title: SharedString,
+        /// Callback invoked when the button is clicked.
+        on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    },
+    /// A horizontal separator line.
+    Separator,
+}
+
+impl NativePopoverContentItem {
+    /// Creates a text label item.
+    pub fn label(text: impl Into<SharedString>) -> Self {
+        Self::Label {
+            text: text.into(),
+            bold: false,
+        }
+    }
+
+    /// Creates a bold text label item (e.g. for headings).
+    pub fn heading(text: impl Into<SharedString>) -> Self {
+        Self::Label {
+            text: text.into(),
+            bold: true,
+        }
+    }
+
+    /// Creates a smaller, muted text label (for metadata like timestamps, descriptions).
+    pub fn small_label(text: impl Into<SharedString>) -> Self {
+        Self::SmallLabel { text: text.into() }
+    }
+
+    /// Creates a label with an SF Symbol icon to its left.
+    pub fn icon_label(icon: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
+        Self::IconLabel {
+            icon: icon.into(),
+            text: text.into(),
+        }
+    }
+
+    /// Creates a button item.
+    pub fn button(
+        title: impl Into<SharedString>,
+        on_click: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self::Button {
+            title: title.into(),
+            on_click: Some(Box::new(on_click)),
+        }
+    }
+
+    /// Creates a separator item.
+    pub fn separator() -> Self {
+        Self::Separator
+    }
+}
+
+/// Configuration for a native popover (NSPopover).
+pub struct NativePopover {
+    content_width: f64,
+    content_height: f64,
+    behavior: NativePopoverBehavior,
+    on_close: Option<Box<dyn Fn(&NativePopoverCloseEvent, &mut Window, &mut App) + 'static>>,
+    on_show: Option<Box<dyn Fn(&NativePopoverShowEvent, &mut Window, &mut App) + 'static>>,
+    content_items: Vec<NativePopoverContentItem>,
+}
+
+impl NativePopover {
+    /// Creates a new popover configuration with the given content size.
+    pub fn new(width: f64, height: f64) -> Self {
+        Self {
+            content_width: width,
+            content_height: height,
+            behavior: NativePopoverBehavior::default(),
+            on_close: None,
+            on_show: None,
+            content_items: Vec::new(),
+        }
+    }
+
+    /// Sets the popover's dismissal behavior.
+    pub fn behavior(mut self, behavior: NativePopoverBehavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
+
+    /// Registers a handler called when the popover closes.
+    pub fn on_close(
+        mut self,
+        handler: impl Fn(&NativePopoverCloseEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_close = Some(Box::new(handler));
+        self
+    }
+
+    /// Registers a handler called when the popover is shown.
+    pub fn on_show(
+        mut self,
+        handler: impl Fn(&NativePopoverShowEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_show = Some(Box::new(handler));
+        self
+    }
+
+    /// Adds a content item to the popover.
+    pub fn item(mut self, item: NativePopoverContentItem) -> Self {
+        self.content_items.push(item);
+        self
+    }
+
+    /// Adds multiple content items to the popover.
+    pub fn items(mut self, items: impl IntoIterator<Item = NativePopoverContentItem>) -> Self {
+        self.content_items.extend(items);
+        self
+    }
+
+    fn into_platform_with_anchor(
+        self,
+        anchor: NativePopoverAnchor,
+        next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
+        invalidator: WindowInvalidator,
+    ) -> (PlatformNativePopover, PlatformNativePopoverAnchor) {
+        let on_close = self.on_close.map(|handler| -> Box<dyn Fn()> {
+            schedule_native_toolbar_callback_no_args(
+                Rc::new(handler),
+                || NativePopoverCloseEvent,
+                next_frame_callbacks.clone(),
+                invalidator.clone(),
+            )
+        });
+
+        let on_show = self.on_show.map(|handler| -> Box<dyn Fn()> {
+            schedule_native_toolbar_callback_no_args(
+                Rc::new(handler),
+                || NativePopoverShowEvent,
+                next_frame_callbacks.clone(),
+                invalidator.clone(),
+            )
+        });
+
+        let behavior = match self.behavior {
+            NativePopoverBehavior::ApplicationDefined => {
+                PlatformNativePopoverBehavior::ApplicationDefined
+            }
+            NativePopoverBehavior::Transient => PlatformNativePopoverBehavior::Transient,
+            NativePopoverBehavior::Semitransient => PlatformNativePopoverBehavior::Semitransient,
+        };
+
+        let content_items = self
+            .content_items
+            .into_iter()
+            .map(|item| match item {
+                NativePopoverContentItem::Label { text, bold } => {
+                    PlatformNativePopoverContentItem::Label { text, bold }
+                }
+                NativePopoverContentItem::SmallLabel { text } => {
+                    PlatformNativePopoverContentItem::SmallLabel { text }
+                }
+                NativePopoverContentItem::IconLabel { icon, text } => {
+                    PlatformNativePopoverContentItem::IconLabel { icon, text }
+                }
+                NativePopoverContentItem::Button { title, on_click } => {
+                    let platform_on_click = on_click.map(|handler| -> Box<dyn Fn()> {
+                        let handler = Rc::new(handler);
+                        let nfc = next_frame_callbacks.clone();
+                        let inv = invalidator.clone();
+                        Box::new(move || {
+                            let handler = handler.clone();
+                            let callback: FrameCallback =
+                                Box::new(move |window, cx| handler(window, cx));
+                            RefCell::borrow_mut(&nfc).push(callback);
+                            inv.set_dirty(true);
+                        })
+                    });
+                    PlatformNativePopoverContentItem::Button {
+                        title,
+                        on_click: platform_on_click,
+                    }
+                }
+                NativePopoverContentItem::Separator => PlatformNativePopoverContentItem::Separator,
+            })
+            .collect();
+
+        let platform_anchor = match &anchor {
+            NativePopoverAnchor::ToolbarItem(id) => {
+                PlatformNativePopoverAnchor::ToolbarItem(id.clone())
+            }
+        };
+
+        (
+            PlatformNativePopover {
+                content_width: self.content_width,
+                content_height: self.content_height,
+                behavior,
+                on_close,
+                on_show,
+                content_items,
+            },
+            platform_anchor,
+        )
+    }
 }
 
 type FrameCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
@@ -2424,6 +3224,25 @@ impl Window {
             toolbar.into_platform(self.next_frame_callbacks.clone(), self.invalidator.clone())
         });
         self.platform_window.set_native_toolbar(toolbar);
+    }
+
+    /// Shows a native popover (NSPopover) anchored to the given position.
+    ///
+    /// On macOS this creates an NSPopover with native appearance and behavior.
+    /// On other platforms this is currently a no-op.
+    pub fn show_native_popover(&mut self, popover: NativePopover, anchor: NativePopoverAnchor) {
+        let (platform_popover, platform_anchor) = popover.into_platform_with_anchor(
+            anchor,
+            self.next_frame_callbacks.clone(),
+            self.invalidator.clone(),
+        );
+        self.platform_window
+            .show_native_popover(platform_popover, platform_anchor);
+    }
+
+    /// Dismisses any currently shown native popover.
+    pub fn dismiss_native_popover(&mut self) {
+        self.platform_window.dismiss_native_popover();
     }
 
     /// Sets the application identifier.

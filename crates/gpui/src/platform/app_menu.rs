@@ -263,7 +263,9 @@ pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
         let cx = cx.to_async();
         move || {
             if let Some(app) = cx.app.upgrade() {
-                app.borrow_mut().update(|cx| cx.clear_pending_keystrokes());
+                if let Ok(mut app) = app.try_borrow_mut() {
+                    app.update(|cx| cx.clear_pending_keystrokes());
+                }
             }
         }
     }));
@@ -273,7 +275,11 @@ pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
         move |action| {
             cx.app
                 .upgrade()
-                .map(|app| app.borrow_mut().update(|cx| cx.is_action_available(action)))
+                .and_then(|app| {
+                    app.try_borrow_mut()
+                        .ok()
+                        .map(|mut app| app.update(|cx| cx.is_action_available(action)))
+                })
                 .unwrap_or(false)
         }
     }));
@@ -282,7 +288,9 @@ pub(crate) fn init_app_menus(platform: &dyn Platform, cx: &App) {
         let cx = cx.to_async();
         move |action| {
             if let Some(app) = cx.app.upgrade() {
-                app.borrow_mut().update(|cx| cx.dispatch_action(action));
+                if let Ok(mut app) = app.try_borrow_mut() {
+                    app.update(|cx| cx.dispatch_action(action));
+                }
             }
         }
     }));

@@ -523,6 +523,10 @@ pub(crate) enum PlatformNativeToolbarItem {
     Space,
     FlexibleSpace,
     SearchField(PlatformNativeToolbarSearchFieldItem),
+    SegmentedControl(PlatformNativeToolbarSegmentedItem),
+    PopUpButton(PlatformNativeToolbarPopUpItem),
+    ComboBox(PlatformNativeToolbarComboBoxItem),
+    MenuButton(PlatformNativeToolbarMenuButtonItem),
 }
 
 pub(crate) struct PlatformNativeToolbarButtonItem {
@@ -540,6 +544,109 @@ pub(crate) struct PlatformNativeToolbarSearchFieldItem {
     pub max_width: Pixels,
     pub on_change: Option<Box<dyn Fn(String)>>,
     pub on_submit: Option<Box<dyn Fn(String)>>,
+}
+
+pub(crate) struct PlatformNativeToolbarSegmentedItem {
+    pub id: SharedString,
+    pub labels: Vec<SharedString>,
+    pub icons: Vec<Option<SharedString>>,
+    pub selected_index: usize,
+    pub on_select: Option<Box<dyn Fn(usize)>>,
+}
+
+pub(crate) struct PlatformNativeToolbarPopUpItem {
+    pub id: SharedString,
+    pub items: Vec<SharedString>,
+    pub selected_index: usize,
+    pub on_select: Option<Box<dyn Fn(usize)>>,
+}
+
+pub(crate) struct PlatformNativeToolbarComboBoxItem {
+    pub id: SharedString,
+    pub placeholder: SharedString,
+    pub text: SharedString,
+    pub items: Vec<SharedString>,
+    pub min_width: Pixels,
+    pub max_width: Pixels,
+    pub on_change: Option<Box<dyn Fn(String)>>,
+    pub on_select: Option<Box<dyn Fn(usize)>>,
+    pub on_submit: Option<Box<dyn Fn(String)>>,
+}
+
+pub(crate) struct PlatformNativeToolbarMenuButtonItem {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub tool_tip: Option<SharedString>,
+    pub icon: Option<SharedString>,
+    pub shows_indicator: bool,
+    pub items: Vec<PlatformNativeToolbarMenuItemData>,
+    pub on_select: Option<Box<dyn Fn(usize)>>,
+}
+
+pub(crate) enum PlatformNativeToolbarMenuItemData {
+    Action {
+        title: SharedString,
+        enabled: bool,
+    },
+    Submenu {
+        title: SharedString,
+        enabled: bool,
+        items: Vec<PlatformNativeToolbarMenuItemData>,
+    },
+    Separator,
+}
+
+// =============================================================================
+// Native Popover types
+// =============================================================================
+
+pub(crate) struct PlatformNativePopover {
+    pub content_width: f64,
+    pub content_height: f64,
+    pub behavior: PlatformNativePopoverBehavior,
+    pub on_close: Option<Box<dyn Fn()>>,
+    pub on_show: Option<Box<dyn Fn()>>,
+    pub content_items: Vec<PlatformNativePopoverContentItem>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativePopoverBehavior {
+    ApplicationDefined,
+    Transient,
+    Semitransient,
+}
+
+impl PlatformNativePopoverBehavior {
+    pub(crate) fn to_raw(self) -> i64 {
+        match self {
+            Self::ApplicationDefined => 0,
+            Self::Transient => 1,
+            Self::Semitransient => 2,
+        }
+    }
+}
+
+pub(crate) enum PlatformNativePopoverContentItem {
+    Label {
+        text: SharedString,
+        bold: bool,
+    },
+    SmallLabel {
+        text: SharedString,
+    },
+    IconLabel {
+        icon: SharedString,
+        text: SharedString,
+    },
+    Button {
+        title: SharedString,
+        on_click: Option<Box<dyn Fn()>>,
+    },
+    Separator,
+}
+
+pub(crate) enum PlatformNativePopoverAnchor {
+    ToolbarItem(SharedString),
 }
 
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
@@ -611,6 +718,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
     fn set_native_toolbar(&self, _toolbar: Option<PlatformNativeToolbar>) {}
+    fn show_native_popover(
+        &self,
+        _popover: PlatformNativePopover,
+        _anchor: PlatformNativePopoverAnchor,
+    ) {
+    }
+    fn dismiss_native_popover(&self) {}
 
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::HWND;

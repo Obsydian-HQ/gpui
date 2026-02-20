@@ -3,8 +3,10 @@ use crate::{
     AnyWindowHandle, BackgroundExecutor, Bounds, Capslock, DisplayLink, ExternalPaths,
     FileDropEvent, ForegroundExecutor, KeyDownEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformNativeToolbar, PlatformNativeToolbarDisplayMode,
-    PlatformNativeToolbarItem, PlatformNativeToolbarSizeMode, PlatformWindow, Point, PromptButton,
+    PlatformDisplay, PlatformInput, PlatformNativePopover, PlatformNativePopoverAnchor,
+    PlatformNativePopoverContentItem, PlatformNativeToolbar, PlatformNativeToolbarDisplayMode,
+    PlatformNativeToolbarItem, PlatformNativeToolbarMenuItemData, PlatformNativeToolbarSizeMode,
+    PlatformWindow, Point, PromptButton,
     PromptLevel, RequestFrameOptions, SharedString, Size, SystemWindowTab, WindowAppearance,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowKind, WindowParams,
     dispatch_get_main_queue, dispatch_sys::dispatch_async_f, platform::PlatformInputHandler, point,
@@ -437,6 +439,10 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
 enum ToolbarNativeResource {
     Button { button: id, target: *mut c_void },
     SearchField { field: id, delegate: *mut c_void },
+    SegmentedControl { control: id, target: *mut c_void },
+    PopUpButton { popup: id, target: *mut c_void },
+    ComboBox { combo: id, delegate: *mut c_void },
+    MenuButton { target: *mut c_void },
 }
 
 struct ToolbarState {
@@ -451,6 +457,10 @@ impl ToolbarState {
         self.items.iter().find(|item| match item {
             PlatformNativeToolbarItem::Button(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::SearchField(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::SegmentedControl(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::PopUpButton(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::ComboBox(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::MenuButton(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::Space | PlatformNativeToolbarItem::FlexibleSpace => false,
         })
     }
@@ -477,6 +487,25 @@ impl MacToolbarState {
                             delegate,
                         );
                         crate::platform::native_controls::release_native_search_field(field);
+                    }
+                    ToolbarNativeResource::SegmentedControl { control, target } => {
+                        crate::platform::native_controls::release_native_segmented_target(target);
+                        crate::platform::native_controls::release_native_segmented_control(control);
+                    }
+                    ToolbarNativeResource::PopUpButton { popup, target } => {
+                        crate::platform::native_controls::release_native_popup_target(target);
+                        crate::platform::native_controls::release_native_popup_button(popup);
+                    }
+                    ToolbarNativeResource::ComboBox { combo, delegate } => {
+                        crate::platform::native_controls::release_native_combo_box_delegate(
+                            delegate,
+                        );
+                        crate::platform::native_controls::release_native_combo_box(combo);
+                    }
+                    ToolbarNativeResource::MenuButton { target } => {
+                        crate::platform::native_controls::release_native_menu_button_target(
+                            target,
+                        );
                     }
                 }
             }
@@ -524,9 +553,16 @@ struct MacWindowState {
     select_previous_tab_callback: Option<Box<dyn FnMut()>>,
     toggle_tab_bar_callback: Option<Box<dyn FnMut()>>,
     toolbar: Option<MacToolbarState>,
+    popover: Option<MacPopoverState>,
     activated_least_once: bool,
     // The parent window if this window is a sheet (Dialog kind)
     sheet_parent: Option<id>,
+}
+
+struct MacPopoverState {
+    popover: id,
+    delegate_ptr: *mut c_void,
+    button_targets: Vec<*mut c_void>,
 }
 
 impl MacWindowState {
@@ -844,6 +880,7 @@ impl MacWindow {
                 select_previous_tab_callback: None,
                 toggle_tab_bar_callback: None,
                 toolbar: None,
+                popover: None,
                 activated_least_once: false,
                 sheet_parent: None,
             })));
@@ -1085,6 +1122,7 @@ impl Drop for MacWindow {
             let sheet_parent = this.sheet_parent.take();
             let foreground_executor = this.foreground_executor.clone();
             let toolbar = this.toolbar.take();
+            cleanup_popover_state(&mut this.popover);
             this.display_link.take();
             unsafe {
                 this.native_window.setDelegate_(nil);
@@ -1214,6 +1252,156 @@ impl PlatformWindow for MacWindow {
         };
 
         self.0.lock().toolbar = new_toolbar;
+    }
+
+    fn show_native_popover(
+        &self,
+        popover_config: PlatformNativePopover,
+        anchor: PlatformNativePopoverAnchor,
+    ) {
+        let mut this = self.0.lock();
+
+        // Dismiss any existing popover first
+        cleanup_popover_state(&mut this.popover);
+
+        let behavior = popover_config.behavior.to_raw();
+        let (popover, delegate_ptr) = unsafe {
+            crate::platform::native_controls::create_native_popover(
+                popover_config.content_width,
+                popover_config.content_height,
+                behavior,
+                popover_config.on_close,
+                popover_config.on_show,
+            )
+        };
+
+        let mut button_targets = Vec::new();
+
+        // Populate content view with items
+        unsafe {
+            let content_view =
+                crate::platform::native_controls::get_native_popover_content_view(popover);
+            let padding = 16.0;
+            let content_width = popover_config.content_width - padding * 2.0;
+
+            // First pass: calculate heights for each item
+            let mut item_heights: Vec<f64> = Vec::new();
+            for item in &popover_config.content_items {
+                let height = match item {
+                    PlatformNativePopoverContentItem::Label { bold, .. } => {
+                        if *bold { 28.0 } else { 22.0 }
+                    }
+                    PlatformNativePopoverContentItem::SmallLabel { .. } => 18.0,
+                    PlatformNativePopoverContentItem::IconLabel { .. } => 24.0,
+                    PlatformNativePopoverContentItem::Button { .. } => 32.0,
+                    PlatformNativePopoverContentItem::Separator => 12.0,
+                };
+                item_heights.push(height);
+            }
+
+            // Second pass: create views, consuming items for ownership of callbacks
+            let mut top_y = padding;
+            for (item, height) in popover_config.content_items.into_iter().zip(item_heights) {
+                let flipped_y = popover_config.content_height - top_y - height;
+
+                match item {
+                    PlatformNativePopoverContentItem::Label { text, bold } => {
+                        let font_size = if bold { 15.0 } else { 13.0 };
+                        let label_height = if bold { 22.0 } else { 18.0 };
+                        crate::platform::native_controls::add_native_popover_label(
+                            content_view,
+                            text.as_ref(),
+                            padding,
+                            flipped_y,
+                            content_width,
+                            label_height,
+                            font_size,
+                            bold,
+                        );
+                    }
+                    PlatformNativePopoverContentItem::SmallLabel { text } => {
+                        crate::platform::native_controls::add_native_popover_small_label(
+                            content_view,
+                            text.as_ref(),
+                            padding,
+                            flipped_y,
+                            content_width,
+                        );
+                    }
+                    PlatformNativePopoverContentItem::IconLabel { icon, text } => {
+                        crate::platform::native_controls::add_native_popover_icon_label(
+                            content_view,
+                            icon.as_ref(),
+                            text.as_ref(),
+                            padding,
+                            flipped_y,
+                            content_width,
+                        );
+                    }
+                    PlatformNativePopoverContentItem::Button { title, on_click } => {
+                        let button = crate::platform::native_controls::add_native_popover_button(
+                            content_view,
+                            title.as_ref(),
+                            padding,
+                            flipped_y,
+                            content_width,
+                            28.0,
+                        );
+                        if let Some(callback) = on_click {
+                            let target =
+                                crate::platform::native_controls::set_native_button_action(
+                                    button, callback,
+                                );
+                            button_targets.push(target);
+                        }
+                    }
+                    PlatformNativePopoverContentItem::Separator => {
+                        crate::platform::native_controls::add_native_popover_separator(
+                            content_view,
+                            padding,
+                            flipped_y + 5.0,
+                            content_width,
+                        );
+                    }
+                }
+
+                top_y += height;
+            }
+        }
+
+        // Show the popover
+        match anchor {
+            PlatformNativePopoverAnchor::ToolbarItem(item_id) => unsafe {
+                let native_window = this.native_window;
+                let toolbar: id = msg_send![native_window, toolbar];
+                if toolbar != nil {
+                    let items: id = msg_send![toolbar, items];
+                    let count: usize = msg_send![items, count];
+                    for i in 0..count {
+                        let item: id = msg_send![items, objectAtIndex: i];
+                        let item_identifier: id = msg_send![item, itemIdentifier];
+                        let identifier_str = ns_string_to_owned(item_identifier);
+                        if identifier_str == item_id.as_ref() {
+                            crate::platform::native_controls::show_native_popover_relative_to_toolbar_item(
+                                popover, item,
+                            );
+                            break;
+                        }
+                    }
+                }
+            },
+        }
+
+        this.popover = Some(MacPopoverState {
+            popover,
+            delegate_ptr,
+            button_targets,
+        });
+    }
+
+    fn dismiss_native_popover(&self) {
+        let mut this = self.0.lock();
+        cleanup_popover_state(&mut this.popover);
     }
 
     fn scale_factor(&self) -> f32 {
@@ -2722,6 +2910,21 @@ fn toolbar_size_mode_to_native(mode: PlatformNativeToolbarSizeMode) -> NSUIntege
     }
 }
 
+fn cleanup_popover_state(popover_state: &mut Option<MacPopoverState>) {
+    if let Some(state) = popover_state.take() {
+        unsafe {
+            crate::platform::native_controls::dismiss_native_popover(state.popover);
+            for target in &state.button_targets {
+                crate::platform::native_controls::release_native_button_target(*target);
+            }
+            crate::platform::native_controls::release_native_popover(
+                state.popover,
+                state.delegate_ptr,
+            );
+        }
+    }
+}
+
 unsafe fn clear_native_toolbar_for_window(native_window: id, toolbar: Option<MacToolbarState>) {
     unsafe {
         let _: () = msg_send![native_window, setToolbar: nil];
@@ -2761,6 +2964,22 @@ unsafe fn build_native_toolbar_for_window(
                     let identifier = SharedString::from("NSToolbarFlexibleSpaceItem");
                     allowed_item_identifiers.push(identifier.clone());
                     default_item_identifiers.push(identifier);
+                }
+                PlatformNativeToolbarItem::SegmentedControl(segmented) => {
+                    allowed_item_identifiers.push(segmented.id.clone());
+                    default_item_identifiers.push(segmented.id.clone());
+                }
+                PlatformNativeToolbarItem::PopUpButton(popup) => {
+                    allowed_item_identifiers.push(popup.id.clone());
+                    default_item_identifiers.push(popup.id.clone());
+                }
+                PlatformNativeToolbarItem::ComboBox(combo) => {
+                    allowed_item_identifiers.push(combo.id.clone());
+                    default_item_identifiers.push(combo.id.clone());
+                }
+                PlatformNativeToolbarItem::MenuButton(menu_button) => {
+                    allowed_item_identifiers.push(menu_button.id.clone());
+                    default_item_identifiers.push(menu_button.id.clone());
                 }
             }
         }
@@ -2865,6 +3084,18 @@ extern "C" fn toolbar_item_for_identifier(
             }
             Some(PlatformNativeToolbarItem::SearchField(_)) => {
                 create_toolbar_search_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::SegmentedControl(_)) => {
+                create_toolbar_segmented_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::PopUpButton(_)) => {
+                create_toolbar_popup_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::ComboBox(_)) => {
+                create_toolbar_combo_box_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::MenuButton(_)) => {
+                create_toolbar_menu_button_item(this, state, identifier, &identifier_string)
             }
             Some(PlatformNativeToolbarItem::Space)
             | Some(PlatformNativeToolbarItem::FlexibleSpace)
@@ -2995,6 +3226,308 @@ unsafe fn create_toolbar_search_item(
         state
             .resources
             .push(ToolbarNativeResource::SearchField { field, delegate });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+unsafe fn create_toolbar_segmented_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::SegmentedControl(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let labels: Vec<&str> = item.labels.iter().map(|l| l.as_ref()).collect();
+        let selected_index = item.selected_index;
+        let icons: Vec<Option<SharedString>> = item.icons.clone();
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+
+        let control =
+            crate::platform::native_controls::create_native_segmented_control(&labels, selected_index);
+
+        for (segment_index, icon) in icons.iter().enumerate() {
+            if let Some(symbol_name) = icon {
+                crate::platform::native_controls::set_native_segmented_image(
+                    control,
+                    segment_index,
+                    symbol_name.as_ref(),
+                );
+            }
+        }
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let callback_identifier = identifier_string.to_owned();
+        let action = Box::new(move |selected_index: usize| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SegmentedControl(seg_item)) =
+                state.item_for_identifier(&callback_identifier)
+                && let Some(callback) = seg_item.on_select.as_ref()
+            {
+                callback(selected_index);
+            }
+        });
+        let target = crate::platform::native_controls::set_native_segmented_action(control, action);
+
+        let size: NSSize = msg_send![control, fittingSize];
+        let _: () = msg_send![toolbar_item, setMinSize: size];
+        let _: () = msg_send![toolbar_item, setMaxSize: size];
+        let _: () = msg_send![toolbar_item, setView: control];
+
+        state
+            .resources
+            .push(ToolbarNativeResource::SegmentedControl { control, target });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+unsafe fn create_toolbar_popup_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::PopUpButton(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let menu_items: Vec<&str> = item.items.iter().map(|i| i.as_ref()).collect();
+        let selected_index = item.selected_index;
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+
+        let popup =
+            crate::platform::native_controls::create_native_popup_button(&menu_items, selected_index);
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let callback_identifier = identifier_string.to_owned();
+        let action = Box::new(move |selected_index: usize| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::PopUpButton(popup_item)) =
+                state.item_for_identifier(&callback_identifier)
+                && let Some(callback) = popup_item.on_select.as_ref()
+            {
+                callback(selected_index);
+            }
+        });
+        let target = crate::platform::native_controls::set_native_popup_action(popup, action);
+
+        let size: NSSize = msg_send![popup, fittingSize];
+        let _: () = msg_send![toolbar_item, setMinSize: size];
+        let _: () = msg_send![toolbar_item, setMaxSize: size];
+        let _: () = msg_send![toolbar_item, setView: popup];
+
+        state
+            .resources
+            .push(ToolbarNativeResource::PopUpButton { popup, target });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+unsafe fn create_toolbar_combo_box_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::ComboBox(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let combo_items: Vec<&str> = item.items.iter().map(|i| i.as_ref()).collect();
+        let text = item.text.clone();
+        let placeholder = item.placeholder.clone();
+        let min_width = item.min_width;
+        let max_width = item.max_width;
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+
+        let combo =
+            crate::platform::native_controls::create_native_combo_box(&combo_items, 0, true);
+
+        if !text.is_empty() {
+            crate::platform::native_controls::set_native_combo_box_string_value(
+                combo,
+                text.as_ref(),
+            );
+        }
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let change_identifier = identifier_string.to_owned();
+        let select_identifier = identifier_string.to_owned();
+
+        let on_change = Some(Box::new(move |text: String| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::ComboBox(combo_item)) =
+                state.item_for_identifier(&change_identifier)
+                && let Some(callback) = combo_item.on_change.as_ref()
+            {
+                callback(text);
+            }
+        }) as Box<dyn Fn(String)>);
+
+        let on_select = Some(Box::new(move |selected_index: usize| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::ComboBox(combo_item)) =
+                state.item_for_identifier(&select_identifier)
+                && let Some(callback) = combo_item.on_select.as_ref()
+            {
+                callback(selected_index);
+            }
+        }) as Box<dyn Fn(usize)>);
+
+        let submit_identifier = identifier_string.to_owned();
+        let on_submit = Some(Box::new(move |text: String| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::ComboBox(combo_item)) =
+                state.item_for_identifier(&submit_identifier)
+                && let Some(callback) = combo_item.on_submit.as_ref()
+            {
+                callback(text);
+            }
+        }) as Box<dyn Fn(String)>);
+
+        let combo_box_callbacks = crate::platform::native_controls::ComboBoxCallbacks {
+            on_select,
+            on_change,
+            on_submit,
+        };
+        let combo_delegate =
+            crate::platform::native_controls::set_native_combo_box_delegate(combo, combo_box_callbacks);
+
+        if !placeholder.is_empty() {
+            crate::platform::native_controls::set_native_text_field_placeholder(
+                combo,
+                placeholder.as_ref(),
+            );
+        }
+
+        let frame: NSRect = msg_send![combo, frame];
+        let min_size = NSSize {
+            width: min_width.to_f64(),
+            height: frame.size.height,
+        };
+        let max_size = NSSize {
+            width: max_width.to_f64(),
+            height: frame.size.height,
+        };
+
+        let _: () = msg_send![toolbar_item, setMinSize: min_size];
+        let _: () = msg_send![toolbar_item, setMaxSize: max_size];
+        let _: () = msg_send![toolbar_item, setView: combo];
+
+        state
+            .resources
+            .push(ToolbarNativeResource::ComboBox { combo, delegate: combo_delegate });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+fn convert_platform_menu_items_to_native(
+    items: &[PlatformNativeToolbarMenuItemData],
+) -> Vec<crate::platform::native_controls::NativeMenuItemData> {
+    items
+        .iter()
+        .map(|item| match item {
+            PlatformNativeToolbarMenuItemData::Action { title, enabled } => {
+                crate::platform::native_controls::NativeMenuItemData::Action {
+                    title: title.to_string(),
+                    enabled: *enabled,
+                }
+            }
+            PlatformNativeToolbarMenuItemData::Submenu {
+                title,
+                enabled,
+                items,
+            } => crate::platform::native_controls::NativeMenuItemData::Submenu {
+                title: title.to_string(),
+                enabled: *enabled,
+                items: convert_platform_menu_items_to_native(items),
+            },
+            PlatformNativeToolbarMenuItemData::Separator => {
+                crate::platform::native_controls::NativeMenuItemData::Separator
+            }
+        })
+        .collect()
+}
+
+unsafe fn create_toolbar_menu_button_item(
+    this: &Object,
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::MenuButton(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let label = item.label.clone();
+        let tool_tip = item.tool_tip.clone();
+        let icon = item.icon.clone();
+        let shows_indicator = item.shows_indicator;
+        let native_menu_items = convert_platform_menu_items_to_native(&item.items);
+
+        let toolbar_item: id = msg_send![class!(NSMenuToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+
+        let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
+        let callback_identifier = identifier_string.to_owned();
+
+        let on_select: Option<Box<dyn Fn(usize)>> = Some(Box::new(move |index: usize| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::MenuButton(menu_item)) =
+                state.item_for_identifier(&callback_identifier)
+                && let Some(callback) = menu_item.on_select.as_ref()
+            {
+                callback(index);
+            }
+        }));
+
+        let (menu, target_ptr) = crate::platform::native_controls::create_native_menu_target(
+            &native_menu_items,
+            on_select,
+        );
+
+        let _: () = msg_send![toolbar_item, setMenu: menu];
+        // Release our extra retain - NSMenuToolbarItem retains the menu internally
+        let _: () = msg_send![menu, release];
+
+        let _: () = msg_send![toolbar_item, setLabel: ns_string(label.as_ref())];
+        let _: () = msg_send![toolbar_item, setShowsIndicator: shows_indicator as BOOL];
+
+        if let Some(tool_tip) = tool_tip.as_ref() {
+            let _: () = msg_send![toolbar_item, setToolTip: ns_string(tool_tip.as_ref())];
+        }
+
+        if let Some(icon) = icon.as_ref() {
+            let symbol_name = ns_string(icon.as_ref());
+            let image: id = msg_send![class!(NSImage), imageWithSystemSymbolName: symbol_name accessibilityDescription: nil];
+            if image != nil {
+                let _: () = msg_send![toolbar_item, setImage: image];
+            }
+        }
+
+        state
+            .resources
+            .push(ToolbarNativeResource::MenuButton { target: target_ptr });
 
         msg_send![toolbar_item, autorelease]
     }

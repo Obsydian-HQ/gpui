@@ -17,6 +17,7 @@ use std::{ffi::c_void, ptr};
 pub(crate) struct ComboBoxCallbacks {
     pub on_select: Option<Box<dyn Fn(usize)>>,
     pub on_change: Option<Box<dyn Fn(String)>>,
+    pub on_submit: Option<Box<dyn Fn(String)>>,
 }
 
 static mut COMBO_BOX_DELEGATE_CLASS: *const Class = ptr::null();
@@ -34,6 +35,10 @@ unsafe fn build_combo_box_delegate_class() {
         decl.add_method(
             sel!(controlTextDidChange:),
             combo_box_text_did_change as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(control:textView:doCommandBySelector:),
+            combo_box_do_command as extern "C" fn(&Object, Sel, id, id, Sel) -> i8,
         );
 
         COMBO_BOX_DELEGATE_CLASS = decl.register();
@@ -80,6 +85,30 @@ extern "C" fn combo_box_text_did_change(this: &Object, _sel: Sel, notification: 
                 on_change(string_from_ns_string(ns_str));
             }
         }
+    }
+}
+
+extern "C" fn combo_box_do_command(
+    this: &Object,
+    _sel: Sel,
+    control: id,
+    _text_view: id,
+    command_selector: Sel,
+) -> i8 {
+    unsafe {
+        if command_selector == sel!(insertNewline:) {
+            let ptr: *mut c_void = *this.get_ivar(CALLBACK_IVAR);
+            if !ptr.is_null() {
+                let callbacks = &*(ptr as *const ComboBoxCallbacks);
+                if let Some(ref on_submit) = callbacks.on_submit {
+                    let ns_str: id = msg_send![control, stringValue];
+                    let text = string_from_ns_string(ns_str);
+                    on_submit(text);
+                    return 1; // Handled
+                }
+            }
+        }
+        0
     }
 }
 
