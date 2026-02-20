@@ -22,33 +22,58 @@ pub struct SegmentSelectEvent {
 }
 
 // =============================================================================
-// Style enum
+// Shape & size enums (macOS 26+ / NSControlBorderShape / NSControlSize)
 // =============================================================================
 
-/// Visual style for the segmented control.
+/// Border shape for the segmented control (maps to `NSControlBorderShape`, macOS 26+).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NativeSegmentedStyle {
-    /// Automatic (system decides, typically rounded).
+pub enum NativeSegmentedShape {
+    /// System decides based on control size and context.
     #[default]
     Automatic,
-    /// Rounded segments.
-    Rounded,
-    /// Round-rect segments.
-    RoundRect,
-    /// Capsule-shaped segments.
+    /// Capsule (pill) shape.
     Capsule,
-    /// Separated individual segments.
-    Separated,
+    /// Rounded rectangle.
+    RoundedRectangle,
+    /// Circle.
+    Circle,
 }
 
-impl NativeSegmentedStyle {
-    fn to_ns_style(self) -> i64 {
+impl NativeSegmentedShape {
+    fn to_ns_border_shape(self) -> i64 {
         match self {
-            NativeSegmentedStyle::Automatic => 0,
-            NativeSegmentedStyle::Rounded => 1,
-            NativeSegmentedStyle::RoundRect => 3,
-            NativeSegmentedStyle::Capsule => 5,
-            NativeSegmentedStyle::Separated => 8,
+            NativeSegmentedShape::Automatic => 0,     // NSControlBorderShapeAutomatic
+            NativeSegmentedShape::Capsule => 1,        // NSControlBorderShapeCapsule
+            NativeSegmentedShape::RoundedRectangle => 2, // NSControlBorderShapeRoundedRectangle
+            NativeSegmentedShape::Circle => 3,         // NSControlBorderShapeCircle
+        }
+    }
+}
+
+/// Control size for the segmented control (maps to `NSControlSize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeSegmentedSize {
+    /// Mini size.
+    Mini,
+    /// Small size.
+    Small,
+    /// Regular size (default).
+    #[default]
+    Regular,
+    /// Large size.
+    Large,
+    /// Extra-large size (macOS 26+).
+    ExtraLarge,
+}
+
+impl NativeSegmentedSize {
+    fn to_ns_control_size(self) -> u64 {
+        match self {
+            NativeSegmentedSize::Mini => 2,       // NSControlSizeMini
+            NativeSegmentedSize::Small => 1,      // NSControlSizeSmall
+            NativeSegmentedSize::Regular => 0,    // NSControlSizeRegular
+            NativeSegmentedSize::Large => 3,      // NSControlSizeLarge
+            NativeSegmentedSize::ExtraLarge => 4, // NSControlSizeExtraLarge
         }
     }
 }
@@ -71,10 +96,11 @@ pub fn native_toggle_group(
             .map(|l| SharedString::from(l.as_ref().to_string()))
             .collect(),
         symbols: None,
-        selected_index: 0,
+        selected_index: None,
         on_select: None,
         style: StyleRefinement::default(),
-        segment_style: NativeSegmentedStyle::default(),
+        border_shape: NativeSegmentedShape::default(),
+        control_size: NativeSegmentedSize::default(),
     }
 }
 
@@ -87,16 +113,17 @@ pub struct NativeToggleGroup {
     id: ElementId,
     labels: Vec<SharedString>,
     symbols: Option<Vec<SharedString>>,
-    selected_index: usize,
+    selected_index: Option<usize>,
     on_select: Option<Box<dyn Fn(&SegmentSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
-    segment_style: NativeSegmentedStyle,
+    border_shape: NativeSegmentedShape,
+    control_size: NativeSegmentedSize,
 }
 
 impl NativeToggleGroup {
     /// Set which segment is initially selected.
     pub fn selected_index(mut self, index: usize) -> Self {
-        self.selected_index = index;
+        self.selected_index = Some(index);
         self
     }
 
@@ -110,9 +137,15 @@ impl NativeToggleGroup {
         self
     }
 
-    /// Set the visual style of the segmented control.
-    pub fn segment_style(mut self, style: NativeSegmentedStyle) -> Self {
-        self.segment_style = style;
+    /// Set the border shape of the segmented control (macOS 26+).
+    pub fn border_shape(mut self, shape: NativeSegmentedShape) -> Self {
+        self.border_shape = shape;
+        self
+    }
+
+    /// Set the control size of the segmented control.
+    pub fn control_size(mut self, size: NativeSegmentedSize) -> Self {
+        self.control_size = size;
         self
     }
 
@@ -136,10 +169,10 @@ impl NativeToggleGroup {
 struct NativeToggleGroupState {
     control_ptr: *mut c_void,
     target_ptr: *mut c_void,
-    current_selected: usize,
-    current_labels: Vec<SharedString>,
+    current_selected: Option<usize>,
     current_symbols: Option<Vec<SharedString>>,
-    current_segment_style: NativeSegmentedStyle,
+    current_border_shape: NativeSegmentedShape,
+    current_control_size: NativeSegmentedSize,
     attached: bool,
 }
 
@@ -246,7 +279,8 @@ impl Element for NativeToggleGroup {
             let labels = self.labels.clone();
             let symbols = self.symbols.clone();
             let selected_index = self.selected_index;
-            let segment_style = self.segment_style;
+            let border_shape = self.border_shape;
+            let control_size = self.control_size;
 
             let next_frame_callbacks = window.next_frame_callbacks.clone();
             let invalidator = window.invalidator.clone();
@@ -254,46 +288,43 @@ impl Element for NativeToggleGroup {
             window.with_optional_element_state::<NativeToggleGroupState, _>(
                 id,
                 |prev_state, window| {
-                    // If style changed, destroy old control so we recreate it.
-                    // NSSegmentedControl doesn't reliably redraw on setSegmentStyle:.
-                    let prev_state = match prev_state {
-                        Some(Some(mut state)) if state.current_segment_style != segment_style => {
-                            unsafe {
-                                super::native_element_helpers::cleanup_native_control(
-                                    state.control_ptr,
-                                    state.target_ptr,
-                                    native_controls::release_native_segmented_target,
-                                    native_controls::release_native_segmented_control,
-                                );
-                            }
-                            state.attached = false; // Prevent Drop from double-freeing
-                            Some(None) // Fall through to creation path
-                        }
-                        other => other,
-                    };
-
                     let state = if let Some(Some(mut state)) = prev_state {
-                        // Normal update: style hasn't changed
+                        // Update existing control
+                        let control = state.control_ptr as cocoa::base::id;
                         unsafe {
                             native_controls::set_native_view_frame(
-                                state.control_ptr as cocoa::base::id,
+                                control,
                                 bounds,
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
                             );
                             if state.current_selected != selected_index {
                                 native_controls::set_native_segmented_selected(
-                                    state.control_ptr as cocoa::base::id,
+                                    control,
                                     selected_index,
                                 );
                                 state.current_selected = selected_index;
+                            }
+                            if state.current_border_shape != border_shape {
+                                native_controls::set_native_segmented_border_shape(
+                                    control,
+                                    border_shape.to_ns_border_shape(),
+                                );
+                                state.current_border_shape = border_shape;
+                            }
+                            if state.current_control_size != control_size {
+                                native_controls::set_native_segmented_control_size(
+                                    control,
+                                    control_size.to_ns_control_size(),
+                                );
+                                state.current_control_size = control_size;
                             }
                             if state.current_symbols != symbols {
                                 if let Some(ref syms) = symbols {
                                     for (i, sym) in syms.iter().enumerate() {
                                         if !sym.is_empty() {
                                             native_controls::set_native_segmented_image(
-                                                state.control_ptr as cocoa::base::id,
+                                                control,
                                                 i,
                                                 sym.as_ref(),
                                             );
@@ -320,7 +351,7 @@ impl Element for NativeToggleGroup {
                             );
                             unsafe {
                                 state.target_ptr = native_controls::set_native_segmented_action(
-                                    state.control_ptr as cocoa::base::id,
+                                    control,
                                     callback,
                                 );
                             }
@@ -328,7 +359,7 @@ impl Element for NativeToggleGroup {
 
                         state
                     } else {
-                        // Creation path: new control or style changed
+                        // Creation path
                         let (control_ptr, target_ptr) = unsafe {
                             let label_strs: Vec<&str> = labels.iter().map(|s| s.as_ref()).collect();
                             let control = native_controls::create_native_segmented_control(
@@ -336,9 +367,13 @@ impl Element for NativeToggleGroup {
                                 selected_index,
                             );
 
-                            native_controls::set_native_segmented_style(
+                            native_controls::set_native_segmented_border_shape(
                                 control,
-                                segment_style.to_ns_style(),
+                                border_shape.to_ns_border_shape(),
+                            );
+                            native_controls::set_native_segmented_control_size(
+                                control,
+                                control_size.to_ns_control_size(),
                             );
 
                             if let Some(ref syms) = symbols {
@@ -384,9 +419,9 @@ impl Element for NativeToggleGroup {
                             control_ptr,
                             target_ptr,
                             current_selected: selected_index,
-                            current_labels: labels,
                             current_symbols: symbols,
-                            current_segment_style: segment_style,
+                            current_border_shape: border_shape,
+                            current_control_size: control_size,
                             attached: true,
                         }
                     };

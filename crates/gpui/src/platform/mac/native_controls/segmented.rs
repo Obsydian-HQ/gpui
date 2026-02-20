@@ -1,8 +1,5 @@
 use super::CALLBACK_IVAR;
-use cocoa::{
-    base::{id, nil},
-    foundation::{NSPoint, NSRect, NSSize},
-};
+use cocoa::base::{id, nil};
 use ctor::ctor;
 use objc::{
     class,
@@ -50,40 +47,67 @@ extern "C" fn segment_action(this: &Object, _sel: Sel, sender: id) {
 // =============================================================================
 
 /// Creates a new NSSegmentedControl with the given labels.
-pub(crate) unsafe fn create_native_segmented_control(labels: &[&str], selected_index: usize) -> id {
+///
+/// Uses the `+segmentedControlWithLabels:trackingMode:target:action:` convenience
+/// constructor (macOS 10.12+) which properly initializes the cell and drawing
+/// infrastructure, ensuring `setSegmentStyle:` works correctly.
+pub(crate) unsafe fn create_native_segmented_control(
+    labels: &[&str],
+    selected_index: Option<usize>,
+) -> id {
     unsafe {
         use super::super::ns_string;
-        let control: id = msg_send![class!(NSSegmentedControl), alloc];
-        let control: id = msg_send![control, initWithFrame: NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(200.0, 24.0),
-        )];
-        let _: () = msg_send![control, setSegmentCount: labels.len() as i64];
-        for (i, label) in labels.iter().enumerate() {
-            let _: () = msg_send![control, setLabel: ns_string(label) forSegment: i as i64];
+
+        // Build an NSArray of NSString labels
+        let labels_array: id =
+            msg_send![class!(NSMutableArray), arrayWithCapacity: labels.len() as u64];
+        for label in labels {
+            let _: () = msg_send![labels_array, addObject: ns_string(label)];
         }
+
         // NSSegmentSwitchTrackingSelectOne = 0
-        let _: () = msg_send![control, setTrackingMode: 0i64];
-        let _: () = msg_send![control, setSelectedSegment: selected_index as i64];
+        let control: id = msg_send![
+            class!(NSSegmentedControl),
+            segmentedControlWithLabels: labels_array
+            trackingMode: 0i64
+            target: nil
+            action: nil
+        ];
+
+        // The convenience constructor returns an autoreleased object; retain it
+        // so our manual release in `release_native_segmented_control` balances.
+        let _: () = msg_send![control, retain];
+
+        let selected: i64 = selected_index.map_or(-1, |i| i as i64);
+        let _: () = msg_send![control, setSelectedSegment: selected];
         let _: () = msg_send![control, setAutoresizingMask: 0u64];
-        // NSSegmentStyleAutomatic = 0
-        let _: () = msg_send![control, setSegmentStyle: 0i64];
         control
     }
 }
 
-/// Sets the selected segment.
-pub(crate) unsafe fn set_native_segmented_selected(control: id, index: usize) {
+/// Sets the selected segment. Pass `None` to deselect all segments.
+pub(crate) unsafe fn set_native_segmented_selected(control: id, index: Option<usize>) {
     unsafe {
-        let _: () = msg_send![control, setSelectedSegment: index as i64];
+        let selected: i64 = index.map_or(-1, |i| i as i64);
+        let _: () = msg_send![control, setSelectedSegment: selected];
     }
 }
 
-/// Sets the segmented control style.
-/// 0 = Automatic, 1 = Rounded, 3 = RoundRect, 5 = Capsule, 8 = Separated.
-pub(crate) unsafe fn set_native_segmented_style(control: id, style: i64) {
+/// Sets the border shape of the segmented control (macOS 26+, `NSControlBorderShape`).
+/// 0 = Automatic, 1 = Capsule, 2 = RoundedRectangle, 3 = Circle.
+pub(crate) unsafe fn set_native_segmented_border_shape(control: id, shape: i64) {
     unsafe {
-        let _: () = msg_send![control, setSegmentStyle: style];
+        let _: () = msg_send![control, setBorderShape: shape];
+        let _: () = msg_send![control, setNeedsDisplay: true];
+    }
+}
+
+/// Sets the control size of the segmented control (`NSControlSize`).
+/// 0 = Regular, 1 = Small, 2 = Mini, 3 = Large, 4 = ExtraLarge.
+pub(crate) unsafe fn set_native_segmented_control_size(control: id, size: u64) {
+    unsafe {
+        let _: () = msg_send![control, setControlSize: size];
+        let _: () = msg_send![control, sizeToFit];
         let _: () = msg_send![control, setNeedsDisplay: true];
     }
 }

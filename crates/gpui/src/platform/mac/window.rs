@@ -3528,7 +3528,7 @@ unsafe fn create_toolbar_segmented_item(
         let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
 
         let control =
-            crate::platform::native_controls::create_native_segmented_control(&labels, selected_index);
+            crate::platform::native_controls::create_native_segmented_control(&labels, Some(selected_index));
 
         for (segment_index, icon) in icons.iter().enumerate() {
             if let Some(symbol_name) = icon {
