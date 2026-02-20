@@ -1169,6 +1169,10 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().content_size()
     }
 
+    fn titlebar_height(&self) -> Pixels {
+        self.0.as_ref().lock().titlebar_height()
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let this = self.0.lock();
         let window = this.native_window;
