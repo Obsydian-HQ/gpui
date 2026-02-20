@@ -461,6 +461,7 @@ impl ToolbarState {
             PlatformNativeToolbarItem::PopUpButton(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::ComboBox(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::MenuButton(item) => item.id.as_ref() == identifier,
+            PlatformNativeToolbarItem::Label(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::Space | PlatformNativeToolbarItem::FlexibleSpace => false,
         })
     }
@@ -563,6 +564,8 @@ struct MacPopoverState {
     popover: id,
     delegate_ptr: *mut c_void,
     button_targets: Vec<*mut c_void>,
+    switch_targets: Vec<*mut c_void>,
+    checkbox_targets: Vec<*mut c_void>,
 }
 
 impl MacWindowState {
@@ -1276,6 +1279,8 @@ impl PlatformWindow for MacWindow {
         };
 
         let mut button_targets = Vec::new();
+        let mut switch_targets = Vec::new();
+        let mut checkbox_targets = Vec::new();
 
         // Populate content view with items
         unsafe {
@@ -1294,6 +1299,21 @@ impl PlatformWindow for MacWindow {
                     PlatformNativePopoverContentItem::SmallLabel { .. } => 18.0,
                     PlatformNativePopoverContentItem::IconLabel { .. } => 24.0,
                     PlatformNativePopoverContentItem::Button { .. } => 32.0,
+                    PlatformNativePopoverContentItem::Toggle {
+                        description, ..
+                    } => {
+                        if description.is_some() { 44.0 } else { 30.0 }
+                    }
+                    PlatformNativePopoverContentItem::Checkbox { .. } => 24.0,
+                    PlatformNativePopoverContentItem::ProgressBar { label, .. } => {
+                        if label.is_some() { 36.0 } else { 20.0 }
+                    }
+                    PlatformNativePopoverContentItem::ColorDot { detail, .. } => {
+                        if detail.is_some() { 38.0 } else { 24.0 }
+                    }
+                    PlatformNativePopoverContentItem::ClickableRow { detail, .. } => {
+                        if detail.is_some() { 36.0 } else { 28.0 }
+                    }
                     PlatformNativePopoverContentItem::Separator => 12.0,
                 };
                 item_heights.push(height);
@@ -1355,6 +1375,105 @@ impl PlatformWindow for MacWindow {
                             button_targets.push(target);
                         }
                     }
+                    PlatformNativePopoverContentItem::Toggle {
+                        text,
+                        checked,
+                        on_change,
+                        enabled,
+                        description,
+                    } => {
+                        let target =
+                            crate::platform::native_controls::add_native_popover_toggle(
+                                content_view,
+                                text.as_ref(),
+                                checked,
+                                padding,
+                                flipped_y,
+                                content_width,
+                                enabled,
+                                description.as_ref().map(|s| AsRef::<str>::as_ref(s)),
+                                on_change,
+                            );
+                        if !target.is_null() {
+                            switch_targets.push(target);
+                        }
+                    }
+                    PlatformNativePopoverContentItem::Checkbox {
+                        text,
+                        checked,
+                        on_change,
+                        enabled,
+                    } => {
+                        let target =
+                            crate::platform::native_controls::add_native_popover_checkbox(
+                                content_view,
+                                text.as_ref(),
+                                checked,
+                                padding,
+                                flipped_y,
+                                content_width,
+                                enabled,
+                                on_change,
+                            );
+                        if !target.is_null() {
+                            checkbox_targets.push(target);
+                        }
+                    }
+                    PlatformNativePopoverContentItem::ProgressBar { value, max, label } => {
+                        crate::platform::native_controls::add_native_popover_progress(
+                            content_view,
+                            value,
+                            max,
+                            label.as_ref().map(|s| AsRef::<str>::as_ref(s)),
+                            padding,
+                            flipped_y,
+                            content_width,
+                        );
+                    }
+                    PlatformNativePopoverContentItem::ColorDot {
+                        color,
+                        text,
+                        detail,
+                        on_click,
+                    } => {
+                        let target =
+                            crate::platform::native_controls::add_native_popover_color_dot(
+                                content_view,
+                                color,
+                                text.as_ref(),
+                                detail.as_ref().map(|s| AsRef::<str>::as_ref(s)),
+                                padding,
+                                flipped_y,
+                                content_width,
+                                on_click,
+                            );
+                        if !target.is_null() {
+                            button_targets.push(target);
+                        }
+                    }
+                    PlatformNativePopoverContentItem::ClickableRow {
+                        icon,
+                        text,
+                        detail,
+                        on_click,
+                        enabled,
+                    } => {
+                        let target =
+                            crate::platform::native_controls::add_native_popover_clickable_row(
+                                content_view,
+                                icon.as_ref().map(|s| AsRef::<str>::as_ref(s)),
+                                text.as_ref(),
+                                detail.as_ref().map(|s| AsRef::<str>::as_ref(s)),
+                                padding,
+                                flipped_y,
+                                content_width,
+                                enabled,
+                                on_click,
+                            );
+                        if !target.is_null() {
+                            button_targets.push(target);
+                        }
+                    }
                     PlatformNativePopoverContentItem::Separator => {
                         crate::platform::native_controls::add_native_popover_separator(
                             content_view,
@@ -1396,6 +1515,8 @@ impl PlatformWindow for MacWindow {
             popover,
             delegate_ptr,
             button_targets,
+            switch_targets,
+            checkbox_targets,
         });
     }
 
@@ -2917,6 +3038,12 @@ fn cleanup_popover_state(popover_state: &mut Option<MacPopoverState>) {
             for target in &state.button_targets {
                 crate::platform::native_controls::release_native_button_target(*target);
             }
+            for target in &state.switch_targets {
+                crate::platform::native_controls::release_native_popover_switch_target(*target);
+            }
+            for target in &state.checkbox_targets {
+                crate::platform::native_controls::release_native_popover_checkbox_target(*target);
+            }
             crate::platform::native_controls::release_native_popover(
                 state.popover,
                 state.delegate_ptr,
@@ -2980,6 +3107,10 @@ unsafe fn build_native_toolbar_for_window(
                 PlatformNativeToolbarItem::MenuButton(menu_button) => {
                     allowed_item_identifiers.push(menu_button.id.clone());
                     default_item_identifiers.push(menu_button.id.clone());
+                }
+                PlatformNativeToolbarItem::Label(label) => {
+                    allowed_item_identifiers.push(label.id.clone());
+                    default_item_identifiers.push(label.id.clone());
                 }
             }
         }
@@ -3096,6 +3227,9 @@ extern "C" fn toolbar_item_for_identifier(
             }
             Some(PlatformNativeToolbarItem::MenuButton(_)) => {
                 create_toolbar_menu_button_item(this, state, identifier, &identifier_string)
+            }
+            Some(PlatformNativeToolbarItem::Label(_)) => {
+                create_toolbar_label_item(state, identifier, &identifier_string)
             }
             Some(PlatformNativeToolbarItem::Space)
             | Some(PlatformNativeToolbarItem::FlexibleSpace)
@@ -3252,7 +3386,9 @@ unsafe fn create_toolbar_button_item(
             crate::platform::native_controls::set_native_view_tooltip(button, tool_tip.as_ref());
         }
 
-        // Set SF Symbol icon on the toolbar item if provided
+        // Set SF Symbol icon on both the toolbar item and the button view.
+        // The toolbar item image is used by the customization panel,
+        // while the button image is what's actually displayed (since setView: overrides).
         if let Some(icon) = icon.as_ref() {
             let symbol_name = ns_string(icon.as_ref());
             let image: id = msg_send![
@@ -3263,6 +3399,12 @@ unsafe fn create_toolbar_button_item(
             if image != nil {
                 let _: () = msg_send![toolbar_item, setImage: image];
             }
+            let image_only = label.is_empty();
+            crate::platform::native_controls::set_native_button_sf_symbol(
+                button,
+                icon.as_ref(),
+                image_only,
+            );
         }
 
         // Load image from URL asynchronously if provided
@@ -3664,6 +3806,59 @@ unsafe fn create_toolbar_menu_button_item(
         state
             .resources
             .push(ToolbarNativeResource::MenuButton { target: target_ptr });
+
+        msg_send![toolbar_item, autorelease]
+    }
+}
+
+unsafe fn create_toolbar_label_item(
+    state: &mut ToolbarState,
+    identifier: id,
+    identifier_string: &str,
+) -> id {
+    unsafe {
+        let Some(PlatformNativeToolbarItem::Label(item)) =
+            state.item_for_identifier(identifier_string)
+        else {
+            return nil;
+        };
+        let text = item.text.clone();
+        let icon = item.icon.clone();
+
+        let toolbar_item: id = msg_send![class!(NSToolbarItem), alloc];
+        let toolbar_item: id = msg_send![toolbar_item, initWithItemIdentifier: identifier];
+
+        let label_string = ns_string(text.as_ref());
+        let _: () = msg_send![toolbar_item, setLabel: label_string];
+
+        if let Some(icon) = icon.as_ref() {
+            let symbol_name = ns_string(icon.as_ref());
+            let image: id = msg_send![class!(NSImage), imageWithSystemSymbolName: symbol_name accessibilityDescription: nil];
+            if image != nil {
+                let _: () = msg_send![toolbar_item, setImage: image];
+            }
+        }
+
+        // Create NSTextField as a non-editable, borderless label
+        let text_field: id = msg_send![class!(NSTextField), labelWithString: label_string];
+        let _: () = msg_send![text_field, setEditable: NO];
+        let _: () = msg_send![text_field, setBordered: NO];
+        let _: () = msg_send![text_field, setDrawsBackground: NO];
+        let _: () = msg_send![text_field, setSelectable: NO];
+
+        // Use small system font to match toolbar style
+        let small_font_size: f64 = msg_send![class!(NSFont), smallSystemFontSize];
+        let font: id = msg_send![class!(NSFont), systemFontOfSize: small_font_size];
+        let _: () = msg_send![text_field, setFont: font];
+
+        // Use secondary label color for subtle appearance
+        let secondary_color: id = msg_send![class!(NSColor), secondaryLabelColor];
+        let _: () = msg_send![text_field, setTextColor: secondary_color];
+
+        let size: NSSize = msg_send![text_field, fittingSize];
+        let _: () = msg_send![toolbar_item, setMinSize: size];
+        let _: () = msg_send![toolbar_item, setMaxSize: size];
+        let _: () = msg_send![toolbar_item, setView: text_field];
 
         msg_send![toolbar_item, autorelease]
     }

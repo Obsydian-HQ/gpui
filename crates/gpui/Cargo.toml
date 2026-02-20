@@ -411,3 +411,11 @@ path = "examples/native_toolbar_menu.rs"
 [[example]]
 name = "native_toolbar_popover"
 path = "examples/native_toolbar_popover.rs"
+
+[[example]]
+name = "native_popover_extended"
+path = "examples/native_popover_extended.rs"
+
+[[example]]
+name = "native_toolbar_label"
+path = "examples/native_toolbar_label.rs"

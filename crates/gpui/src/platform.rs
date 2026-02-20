@@ -527,6 +527,13 @@ pub(crate) enum PlatformNativeToolbarItem {
     PopUpButton(PlatformNativeToolbarPopUpItem),
     ComboBox(PlatformNativeToolbarComboBoxItem),
     MenuButton(PlatformNativeToolbarMenuButtonItem),
+    Label(PlatformNativeToolbarLabelItem),
+}
+
+pub(crate) struct PlatformNativeToolbarLabelItem {
+    pub id: SharedString,
+    pub text: SharedString,
+    pub icon: Option<SharedString>,
 }
 
 pub(crate) struct PlatformNativeToolbarButtonItem {
@@ -631,6 +638,19 @@ impl PlatformNativePopoverBehavior {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativeColor {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Purple,
+    Gray,
+    Primary,
+    Secondary,
+}
+
 pub(crate) enum PlatformNativePopoverContentItem {
     Label {
         text: SharedString,
@@ -646,6 +666,37 @@ pub(crate) enum PlatformNativePopoverContentItem {
     Button {
         title: SharedString,
         on_click: Option<Box<dyn Fn()>>,
+    },
+    Toggle {
+        text: SharedString,
+        checked: bool,
+        on_change: Option<Box<dyn Fn(bool)>>,
+        enabled: bool,
+        description: Option<SharedString>,
+    },
+    Checkbox {
+        text: SharedString,
+        checked: bool,
+        on_change: Option<Box<dyn Fn(bool)>>,
+        enabled: bool,
+    },
+    ProgressBar {
+        value: f64,
+        max: f64,
+        label: Option<SharedString>,
+    },
+    ColorDot {
+        color: PlatformNativeColor,
+        text: SharedString,
+        detail: Option<SharedString>,
+        on_click: Option<Box<dyn Fn()>>,
+    },
+    ClickableRow {
+        icon: Option<SharedString>,
+        text: SharedString,
+        detail: Option<SharedString>,
+        on_click: Option<Box<dyn Fn()>>,
+        enabled: bool,
     },
     Separator,
 }

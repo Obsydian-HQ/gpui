@@ -11,11 +11,12 @@ use crate::{
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformNativeToolbar, PlatformNativeToolbarButtonItem,
     PlatformNativeToolbarComboBoxItem, PlatformNativeToolbarDisplayMode, PlatformNativeToolbarItem,
-    PlatformNativeToolbarMenuButtonItem, PlatformNativeToolbarMenuItemData,
+    PlatformNativeToolbarLabelItem, PlatformNativeToolbarMenuButtonItem,
+    PlatformNativeToolbarMenuItemData,
     PlatformNativeToolbarPopUpItem, PlatformNativeToolbarSearchFieldItem,
     PlatformNativeToolbarSegmentedItem, PlatformNativeToolbarSizeMode,
-    PlatformNativePopover, PlatformNativePopoverAnchor, PlatformNativePopoverBehavior,
-    PlatformNativePopoverContentItem, PlatformWindow, Point,
+    PlatformNativeColor, PlatformNativePopover, PlatformNativePopoverAnchor,
+    PlatformNativePopoverBehavior, PlatformNativePopoverContentItem, PlatformWindow, Point,
     PolychromeSprite, Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams,
     RenderImage, RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
     SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
@@ -1143,6 +1144,31 @@ impl NativeToolbarMenuButton {
     }
 }
 
+/// A text-only toolbar label item with no click behavior.
+/// Used for informational display (e.g., image metadata, status text).
+pub struct NativeToolbarLabel {
+    id: SharedString,
+    text: SharedString,
+    icon: Option<SharedString>,
+}
+
+impl NativeToolbarLabel {
+    /// Creates a new label item with the given identifier and text.
+    pub fn new(id: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            text: text.into(),
+            icon: None,
+        }
+    }
+
+    /// Sets an SF Symbol name to display alongside the text.
+    pub fn icon(mut self, symbol_name: impl Into<SharedString>) -> Self {
+        self.icon = Some(symbol_name.into());
+        self
+    }
+}
+
 /// A native toolbar item.
 pub enum NativeToolbarItem {
     /// A button item.
@@ -1161,6 +1187,8 @@ pub enum NativeToolbarItem {
     ComboBox(NativeToolbarComboBox),
     /// A button that opens a dropdown menu (NSMenuToolbarItem).
     MenuButton(NativeToolbarMenuButton),
+    /// A text-only label item with no click behavior.
+    Label(NativeToolbarLabel),
 }
 
 impl NativeToolbarItem {
@@ -1199,6 +1227,11 @@ impl NativeToolbarItem {
         items: Vec<NativeToolbarMenuItem>,
     ) -> Self {
         Self::MenuButton(NativeToolbarMenuButton::new(id, label, items))
+    }
+
+    /// Creates a text-only label item with no click behavior.
+    pub fn label(id: impl Into<SharedString>, text: impl Into<SharedString>) -> Self {
+        Self::Label(NativeToolbarLabel::new(id, text))
     }
 }
 
@@ -1458,6 +1491,13 @@ impl NativeToolbar {
                         on_select,
                     })
                 }
+                NativeToolbarItem::Label(label) => {
+                    PlatformNativeToolbarItem::Label(PlatformNativeToolbarLabelItem {
+                        id: label.id,
+                        text: label.text,
+                        icon: label.icon,
+                    })
+                }
             })
             .collect();
 
@@ -1570,6 +1610,29 @@ pub enum NativePopoverAnchor {
     ToolbarItem(SharedString),
 }
 
+/// A named color for use in native popover content items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeColor {
+    /// System red.
+    Red,
+    /// System orange.
+    Orange,
+    /// System yellow.
+    Yellow,
+    /// System green.
+    Green,
+    /// System blue.
+    Blue,
+    /// System purple.
+    Purple,
+    /// System gray.
+    Gray,
+    /// Primary label color.
+    Primary,
+    /// Secondary label color.
+    Secondary,
+}
+
 /// A content item to display inside a native popover.
 pub enum NativePopoverContentItem {
     /// A non-editable text label.
@@ -1597,6 +1660,63 @@ pub enum NativePopoverContentItem {
         title: SharedString,
         /// Callback invoked when the button is clicked.
         on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    },
+    /// A label on the left with an NSSwitch toggle on the right.
+    Toggle {
+        /// The label text.
+        text: SharedString,
+        /// Whether the toggle is currently on.
+        checked: bool,
+        /// Callback invoked when the toggle state changes.
+        on_change: Option<Box<dyn Fn(bool, &mut Window, &mut App) + 'static>>,
+        /// Whether the toggle is interactive.
+        enabled: bool,
+        /// Optional smaller description text below the label.
+        description: Option<SharedString>,
+    },
+    /// A native checkbox (NSButton in checkbox mode).
+    Checkbox {
+        /// The checkbox label text.
+        text: SharedString,
+        /// Whether the checkbox is currently checked.
+        checked: bool,
+        /// Callback invoked when the checkbox state changes.
+        on_change: Option<Box<dyn Fn(bool, &mut Window, &mut App) + 'static>>,
+        /// Whether the checkbox is interactive.
+        enabled: bool,
+    },
+    /// A determinate progress bar with an optional text label.
+    ProgressBar {
+        /// Current progress value.
+        value: f64,
+        /// Maximum progress value.
+        max: f64,
+        /// Optional label text displayed below the bar.
+        label: Option<SharedString>,
+    },
+    /// A colored circle with text and optional detail.
+    ColorDot {
+        /// The dot color.
+        color: NativeColor,
+        /// Primary text next to the dot.
+        text: SharedString,
+        /// Optional secondary detail text.
+        detail: Option<SharedString>,
+        /// Callback invoked when the row is clicked.
+        on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    },
+    /// A full-width clickable row with optional icon and detail text.
+    ClickableRow {
+        /// Optional SF Symbol icon name.
+        icon: Option<SharedString>,
+        /// Primary text.
+        text: SharedString,
+        /// Optional secondary detail text.
+        detail: Option<SharedString>,
+        /// Callback invoked when the row is clicked.
+        on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+        /// Whether the row is interactive.
+        enabled: bool,
     },
     /// A horizontal separator line.
     Separator,
@@ -1649,6 +1769,236 @@ impl NativePopoverContentItem {
     }
 }
 
+/// Builder for a toggle (label + NSSwitch) popover content item.
+pub struct NativePopoverToggle {
+    text: SharedString,
+    checked: bool,
+    on_change: Option<Box<dyn Fn(bool, &mut Window, &mut App) + 'static>>,
+    enabled: bool,
+    description: Option<SharedString>,
+}
+
+impl NativePopoverToggle {
+    /// Creates a new toggle builder.
+    pub fn new(text: impl Into<SharedString>, checked: bool) -> Self {
+        Self {
+            text: text.into(),
+            checked,
+            on_change: None,
+            enabled: true,
+            description: None,
+        }
+    }
+
+    /// Sets the callback invoked when the toggle state changes.
+    pub fn on_change(mut self, handler: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Box::new(handler));
+        self
+    }
+
+    /// Sets whether the toggle is interactive.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// Sets a description shown below the label.
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+}
+
+impl From<NativePopoverToggle> for NativePopoverContentItem {
+    fn from(builder: NativePopoverToggle) -> Self {
+        Self::Toggle {
+            text: builder.text,
+            checked: builder.checked,
+            on_change: builder.on_change,
+            enabled: builder.enabled,
+            description: builder.description,
+        }
+    }
+}
+
+/// Builder for a checkbox popover content item.
+pub struct NativePopoverCheckbox {
+    text: SharedString,
+    checked: bool,
+    on_change: Option<Box<dyn Fn(bool, &mut Window, &mut App) + 'static>>,
+    enabled: bool,
+}
+
+impl NativePopoverCheckbox {
+    /// Creates a new checkbox builder.
+    pub fn new(text: impl Into<SharedString>, checked: bool) -> Self {
+        Self {
+            text: text.into(),
+            checked,
+            on_change: None,
+            enabled: true,
+        }
+    }
+
+    /// Sets the callback invoked when the checkbox state changes.
+    pub fn on_change(mut self, handler: impl Fn(bool, &mut Window, &mut App) + 'static) -> Self {
+        self.on_change = Some(Box::new(handler));
+        self
+    }
+
+    /// Sets whether the checkbox is interactive.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+impl From<NativePopoverCheckbox> for NativePopoverContentItem {
+    fn from(builder: NativePopoverCheckbox) -> Self {
+        Self::Checkbox {
+            text: builder.text,
+            checked: builder.checked,
+            on_change: builder.on_change,
+            enabled: builder.enabled,
+        }
+    }
+}
+
+/// Builder for a progress bar popover content item.
+pub struct NativePopoverProgress {
+    value: f64,
+    max: f64,
+    label: Option<SharedString>,
+}
+
+impl NativePopoverProgress {
+    /// Creates a new progress bar builder.
+    pub fn new(value: f64, max: f64) -> Self {
+        Self {
+            value,
+            max,
+            label: None,
+        }
+    }
+
+    /// Sets a label displayed below the progress bar.
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+}
+
+impl From<NativePopoverProgress> for NativePopoverContentItem {
+    fn from(builder: NativePopoverProgress) -> Self {
+        Self::ProgressBar {
+            value: builder.value,
+            max: builder.max,
+            label: builder.label,
+        }
+    }
+}
+
+/// Builder for a color-dot popover content item.
+pub struct NativePopoverColorDot {
+    color: NativeColor,
+    text: SharedString,
+    detail: Option<SharedString>,
+    on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+}
+
+impl NativePopoverColorDot {
+    /// Creates a new color-dot builder.
+    pub fn new(text: impl Into<SharedString>, color: NativeColor) -> Self {
+        Self {
+            color,
+            text: text.into(),
+            detail: None,
+            on_click: None,
+        }
+    }
+
+    /// Sets secondary detail text.
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Sets the callback invoked when the row is clicked.
+    pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Box::new(handler));
+        self
+    }
+}
+
+impl From<NativePopoverColorDot> for NativePopoverContentItem {
+    fn from(builder: NativePopoverColorDot) -> Self {
+        Self::ColorDot {
+            color: builder.color,
+            text: builder.text,
+            detail: builder.detail,
+            on_click: builder.on_click,
+        }
+    }
+}
+
+/// Builder for a clickable-row popover content item.
+pub struct NativePopoverClickableRow {
+    icon: Option<SharedString>,
+    text: SharedString,
+    detail: Option<SharedString>,
+    on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    enabled: bool,
+}
+
+impl NativePopoverClickableRow {
+    /// Creates a new clickable-row builder.
+    pub fn new(text: impl Into<SharedString>) -> Self {
+        Self {
+            icon: None,
+            text: text.into(),
+            detail: None,
+            on_click: None,
+            enabled: true,
+        }
+    }
+
+    /// Sets an SF Symbol icon.
+    pub fn icon(mut self, icon: impl Into<SharedString>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    /// Sets secondary detail text.
+    pub fn detail(mut self, detail: impl Into<SharedString>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Sets the callback invoked when the row is clicked.
+    pub fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Box::new(handler));
+        self
+    }
+
+    /// Sets whether the row is interactive.
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+impl From<NativePopoverClickableRow> for NativePopoverContentItem {
+    fn from(builder: NativePopoverClickableRow) -> Self {
+        Self::ClickableRow {
+            icon: builder.icon,
+            text: builder.text,
+            detail: builder.detail,
+            on_click: builder.on_click,
+            enabled: builder.enabled,
+        }
+    }
+}
+
 /// Configuration for a native popover (NSPopover).
 pub struct NativePopover {
     content_width: f64,
@@ -1697,14 +2047,17 @@ impl NativePopover {
     }
 
     /// Adds a content item to the popover.
-    pub fn item(mut self, item: NativePopoverContentItem) -> Self {
-        self.content_items.push(item);
+    pub fn item(mut self, item: impl Into<NativePopoverContentItem>) -> Self {
+        self.content_items.push(item.into());
         self
     }
 
     /// Adds multiple content items to the popover.
-    pub fn items(mut self, items: impl IntoIterator<Item = NativePopoverContentItem>) -> Self {
-        self.content_items.extend(items);
+    pub fn items(
+        mut self,
+        items: impl IntoIterator<Item = impl Into<NativePopoverContentItem>>,
+    ) -> Self {
+        self.content_items.extend(items.into_iter().map(|i| i.into()));
         self
     }
 
@@ -1769,6 +2122,124 @@ impl NativePopover {
                     PlatformNativePopoverContentItem::Button {
                         title,
                         on_click: platform_on_click,
+                    }
+                }
+                NativePopoverContentItem::Toggle {
+                    text,
+                    checked,
+                    on_change,
+                    enabled,
+                    description,
+                } => {
+                    let platform_on_change = on_change.map(|handler| -> Box<dyn Fn(bool)> {
+                        let handler = Rc::new(handler);
+                        let nfc = next_frame_callbacks.clone();
+                        let inv = invalidator.clone();
+                        Box::new(move |checked| {
+                            let handler = handler.clone();
+                            let callback: FrameCallback =
+                                Box::new(move |window, cx| handler(checked, window, cx));
+                            RefCell::borrow_mut(&nfc).push(callback);
+                            inv.set_dirty(true);
+                        })
+                    });
+                    PlatformNativePopoverContentItem::Toggle {
+                        text,
+                        checked,
+                        on_change: platform_on_change,
+                        enabled,
+                        description,
+                    }
+                }
+                NativePopoverContentItem::Checkbox {
+                    text,
+                    checked,
+                    on_change,
+                    enabled,
+                } => {
+                    let platform_on_change = on_change.map(|handler| -> Box<dyn Fn(bool)> {
+                        let handler = Rc::new(handler);
+                        let nfc = next_frame_callbacks.clone();
+                        let inv = invalidator.clone();
+                        Box::new(move |checked| {
+                            let handler = handler.clone();
+                            let callback: FrameCallback =
+                                Box::new(move |window, cx| handler(checked, window, cx));
+                            RefCell::borrow_mut(&nfc).push(callback);
+                            inv.set_dirty(true);
+                        })
+                    });
+                    PlatformNativePopoverContentItem::Checkbox {
+                        text,
+                        checked,
+                        on_change: platform_on_change,
+                        enabled,
+                    }
+                }
+                NativePopoverContentItem::ProgressBar { value, max, label } => {
+                    PlatformNativePopoverContentItem::ProgressBar { value, max, label }
+                }
+                NativePopoverContentItem::ColorDot {
+                    color,
+                    text,
+                    detail,
+                    on_click,
+                } => {
+                    let platform_color = match color {
+                        NativeColor::Red => PlatformNativeColor::Red,
+                        NativeColor::Orange => PlatformNativeColor::Orange,
+                        NativeColor::Yellow => PlatformNativeColor::Yellow,
+                        NativeColor::Green => PlatformNativeColor::Green,
+                        NativeColor::Blue => PlatformNativeColor::Blue,
+                        NativeColor::Purple => PlatformNativeColor::Purple,
+                        NativeColor::Gray => PlatformNativeColor::Gray,
+                        NativeColor::Primary => PlatformNativeColor::Primary,
+                        NativeColor::Secondary => PlatformNativeColor::Secondary,
+                    };
+                    let platform_on_click = on_click.map(|handler| -> Box<dyn Fn()> {
+                        let handler = Rc::new(handler);
+                        let nfc = next_frame_callbacks.clone();
+                        let inv = invalidator.clone();
+                        Box::new(move || {
+                            let handler = handler.clone();
+                            let callback: FrameCallback =
+                                Box::new(move |window, cx| handler(window, cx));
+                            RefCell::borrow_mut(&nfc).push(callback);
+                            inv.set_dirty(true);
+                        })
+                    });
+                    PlatformNativePopoverContentItem::ColorDot {
+                        color: platform_color,
+                        text,
+                        detail,
+                        on_click: platform_on_click,
+                    }
+                }
+                NativePopoverContentItem::ClickableRow {
+                    icon,
+                    text,
+                    detail,
+                    on_click,
+                    enabled,
+                } => {
+                    let platform_on_click = on_click.map(|handler| -> Box<dyn Fn()> {
+                        let handler = Rc::new(handler);
+                        let nfc = next_frame_callbacks.clone();
+                        let inv = invalidator.clone();
+                        Box::new(move || {
+                            let handler = handler.clone();
+                            let callback: FrameCallback =
+                                Box::new(move |window, cx| handler(window, cx));
+                            RefCell::borrow_mut(&nfc).push(callback);
+                            inv.set_dirty(true);
+                        })
+                    });
+                    PlatformNativePopoverContentItem::ClickableRow {
+                        icon,
+                        text,
+                        detail,
+                        on_click: platform_on_click,
+                        enabled,
                     }
                 }
                 NativePopoverContentItem::Separator => PlatformNativePopoverContentItem::Separator,

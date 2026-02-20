@@ -343,3 +343,398 @@ pub(crate) unsafe fn add_native_popover_separator(
         separator
     }
 }
+
+/// Adds a toggle row (label on left, NSSwitch on right) to a popover content view.
+/// Returns the switch target pointer for cleanup (or null if no callback).
+pub(crate) unsafe fn add_native_popover_toggle(
+    content_view: id,
+    text: &str,
+    checked: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    enabled: bool,
+    description: Option<&str>,
+    on_change: Option<Box<dyn Fn(bool)>>,
+) -> *mut c_void {
+    unsafe {
+        use super::super::ns_string;
+
+        let switch_width = 38.0;
+        let label_width = width - switch_width - 8.0;
+        let has_desc = description.is_some();
+
+        // In NSView bottom-up coords, y is the bottom of the item area.
+        // With description (height=44): title in upper half, description in lower half.
+        // Without description (height=30): title vertically centered.
+        let label_y = if has_desc { y + 22.0 } else { y + 6.0 };
+        let switch_y = if has_desc { y + 18.0 } else { y + 4.0 };
+
+        // Label
+        let label: id = msg_send![class!(NSTextField), alloc];
+        let label_frame = NSRect::new(NSPoint::new(x, label_y), NSSize::new(label_width, 18.0));
+        let label: id = msg_send![label, initWithFrame: label_frame];
+        let _: () = msg_send![label, setStringValue: ns_string(text)];
+        let _: () = msg_send![label, setBezeled: false];
+        let _: () = msg_send![label, setDrawsBackground: false];
+        let _: () = msg_send![label, setEditable: false];
+        let _: () = msg_send![label, setSelectable: false];
+        let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+        let _: () = msg_send![label, setFont: font];
+        let _: () = msg_send![content_view, addSubview: label];
+        let _: () = msg_send![label, release];
+
+        // Description below label (if provided)
+        if let Some(desc) = description {
+            let desc_label: id = msg_send![class!(NSTextField), alloc];
+            let desc_frame =
+                NSRect::new(NSPoint::new(x, y + 2.0), NSSize::new(label_width, 14.0));
+            let desc_label: id = msg_send![desc_label, initWithFrame: desc_frame];
+            let _: () = msg_send![desc_label, setStringValue: ns_string(desc)];
+            let _: () = msg_send![desc_label, setBezeled: false];
+            let _: () = msg_send![desc_label, setDrawsBackground: false];
+            let _: () = msg_send![desc_label, setEditable: false];
+            let _: () = msg_send![desc_label, setSelectable: false];
+            let small_font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64];
+            let _: () = msg_send![desc_label, setFont: small_font];
+            let color: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![desc_label, setTextColor: color];
+            let _: () = msg_send![content_view, addSubview: desc_label];
+            let _: () = msg_send![desc_label, release];
+        }
+
+        // NSSwitch on the right
+        let switch = super::create_native_switch();
+        let switch_x = x + width - switch_width;
+        let switch_frame =
+            NSRect::new(NSPoint::new(switch_x, switch_y), NSSize::new(switch_width, 22.0));
+        let _: () = msg_send![switch, setFrame: switch_frame];
+        super::set_native_switch_state(switch, checked);
+        let _: () = msg_send![switch, setEnabled: enabled as i8];
+        let _: () = msg_send![content_view, addSubview: switch];
+
+        let target = if let Some(callback) = on_change {
+            super::set_native_switch_action(switch, callback)
+        } else {
+            ptr::null_mut()
+        };
+
+        let _: () = msg_send![switch, release];
+
+        target
+    }
+}
+
+/// Adds a checkbox (NSButton in checkbox mode) to a popover content view.
+/// Returns the checkbox target pointer for cleanup (or null if no callback).
+pub(crate) unsafe fn add_native_popover_checkbox(
+    content_view: id,
+    text: &str,
+    checked: bool,
+    x: f64,
+    y: f64,
+    width: f64,
+    enabled: bool,
+    on_change: Option<Box<dyn Fn(bool)>>,
+) -> *mut c_void {
+    unsafe {
+        let checkbox = super::create_native_checkbox(text);
+        let frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, 18.0));
+        let _: () = msg_send![checkbox, setFrame: frame];
+        super::set_native_checkbox_state(checkbox, checked);
+        let _: () = msg_send![checkbox, setEnabled: enabled as i8];
+        let _: () = msg_send![content_view, addSubview: checkbox];
+
+        let target = if let Some(callback) = on_change {
+            super::set_native_checkbox_action(checkbox, callback)
+        } else {
+            ptr::null_mut()
+        };
+
+        let _: () = msg_send![checkbox, release];
+
+        target
+    }
+}
+
+/// Adds a progress bar (NSProgressIndicator) with optional label to a popover content view.
+pub(crate) unsafe fn add_native_popover_progress(
+    content_view: id,
+    value: f64,
+    max: f64,
+    label: Option<&str>,
+    x: f64,
+    y: f64,
+    width: f64,
+) {
+    unsafe {
+        use super::super::ns_string;
+
+        let indicator = super::create_native_progress_indicator();
+        let bar_height = 6.0;
+        let bar_y = if label.is_some() { y + 18.0 } else { y + 7.0 };
+        let indicator_frame = NSRect::new(NSPoint::new(x, bar_y), NSSize::new(width, bar_height));
+        let _: () = msg_send![indicator, setFrame: indicator_frame];
+        super::set_native_progress_style(indicator, 0); // bar style
+        super::set_native_progress_indeterminate(indicator, false);
+        super::set_native_progress_min_max(indicator, 0.0, max);
+        super::set_native_progress_value(indicator, value);
+
+        // Use small control size for a thinner bar
+        // NSControlSizeMini = 3
+        let _: () = msg_send![indicator, setControlSize: 3i64];
+
+        let _: () = msg_send![content_view, addSubview: indicator];
+        let _: () = msg_send![indicator, release];
+
+        if let Some(label_text) = label {
+            let label: id = msg_send![class!(NSTextField), alloc];
+            let label_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, 14.0));
+            let label: id = msg_send![label, initWithFrame: label_frame];
+            let _: () = msg_send![label, setStringValue: ns_string(label_text)];
+            let _: () = msg_send![label, setBezeled: false];
+            let _: () = msg_send![label, setDrawsBackground: false];
+            let _: () = msg_send![label, setEditable: false];
+            let _: () = msg_send![label, setSelectable: false];
+            let font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64];
+            let _: () = msg_send![label, setFont: font];
+            let color: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![label, setTextColor: color];
+            let _: () = msg_send![content_view, addSubview: label];
+            let _: () = msg_send![label, release];
+        }
+    }
+}
+
+/// Returns the NSColor for a PlatformNativeColor.
+pub(crate) unsafe fn ns_color_for_platform_color(
+    color: crate::platform::PlatformNativeColor,
+) -> id {
+    unsafe {
+        use crate::platform::PlatformNativeColor;
+        match color {
+            PlatformNativeColor::Red => msg_send![class!(NSColor), systemRedColor],
+            PlatformNativeColor::Orange => msg_send![class!(NSColor), systemOrangeColor],
+            PlatformNativeColor::Yellow => msg_send![class!(NSColor), systemYellowColor],
+            PlatformNativeColor::Green => msg_send![class!(NSColor), systemGreenColor],
+            PlatformNativeColor::Blue => msg_send![class!(NSColor), systemBlueColor],
+            PlatformNativeColor::Purple => msg_send![class!(NSColor), systemPurpleColor],
+            PlatformNativeColor::Gray => msg_send![class!(NSColor), systemGrayColor],
+            PlatformNativeColor::Primary => msg_send![class!(NSColor), labelColor],
+            PlatformNativeColor::Secondary => msg_send![class!(NSColor), secondaryLabelColor],
+        }
+    }
+}
+
+/// Adds a color dot row (colored circle + text + optional detail) to a popover content view.
+/// Returns the button target pointer for cleanup (or null if no callback).
+pub(crate) unsafe fn add_native_popover_color_dot(
+    content_view: id,
+    color: crate::platform::PlatformNativeColor,
+    text: &str,
+    detail: Option<&str>,
+    x: f64,
+    y: f64,
+    width: f64,
+    on_click: Option<Box<dyn Fn()>>,
+) -> *mut c_void {
+    unsafe {
+        use super::super::ns_string;
+
+        let dot_size = 10.0;
+        let has_detail = detail.is_some();
+
+        // In NSView bottom-up coords, y is the bottom of the item area.
+        // With detail (height=38): title in upper half, detail in lower half.
+        // Without detail (height=24): single line centered.
+        let title_y = if has_detail { y + 18.0 } else { y + 3.0 };
+        let dot_y = if has_detail { y + 22.0 } else { y + 7.0 };
+
+        // Colored circle view
+        let dot_view: id = msg_send![class!(NSView), alloc];
+        let dot_frame = NSRect::new(NSPoint::new(x, dot_y), NSSize::new(dot_size, dot_size));
+        let dot_view: id = msg_send![dot_view, initWithFrame: dot_frame];
+        let _: () = msg_send![dot_view, setWantsLayer: true];
+        let layer: id = msg_send![dot_view, layer];
+        let _: () = msg_send![layer, setCornerRadius: dot_size / 2.0];
+        let ns_color = ns_color_for_platform_color(color);
+        let cg_color: id = msg_send![ns_color, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: cg_color];
+        let _: () = msg_send![content_view, addSubview: dot_view];
+        let _: () = msg_send![dot_view, release];
+
+        // Text label
+        let text_x = x + dot_size + 8.0;
+        let text_width = width - dot_size - 8.0;
+        let label: id = msg_send![class!(NSTextField), alloc];
+        let label_frame = NSRect::new(NSPoint::new(text_x, title_y), NSSize::new(text_width, 18.0));
+        let label: id = msg_send![label, initWithFrame: label_frame];
+        let _: () = msg_send![label, setStringValue: ns_string(text)];
+        let _: () = msg_send![label, setBezeled: false];
+        let _: () = msg_send![label, setDrawsBackground: false];
+        let _: () = msg_send![label, setEditable: false];
+        let _: () = msg_send![label, setSelectable: false];
+        let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+        let _: () = msg_send![label, setFont: font];
+        let _: () = msg_send![content_view, addSubview: label];
+        let _: () = msg_send![label, release];
+
+        // Detail label (if provided) — positioned in lower portion of item
+        if let Some(detail_text) = detail {
+            let detail_label: id = msg_send![class!(NSTextField), alloc];
+            let detail_frame =
+                NSRect::new(NSPoint::new(text_x, y + 2.0), NSSize::new(text_width, 14.0));
+            let detail_label: id = msg_send![detail_label, initWithFrame: detail_frame];
+            let _: () = msg_send![detail_label, setStringValue: ns_string(detail_text)];
+            let _: () = msg_send![detail_label, setBezeled: false];
+            let _: () = msg_send![detail_label, setDrawsBackground: false];
+            let _: () = msg_send![detail_label, setEditable: false];
+            let _: () = msg_send![detail_label, setSelectable: false];
+            let small_font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64];
+            let _: () = msg_send![detail_label, setFont: small_font];
+            let detail_color: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![detail_label, setTextColor: detail_color];
+            let _: () = msg_send![content_view, addSubview: detail_label];
+            let _: () = msg_send![detail_label, release];
+        }
+
+        // If clickable, overlay with a transparent button
+        if let Some(callback) = on_click {
+            let row_height = if detail.is_some() { 38.0 } else { 24.0 };
+            let button: id = msg_send![class!(NSButton), alloc];
+            let button_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, row_height));
+            let button: id = msg_send![button, initWithFrame: button_frame];
+            let _: () = msg_send![button, setTitle: ns_string("")];
+            let _: () = msg_send![button, setTransparent: true];
+            // NSBezelStyleSmallSquare = 10
+            let _: () = msg_send![button, setBezelStyle: 10i64];
+            let _: () = msg_send![content_view, addSubview: button];
+
+            let target = super::set_native_button_action(button, callback);
+            let _: () = msg_send![button, release];
+            target
+        } else {
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Adds a clickable row (optional icon + text + optional detail) to a popover content view.
+/// Returns the button target pointer for cleanup (or null if not clickable).
+pub(crate) unsafe fn add_native_popover_clickable_row(
+    content_view: id,
+    icon: Option<&str>,
+    text: &str,
+    detail: Option<&str>,
+    x: f64,
+    y: f64,
+    width: f64,
+    enabled: bool,
+    on_click: Option<Box<dyn Fn()>>,
+) -> *mut c_void {
+    unsafe {
+        use super::super::ns_string;
+
+        let icon_offset = if icon.is_some() { 22.0 } else { 0.0 };
+        let text_x = x + icon_offset;
+        let text_width = width - icon_offset;
+
+        let has_detail = detail.is_some();
+
+        // Icon (if provided) — vertically aligned with title
+        if let Some(icon_name) = icon {
+            let image: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: ns_string(icon_name)
+                accessibilityDescription: nil
+            ];
+            let icon_size = 16.0;
+            let icon_y = if has_detail { y + 16.0 } else { y + 6.0 };
+            let icon_view: id = msg_send![class!(NSImageView), alloc];
+            let icon_frame =
+                NSRect::new(NSPoint::new(x, icon_y), NSSize::new(icon_size, icon_size));
+            let icon_view: id = msg_send![icon_view, initWithFrame: icon_frame];
+            if image != nil {
+                let _: () = msg_send![icon_view, setImage: image];
+            }
+            // NSImageScaleProportionallyUpOrDown = 3
+            let _: () = msg_send![icon_view, setImageScaling: 3i64];
+            let tint: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![icon_view, setContentTintColor: tint];
+            let _: () = msg_send![content_view, addSubview: icon_view];
+            let _: () = msg_send![icon_view, release];
+        }
+
+        // Text label
+        let label: id = msg_send![class!(NSTextField), alloc];
+        let label_y = if has_detail { y + 16.0 } else { y + 5.0 };
+        let label_frame = NSRect::new(NSPoint::new(text_x, label_y), NSSize::new(text_width, 18.0));
+        let label: id = msg_send![label, initWithFrame: label_frame];
+        let _: () = msg_send![label, setStringValue: ns_string(text)];
+        let _: () = msg_send![label, setBezeled: false];
+        let _: () = msg_send![label, setDrawsBackground: false];
+        let _: () = msg_send![label, setEditable: false];
+        let _: () = msg_send![label, setSelectable: false];
+        let font: id = msg_send![class!(NSFont), systemFontOfSize: 13.0f64];
+        let _: () = msg_send![label, setFont: font];
+        if !enabled {
+            let disabled_color: id = msg_send![class!(NSColor), tertiaryLabelColor];
+            let _: () = msg_send![label, setTextColor: disabled_color];
+        }
+        let _: () = msg_send![content_view, addSubview: label];
+        let _: () = msg_send![label, release];
+
+        // Detail label (if provided) — positioned in lower portion of item
+        if let Some(detail_text) = detail {
+            let detail_label: id = msg_send![class!(NSTextField), alloc];
+            let detail_frame =
+                NSRect::new(NSPoint::new(text_x, y + 1.0), NSSize::new(text_width, 14.0));
+            let detail_label: id = msg_send![detail_label, initWithFrame: detail_frame];
+            let _: () = msg_send![detail_label, setStringValue: ns_string(detail_text)];
+            let _: () = msg_send![detail_label, setBezeled: false];
+            let _: () = msg_send![detail_label, setDrawsBackground: false];
+            let _: () = msg_send![detail_label, setEditable: false];
+            let _: () = msg_send![detail_label, setSelectable: false];
+            let small_font: id = msg_send![class!(NSFont), systemFontOfSize: 11.0f64];
+            let _: () = msg_send![detail_label, setFont: small_font];
+            let detail_color: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![detail_label, setTextColor: detail_color];
+            let _: () = msg_send![content_view, addSubview: detail_label];
+            let _: () = msg_send![detail_label, release];
+        }
+
+        // Overlay transparent button for click handling
+        if let Some(callback) = on_click {
+            let row_height = if detail.is_some() { 36.0 } else { 24.0 };
+            let button: id = msg_send![class!(NSButton), alloc];
+            let button_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, row_height));
+            let button: id = msg_send![button, initWithFrame: button_frame];
+            let _: () = msg_send![button, setTitle: ns_string("")];
+            let _: () = msg_send![button, setTransparent: true];
+            // NSBezelStyleSmallSquare = 10
+            let _: () = msg_send![button, setBezelStyle: 10i64];
+            let _: () = msg_send![button, setEnabled: enabled as i8];
+            let _: () = msg_send![content_view, addSubview: button];
+
+            let target = super::set_native_button_action(button, callback);
+            let _: () = msg_send![button, release];
+            target
+        } else {
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Releases a switch target for popover cleanup.
+pub(crate) unsafe fn release_native_popover_switch_target(target: *mut c_void) {
+    unsafe {
+        super::release_native_switch_target(target);
+    }
+}
+
+/// Releases a checkbox target for popover cleanup.
+pub(crate) unsafe fn release_native_popover_checkbox_target(target: *mut c_void) {
+    unsafe {
+        super::release_native_checkbox_target(target);
+    }
+}
