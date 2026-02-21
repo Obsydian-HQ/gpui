@@ -358,8 +358,7 @@ pub(crate) unsafe fn get_toolbar_item_screen_frame(
             let item: id = msg_send![items, objectAtIndex: i];
             let item_id: id = msg_send![item, itemIdentifier];
 
-            let description: id = msg_send![item_id, description];
-            let item_id_str: *const std::os::raw::c_char = msg_send![description, UTF8String];
+            let item_id_str: *const std::os::raw::c_char = msg_send![item_id, UTF8String];
             if item_id_str.is_null() {
                 continue;
             }

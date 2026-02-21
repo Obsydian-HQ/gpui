@@ -1849,6 +1849,16 @@ impl PlatformWindow for MacWindow {
 
                 top_y += height;
             }
+
+            // Scroll to top of content. In Cocoa's bottom-up coordinate system,
+            // the "top" of the content is at the highest y value.
+            if total_content_height > content_bounds.size.height {
+                let clip_view: id = msg_send![scroll_view, contentView];
+                let scroll_point =
+                    NSPoint::new(0.0, total_content_height - content_bounds.size.height);
+                let _: () = msg_send![clip_view, scrollToPoint: scroll_point];
+                let _: () = msg_send![scroll_view, reflectScrolledClipView: clip_view];
+            }
         }
 
         // Position and show the panel based on anchor
@@ -1861,7 +1871,11 @@ impl PlatformWindow for MacWindow {
                         item_id.as_ref(),
                     )
                 {
-                    let x = screen_frame.origin.x;
+                    // Center the panel horizontally under the toolbar item
+                    let item_center_x =
+                        screen_frame.origin.x + screen_frame.size.width / 2.0;
+                    let x = item_center_x - panel_config.width / 2.0;
+                    // Place the panel directly below the toolbar item
                     let y = screen_frame.origin.y - panel_config.height;
                     crate::platform::native_controls::set_native_panel_frame_origin(panel, x, y);
                     crate::platform::native_controls::show_native_panel(panel);
