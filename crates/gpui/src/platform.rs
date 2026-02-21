@@ -705,6 +705,73 @@ pub(crate) enum PlatformNativePopoverAnchor {
     ToolbarItem(SharedString),
 }
 
+// =============================================================================
+// Native Panel types
+// =============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativePanelStyle {
+    Titled,
+    Borderless,
+    Hud,
+    Utility,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativePanelLevel {
+    Normal,
+    Floating,
+    ModalPanel,
+    PopUpMenu,
+    Custom(i64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativePanelMaterial {
+    HudWindow,
+    Popover,
+    Sidebar,
+    UnderWindow,
+}
+
+pub(crate) enum PlatformNativePanelAnchor {
+    ToolbarItem(SharedString),
+    Point { x: f64, y: f64 },
+    Centered,
+}
+
+pub(crate) struct PlatformNativePanel {
+    pub width: f64,
+    pub height: f64,
+    pub style: PlatformNativePanelStyle,
+    pub level: PlatformNativePanelLevel,
+    pub non_activating: bool,
+    pub has_shadow: bool,
+    pub corner_radius: f64,
+    pub material: Option<PlatformNativePanelMaterial>,
+    pub on_close: Option<Box<dyn Fn()>>,
+    pub content_items: Vec<PlatformNativePopoverContentItem>,
+}
+
+// =============================================================================
+// Native Alert types
+// =============================================================================
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PlatformNativeAlertStyle {
+    Warning,
+    Informational,
+    Critical,
+}
+
+pub(crate) struct PlatformNativeAlert {
+    pub style: PlatformNativeAlertStyle,
+    pub message: SharedString,
+    pub informative_text: Option<SharedString>,
+    pub button_titles: Vec<SharedString>,
+    pub shows_suppression_button: bool,
+}
+
 pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
     fn is_maximized(&self) -> bool;
@@ -785,6 +852,21 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     ) {
     }
     fn dismiss_native_popover(&self) {}
+    fn show_native_panel(
+        &self,
+        _panel: PlatformNativePanel,
+        _anchor: PlatformNativePanelAnchor,
+    ) {
+    }
+    fn dismiss_native_panel(&self) {}
+    fn show_native_alert_sheet(
+        &self,
+        _alert: PlatformNativeAlert,
+    ) -> Option<oneshot::Receiver<usize>> {
+        None
+    }
+    fn present_as_sheet(&self, _child_window: &dyn PlatformWindow) {}
+    fn dismiss_sheet(&self) {}
 
     #[cfg(target_os = "windows")]
     fn get_raw_handle(&self) -> windows::HWND;

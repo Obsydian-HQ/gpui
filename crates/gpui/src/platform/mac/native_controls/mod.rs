@@ -1,9 +1,11 @@
+mod alert;
 mod button;
 mod checkbox;
 mod collection;
 mod combo_box;
 mod menu;
 mod outline;
+mod panel;
 mod popover;
 mod popup;
 mod progress;
@@ -17,12 +19,14 @@ mod tab_view;
 mod table;
 mod text_field;
 
+pub(crate) use alert::*;
 pub(crate) use button::*;
 pub(crate) use checkbox::*;
 pub(crate) use collection::*;
 pub(crate) use combo_box::*;
 pub(crate) use menu::*;
 pub(crate) use outline::*;
+pub(crate) use panel::*;
 pub(crate) use popover::*;
 pub(crate) use popup::*;
 pub(crate) use progress::*;

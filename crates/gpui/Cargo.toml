@@ -419,3 +419,19 @@ path = "examples/native_popover_extended.rs"
 [[example]]
 name = "native_toolbar_label"
 path = "examples/native_toolbar_label.rs"
+
+[[example]]
+name = "native_toolbar_search"
+path = "examples/native_toolbar_search.rs"
+
+[[example]]
+name = "native_panel"
+path = "examples/native_panel.rs"
+
+[[example]]
+name = "native_alert"
+path = "examples/native_alert.rs"
+
+[[example]]
+name = "native_search_suggestions"
+path = "examples/native_search_suggestions.rs"
