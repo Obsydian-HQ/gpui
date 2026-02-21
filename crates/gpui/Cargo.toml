@@ -435,3 +435,23 @@ path = "examples/native_alert.rs"
 [[example]]
 name = "native_search_suggestions"
 path = "examples/native_search_suggestions.rs"
+
+[[example]]
+name = "native_visual_effect_view"
+path = "examples/native_visual_effect_view.rs"
+
+[[example]]
+name = "native_image_view"
+path = "examples/native_image_view.rs"
+
+[[example]]
+name = "native_stack_view"
+path = "examples/native_stack_view.rs"
+
+[[example]]
+name = "native_tracking_view"
+path = "examples/native_tracking_view.rs"
+
+[[example]]
+name = "native_tab_bar"
+path = "examples/native_tab_bar.rs"
