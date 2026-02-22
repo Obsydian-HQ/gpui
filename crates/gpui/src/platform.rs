@@ -910,6 +910,13 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         unimplemented!("shared_render_resources not available on this platform window")
     }
 
+    /// Returns a raw pointer to the platform window state (Arc<Mutex<MacWindowState>>).
+    /// Used to attach the window's event callback to secondary surface views.
+    #[cfg(target_os = "macos")]
+    fn window_state_ptr(&self) -> *const std::ffi::c_void {
+        std::ptr::null()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None

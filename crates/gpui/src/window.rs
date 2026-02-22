@@ -4225,7 +4225,15 @@ impl Window {
         // Get shared resources from the main renderer via the platform window
         let shared = self.platform_window.shared_render_resources();
 
-        let gpui_surface = GpuiSurface::new(shared, true);
+        let mut gpui_surface = GpuiSurface::new(shared, true);
+
+        // Attach the window's event state so the surface view can forward
+        // mouse events through the same event_callback as the main view.
+        let state_ptr = self.platform_window.window_state_ptr();
+        if !state_ptr.is_null() {
+            gpui_surface.set_window_state(state_ptr);
+        }
+
         let native_view_ptr = gpui_surface.native_view_ptr();
 
         self.surfaces.insert(id, SurfaceState {
@@ -4508,7 +4516,17 @@ impl Window {
         self.platform_window.draw(&self.rendered_frame.scene);
         #[cfg(target_os = "macos")]
         {
+            let scale_factor = self.scale_factor;
             for surface in self.surfaces.values_mut() {
+                let content_size = surface.gpui_surface.content_size();
+                let device_width = (content_size.width.0 * scale_factor).ceil() as i32;
+                let device_height = (content_size.height.0 * scale_factor).ceil() as i32;
+                let device_size = crate::size(
+                    crate::DevicePixels(device_width),
+                    crate::DevicePixels(device_height),
+                );
+                surface.gpui_surface.set_contents_scale(scale_factor as f64);
+                surface.gpui_surface.update_drawable_size(device_size);
                 surface.gpui_surface.draw(&surface.scene);
             }
         }

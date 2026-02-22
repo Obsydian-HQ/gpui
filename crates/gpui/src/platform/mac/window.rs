@@ -521,7 +521,7 @@ impl MacToolbarState {
     }
 }
 
-struct MacWindowState {
+pub(crate) struct MacWindowState {
     handle: AnyWindowHandle,
     foreground_executor: ForegroundExecutor,
     background_executor: BackgroundExecutor,
@@ -532,7 +532,7 @@ struct MacWindowState {
     display_link: Option<DisplayLink>,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
-    event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
+    pub(crate) event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
@@ -2475,6 +2475,10 @@ impl PlatformWindow for MacWindow {
         self.0.lock().renderer.shared().clone()
     }
 
+    fn window_state_ptr(&self) -> *const c_void {
+        Arc::into_raw(self.0.clone()) as *const c_void
+    }
+
     fn titlebar_double_click(&self) {
         let this = self.0.lock();
         let window = this.native_window;
@@ -2650,7 +2654,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
     let mut lock = window_state.as_ref().lock();
 
     let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height)) };
+    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height), None) };
 
     let Some(event) = event else {
         return NO;
@@ -2767,7 +2771,7 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
     let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height)) };
+    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height), None) };
 
     if let Some(mut event) = event {
         match &mut event {

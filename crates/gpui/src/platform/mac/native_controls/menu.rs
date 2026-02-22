@@ -11,7 +11,7 @@ use objc::{
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
-use std::{ffi::c_void, ptr};
+use std::{cell::Cell, ffi::c_void, ptr, rc::Rc};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum NativeMenuItemData {
@@ -315,5 +315,83 @@ pub(crate) unsafe fn release_native_menu_button_target(target: *mut c_void) {
 pub(crate) unsafe fn release_native_menu_button(button: id) {
     unsafe {
         let _: () = msg_send![button, release];
+    }
+}
+
+struct DeferredPopupContext {
+    menu: id,
+    target_ptr: *mut c_void,
+    view: id,
+    gpui_x: f64,
+    gpui_y: f64,
+    selected_index: Rc<Cell<Option<usize>>>,
+    on_result: Box<dyn FnOnce(Option<usize>)>,
+}
+
+/// Shows a popup context menu at the given pixel position, deferred to the
+/// next main-queue iteration so it doesn't conflict with GPUI's active borrows.
+///
+/// `gpui_x` / `gpui_y` are in GPUI's top-down coordinate system. The
+/// `on_result` callback fires after the menu closes with the selected action
+/// index (or `None` if dismissed).
+pub(crate) unsafe fn show_popup_menu_deferred(
+    items: &[NativeMenuItemData],
+    view: id,
+    gpui_x: f64,
+    gpui_y: f64,
+    on_result: Box<dyn FnOnce(Option<usize>)>,
+) {
+    unsafe {
+        let selected_index = Rc::new(Cell::new(None));
+        let selected_clone = selected_index.clone();
+
+        let (menu, target_ptr) = create_native_menu_target(
+            items,
+            Some(Box::new(move |idx| {
+                selected_clone.set(Some(idx));
+            })),
+        );
+
+        let context = Box::new(DeferredPopupContext {
+            menu,
+            target_ptr,
+            view,
+            gpui_x,
+            gpui_y,
+            selected_index,
+            on_result,
+        });
+
+        let context_ptr = Box::into_raw(context) as *mut c_void;
+
+        use super::super::dispatcher::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
+        dispatch_async_f(
+            dispatch_get_main_queue(),
+            context_ptr,
+            Some(popup_menu_trampoline),
+        );
+    }
+}
+
+unsafe extern "C" fn popup_menu_trampoline(context: *mut c_void) {
+    unsafe {
+        let ctx = Box::from_raw(context as *mut DeferredPopupContext);
+
+        let parent_frame: NSRect = msg_send![ctx.view, frame];
+        let ns_point = NSPoint::new(ctx.gpui_x, parent_frame.size.height - ctx.gpui_y);
+
+        let _: i8 = msg_send![
+            ctx.menu,
+            popUpMenuPositioningItem: nil
+            atLocation: ns_point
+            inView: ctx.view
+        ];
+
+        let result = ctx.selected_index.get();
+
+        release_native_menu_button_target(ctx.target_ptr);
+        let _: () = msg_send![ctx.menu, release];
+
+        (ctx.on_result)(result);
     }
 }

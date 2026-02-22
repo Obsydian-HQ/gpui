@@ -3,12 +3,74 @@ use std::ffi::c_void;
 use std::rc::Rc;
 
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
-    StyleRefinement, Styled, Window, px,
+    AbsoluteLength, AnyWindowHandle, App, AsyncApp, Bounds, DefiniteLength, Element, ElementId,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Point,
+    SharedString, Style, StyleRefinement, Styled, Window, px,
 };
 
 use super::native_element_helpers::schedule_native_callback;
+
+/// Shows a native popup context menu at the given position (in GPUI pixels from
+/// the window content top-left).
+///
+/// The menu is displayed asynchronously (deferred to the next main-queue
+/// iteration) to avoid conflicting with GPUI's active borrows. When the user
+/// selects an action item, `on_select` is called with the zero-based action
+/// index and fresh `&mut Window` / `&mut App` borrows.
+///
+/// Call this from inside a GPUI event handler (e.g. `on_mouse_down`).
+pub fn show_native_popup_menu(
+    items: &[NativeMenuItem],
+    position: Point<Pixels>,
+    window: &Window,
+    cx: &App,
+    on_select: impl FnOnce(usize, &mut Window, &mut App) + 'static,
+) {
+    #[cfg(target_os = "macos")]
+    {
+        let native_view = window.raw_native_view_ptr();
+        if native_view.is_null() {
+            return;
+        }
+
+        let mapped = map_items(items);
+        let async_app = cx.to_async();
+        let window_handle = window.window_handle();
+
+        unsafe {
+            crate::platform::native_controls::show_popup_menu_deferred(
+                &mapped,
+                native_view as cocoa::base::id,
+                position.x.0 as f64,
+                position.y.0 as f64,
+                Box::new(move |result| {
+                    if let Some(index) = result {
+                        deferred_update(async_app, window_handle, move |window, cx| {
+                            on_select(index, window, cx);
+                        });
+                    }
+                }),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (items, position, window, cx, on_select);
+    }
+}
+
+fn deferred_update(
+    async_app: AsyncApp,
+    window_handle: AnyWindowHandle,
+    f: impl FnOnce(&mut Window, &mut App) + 'static,
+) {
+    async_app.update(|cx| {
+        window_handle
+            .update(cx, |_, window, cx| f(window, cx))
+            .ok();
+    });
+}
 
 /// A declarative native menu item.
 #[derive(Clone, Debug, PartialEq, Eq)]

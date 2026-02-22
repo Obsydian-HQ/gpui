@@ -12,6 +12,7 @@ use crate::{
 use cocoa::{
     appkit::{NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType},
     base::{YES, id},
+    foundation::NSPoint,
 };
 use core_foundation::data::{CFDataGetBytePtr, CFDataRef};
 use core_graphics::event::CGKeyCode;
@@ -102,9 +103,19 @@ unsafe fn read_modifiers(native_event: id) -> Modifiers {
 }
 
 impl PlatformInput {
+    /// Convert an NSEvent into a PlatformInput.
+    ///
+    /// When `native_view` is provided (a flipped NSView with `isFlipped=YES`),
+    /// mouse coordinates are converted to view-local top-down coordinates using
+    /// `convertPoint:fromView:nil`. This correctly handles views embedded in
+    /// split views or other container hierarchies.
+    ///
+    /// When `native_view` is None, falls back to the legacy behavior of using
+    /// `locationInWindow` with a manual y-flip via `window_height`.
     pub(crate) unsafe fn from_native(
         native_event: id,
         window_height: Option<Pixels>,
+        native_view: Option<id>,
     ) -> Option<Self> {
         unsafe {
             let event_type = native_event.eventType();
@@ -149,14 +160,10 @@ impl PlatformInput {
                         // Other mouse buttons aren't tracked currently
                         _ => return None,
                     };
-                    window_height.map(|window_height| {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
                         Self::MouseDown(MouseDownEvent {
                             button,
-                            position: point(
-                                px(native_event.locationInWindow().x as f32),
-                                // MacOS screen coordinates are relative to bottom left
-                                window_height - px(native_event.locationInWindow().y as f32),
-                            ),
+                            position,
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
                             first_mouse: false,
@@ -176,13 +183,10 @@ impl PlatformInput {
                         _ => return None,
                     };
 
-                    window_height.map(|window_height| {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
                         Self::MouseUp(MouseUpEvent {
                             button,
-                            position: point(
-                                px(native_event.locationInWindow().x as f32),
-                                window_height - px(native_event.locationInWindow().y as f32),
-                            ),
+                            position,
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
                         })
@@ -192,7 +196,7 @@ impl PlatformInput {
                     let stage = native_event.stage();
                     let pressure = native_event.pressure();
 
-                    window_height.map(|window_height| {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
                         Self::MousePressure(MousePressureEvent {
                             stage: match stage {
                                 1 => PressureStage::Normal,
@@ -201,10 +205,7 @@ impl PlatformInput {
                             },
                             pressure,
                             modifiers: read_modifiers(native_event),
-                            position: point(
-                                px(native_event.locationInWindow().x as f32),
-                                window_height - px(native_event.locationInWindow().y as f32),
-                            ),
+                            position,
                         })
                     })
                 }
@@ -220,51 +221,50 @@ impl PlatformInput {
                     };
 
                     match navigation_direction {
-                        Some(direction) => window_height.map(|window_height| {
-                            Self::MouseDown(MouseDownEvent {
-                                button: MouseButton::Navigate(direction),
-                                position: point(
-                                    px(native_event.locationInWindow().x as f32),
-                                    window_height - px(native_event.locationInWindow().y as f32),
-                                ),
-                                modifiers: read_modifiers(native_event),
-                                click_count: 1,
-                                first_mouse: false,
-                            })
-                        }),
+                        Some(direction) => {
+                            mouse_position(native_event, native_view, window_height).map(
+                                |position| {
+                                    Self::MouseDown(MouseDownEvent {
+                                        button: MouseButton::Navigate(direction),
+                                        position,
+                                        modifiers: read_modifiers(native_event),
+                                        click_count: 1,
+                                        first_mouse: false,
+                                    })
+                                },
+                            )
+                        }
                         _ => None,
                     }
                 }
-                NSEventType::NSScrollWheel => window_height.map(|window_height| {
-                    let phase = match native_event.phase() {
-                        NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => {
-                            TouchPhase::Started
-                        }
-                        NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
-                        _ => TouchPhase::Moved,
-                    };
+                NSEventType::NSScrollWheel => {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
+                        let phase = match native_event.phase() {
+                            NSEventPhase::NSEventPhaseMayBegin
+                            | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
+                            NSEventPhase::NSEventPhaseEnded => TouchPhase::Ended,
+                            _ => TouchPhase::Moved,
+                        };
 
-                    let raw_data = point(
-                        native_event.scrollingDeltaX() as f32,
-                        native_event.scrollingDeltaY() as f32,
-                    );
+                        let raw_data = point(
+                            native_event.scrollingDeltaX() as f32,
+                            native_event.scrollingDeltaY() as f32,
+                        );
 
-                    let delta = if native_event.hasPreciseScrollingDeltas() == YES {
-                        ScrollDelta::Pixels(raw_data.map(px))
-                    } else {
-                        ScrollDelta::Lines(raw_data)
-                    };
+                        let delta = if native_event.hasPreciseScrollingDeltas() == YES {
+                            ScrollDelta::Pixels(raw_data.map(px))
+                        } else {
+                            ScrollDelta::Lines(raw_data)
+                        };
 
-                    Self::ScrollWheel(ScrollWheelEvent {
-                        position: point(
-                            px(native_event.locationInWindow().x as f32),
-                            window_height - px(native_event.locationInWindow().y as f32),
-                        ),
-                        delta,
-                        touch_phase: phase,
-                        modifiers: read_modifiers(native_event),
+                        Self::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta,
+                            touch_phase: phase,
+                            modifiers: read_modifiers(native_event),
+                        })
                     })
-                }),
+                }
                 NSEventType::NSLeftMouseDragged
                 | NSEventType::NSRightMouseDragged
                 | NSEventType::NSOtherMouseDragged => {
@@ -278,40 +278,62 @@ impl PlatformInput {
                         _ => return None,
                     };
 
-                    window_height.map(|window_height| {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
                         Self::MouseMove(MouseMoveEvent {
                             pressed_button: Some(pressed_button),
-                            position: point(
-                                px(native_event.locationInWindow().x as f32),
-                                window_height - px(native_event.locationInWindow().y as f32),
-                            ),
+                            position,
                             modifiers: read_modifiers(native_event),
                         })
                     })
                 }
-                NSEventType::NSMouseMoved => window_height.map(|window_height| {
-                    Self::MouseMove(MouseMoveEvent {
-                        position: point(
-                            px(native_event.locationInWindow().x as f32),
-                            window_height - px(native_event.locationInWindow().y as f32),
-                        ),
-                        pressed_button: None,
-                        modifiers: read_modifiers(native_event),
+                NSEventType::NSMouseMoved => {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
+                        Self::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: read_modifiers(native_event),
+                        })
                     })
-                }),
-                NSEventType::NSMouseExited => window_height.map(|window_height| {
-                    Self::MouseExited(MouseExitEvent {
-                        position: point(
-                            px(native_event.locationInWindow().x as f32),
-                            window_height - px(native_event.locationInWindow().y as f32),
-                        ),
-
-                        pressed_button: None,
-                        modifiers: read_modifiers(native_event),
+                }
+                NSEventType::NSMouseExited => {
+                    mouse_position(native_event, native_view, window_height).map(|position| {
+                        Self::MouseExited(MouseExitEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: read_modifiers(native_event),
+                        })
                     })
-                }),
+                }
                 _ => None,
             }
+        }
+    }
+}
+
+/// Compute the mouse position from an NSEvent, either by converting to
+/// view-local coordinates (when a flipped NSView is provided) or by the
+/// legacy window-height y-flip.
+unsafe fn mouse_position(
+    native_event: id,
+    native_view: Option<id>,
+    window_height: Option<Pixels>,
+) -> Option<crate::Point<Pixels>> {
+    unsafe {
+        if let Some(view) = native_view {
+            let window_point: NSPoint = msg_send![native_event, locationInWindow];
+            let local_point: NSPoint = msg_send![view, convertPoint:window_point fromView:cocoa::base::nil];
+            Some(point(
+                px(local_point.x as f32),
+                px(local_point.y as f32),
+            ))
+        } else {
+            window_height.map(|window_height| {
+                let loc = native_event.locationInWindow();
+                point(
+                    px(loc.x as f32),
+                    window_height - px(loc.y as f32),
+                )
+            })
         }
     }
 }

@@ -694,6 +694,29 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                 if current_superview != nil {
                     let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
                 }
+                // Re-add to the old window's content view so it stays alive
+                if host_data.window != nil {
+                    let old_content_view: id = msg_send![host_data.window, contentView];
+                    if old_content_view != nil {
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setTranslatesAutoresizingMaskIntoConstraints: 1i8
+                        ];
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+                        ];
+                        let content_bounds: NSRect = msg_send![old_content_view, bounds];
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setFrame: content_bounds
+                        ];
+                        let _: () = msg_send![
+                            old_content_view,
+                            addSubview: host_data.embedded_content_view
+                        ];
+                    }
+                }
                 let _: () = msg_send![host_data.embedded_content_view, release];
                 host_data.embedded_content_view = nil;
             }
@@ -1117,14 +1140,79 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                     host_data.window,
                     setContentMaxSize: host_data.previous_content_max_size
                 ];
+
+                // Remove the embedded content view from the split view
+                // hierarchy before replacing the content view controller.
+                if host_data.embedded_content_view != nil {
+                    let _: () = msg_send![
+                        host_data.embedded_content_view,
+                        setTranslatesAutoresizingMaskIntoConstraints: 1i8
+                    ];
+                    let _: () = msg_send![
+                        host_data.embedded_content_view,
+                        setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+                    ];
+                    let current_superview: id =
+                        msg_send![host_data.embedded_content_view, superview];
+                    if current_superview != nil {
+                        let _: () =
+                            msg_send![host_data.embedded_content_view, removeFromSuperview];
+                    }
+                }
+
+                // Restore the content view controller / content view.
                 let current_content_view_controller: id =
                     msg_send![host_data.window, contentViewController];
                 if current_content_view_controller == host_data.split_view_controller {
+                    if host_data.previous_content_view_controller != nil {
+                        let _: () = msg_send![
+                            host_data.window,
+                            setContentViewController: host_data.previous_content_view_controller
+                        ];
+                    } else {
+                        // No previous VC — create a plain content view to
+                        // replace the split view controller's view.
+                        let window_frame: NSRect = msg_send![host_data.window, frame];
+                        let content_rect: NSRect =
+                            msg_send![host_data.window, contentRectForFrameRect: window_frame];
+                        let new_content_view: id = msg_send![class!(NSView), alloc];
+                        let new_content_view: id = msg_send![new_content_view,
+                            initWithFrame: NSRect::new(
+                                NSPoint::new(0.0, 0.0),
+                                content_rect.size,
+                            )
+                        ];
+                        let _: () = msg_send![host_data.window, setContentView: new_content_view];
+                        let _: () = msg_send![new_content_view, release];
+                    }
+                }
+
+                // Re-add the embedded content view to the (now restored)
+                // window content view so it stays alive and visible.
+                if host_data.embedded_content_view != nil {
+                    let content_view: id = msg_send![host_data.window, contentView];
+                    if content_view != nil {
+                        let content_bounds: NSRect = msg_send![content_view, bounds];
+                        let _: () = msg_send![
+                            host_data.embedded_content_view,
+                            setFrame: content_bounds
+                        ];
+                        let _: () = msg_send![
+                            content_view,
+                            addSubview: host_data.embedded_content_view
+                        ];
+                    }
+                    // Restore first responder so keyboard events reach
+                    // the embedded view (e.g. the GPUI native view).
                     let _: () = msg_send![
                         host_data.window,
-                        setContentViewController: host_data.previous_content_view_controller
+                        makeFirstResponder: host_data.embedded_content_view
                     ];
+                    // Release the sidebar's retain (the content view's
+                    // subview list now holds the reference).
+                    let _: () = msg_send![host_data.embedded_content_view, release];
                 }
+
                 let toolbar: id = msg_send![host_data.window, toolbar];
                 if host_data.sidebar_toolbar != nil && toolbar == host_data.sidebar_toolbar {
                     let _: () = msg_send![host_data.window, setToolbar: host_data.previous_toolbar];
@@ -1138,22 +1226,6 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
             }
             if host_data.previous_content_view_controller != nil {
                 let _: () = msg_send![host_data.previous_content_view_controller, release];
-            }
-            if host_data.embedded_content_view != nil {
-                // Restore autoresizing before removing from sidebar hierarchy
-                let _: () = msg_send![
-                    host_data.embedded_content_view,
-                    setTranslatesAutoresizingMaskIntoConstraints: 1i8
-                ];
-                let _: () = msg_send![
-                    host_data.embedded_content_view,
-                    setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
-                ];
-                let current_superview: id = msg_send![host_data.embedded_content_view, superview];
-                if current_superview != nil {
-                    let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
-                }
-                let _: () = msg_send![host_data.embedded_content_view, release];
             }
             if host_data.table_view != nil {
                 let _: () = msg_send![host_data.table_view, setDataSource: nil];
