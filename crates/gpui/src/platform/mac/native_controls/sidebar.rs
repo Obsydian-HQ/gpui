@@ -16,6 +16,7 @@ use objc::{
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
+use crate::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
 use std::{ffi::c_void, ptr};
 
 const HOST_DATA_IVAR: &str = "sidebarHostDataPtr";
@@ -706,15 +707,17 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                             host_data.embedded_content_view,
                             setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
                         ];
-                        let content_bounds: NSRect = msg_send![old_content_view, bounds];
-                        let _: () = msg_send![
-                            host_data.embedded_content_view,
-                            setFrame: content_bounds
-                        ];
                         let _: () = msg_send![
                             old_content_view,
                             addSubview: host_data.embedded_content_view
                         ];
+                        // Defer resize (same reason as release_native_sidebar_view)
+                        let _: () = msg_send![host_data.embedded_content_view, retain];
+                        dispatch_async_f(
+                            dispatch_get_main_queue(),
+                            host_data.embedded_content_view as *mut c_void,
+                            Some(deferred_resize_embedded_view),
+                        );
                     }
                 }
                 let _: () = msg_send![host_data.embedded_content_view, release];
@@ -1122,6 +1125,23 @@ pub(crate) unsafe fn release_native_sidebar_target(target: *mut c_void) {
     }
 }
 
+/// GCD callback that resizes the embedded content view to fill its
+/// superview. Called asynchronously after sidebar teardown so the GPUI
+/// render cycle has finished and the window is no longer borrowed.
+unsafe extern "C" fn deferred_resize_embedded_view(context: *mut c_void) {
+    unsafe {
+        let view = context as id;
+        let superview: id = msg_send![view, superview];
+        if superview != nil {
+            let bounds: NSRect = msg_send![superview, bounds];
+            let _: () = msg_send![view, setFrameOrigin: bounds.origin];
+            let _: () = msg_send![view, setFrameSize: bounds.size];
+        }
+        // Release the retain we took before dispatch_async_f
+        let _: () = msg_send![view, release];
+    }
+}
+
 pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
     unsafe {
         if host_view == nil {
@@ -1192,11 +1212,7 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                 if host_data.embedded_content_view != nil {
                     let content_view: id = msg_send![host_data.window, contentView];
                     if content_view != nil {
-                        let content_bounds: NSRect = msg_send![content_view, bounds];
-                        let _: () = msg_send![
-                            host_data.embedded_content_view,
-                            setFrame: content_bounds
-                        ];
+                        // Add with old frame — we defer the resize below.
                         let _: () = msg_send![
                             content_view,
                             addSubview: host_data.embedded_content_view
@@ -1208,6 +1224,20 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                         host_data.window,
                         makeFirstResponder: host_data.embedded_content_view
                     ];
+
+                    // Defer the frame resize to the next main-queue
+                    // iteration. During sidebar teardown we're inside a
+                    // GPUI render cycle, so the view's setFrameSize:
+                    // handler can't trigger the resize callback (the
+                    // window is borrowed). Dispatching asynchronously
+                    // ensures the callback fires when the App is idle.
+                    let _: () = msg_send![host_data.embedded_content_view, retain];
+                    dispatch_async_f(
+                        dispatch_get_main_queue(),
+                        host_data.embedded_content_view as *mut c_void,
+                        Some(deferred_resize_embedded_view),
+                    );
+
                     // Release the sidebar's retain (the content view's
                     // subview list now holds the reference).
                     let _: () = msg_send![host_data.embedded_content_view, release];
