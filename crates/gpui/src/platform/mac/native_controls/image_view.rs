@@ -48,8 +48,7 @@ pub(crate) unsafe fn set_native_image_view_sf_symbol_config(
                 weight: weight
             ];
             if config != nil {
-                let configured: id =
-                    msg_send![image, imageWithSymbolConfiguration: config];
+                let configured: id = msg_send![image, imageWithSymbolConfiguration: config];
                 if configured != nil {
                     let _: () = msg_send![view, setImage: configured];
                 } else {
@@ -64,7 +63,8 @@ pub(crate) unsafe fn set_native_image_view_sf_symbol_config(
 
 pub(crate) unsafe fn set_native_image_view_image_from_data(view: id, data: &[u8]) {
     unsafe {
-        let ns_data: id = msg_send![class!(NSData), dataWithBytes: data.as_ptr() length: data.len()];
+        let ns_data: id =
+            msg_send![class!(NSData), dataWithBytes: data.as_ptr() length: data.len()];
         if ns_data != nil {
             let image: id = msg_send![class!(NSImage), alloc];
             let image: id = msg_send![image, initWithData: ns_data];
@@ -73,6 +73,12 @@ pub(crate) unsafe fn set_native_image_view_image_from_data(view: id, data: &[u8]
                 let _: () = msg_send![image, release];
             }
         }
+    }
+}
+
+pub(crate) unsafe fn clear_native_image_view_image(view: id) {
+    unsafe {
+        let _: () = msg_send![view, setImage: nil];
     }
 }
 

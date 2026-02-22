@@ -588,6 +588,8 @@ pub(crate) struct PlatformNativeToolbarMenuButtonItem {
     pub label: SharedString,
     pub tool_tip: Option<SharedString>,
     pub icon: Option<SharedString>,
+    pub image_url: Option<SharedString>,
+    pub image_circular: bool,
     pub shows_indicator: bool,
     pub items: Vec<PlatformNativeToolbarMenuItemData>,
     pub on_select: Option<Box<dyn Fn(usize)>>,

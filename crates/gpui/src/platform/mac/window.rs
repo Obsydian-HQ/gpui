@@ -4259,6 +4259,8 @@ unsafe fn create_toolbar_menu_button_item(
         let label = item.label.clone();
         let tool_tip = item.tool_tip.clone();
         let icon = item.icon.clone();
+        let image_url = item.image_url.clone();
+        let image_circular = item.image_circular;
         let shows_indicator = item.shows_indicator;
         let native_menu_items = convert_platform_menu_items_to_native(&item.items);
 
@@ -4300,6 +4302,10 @@ unsafe fn create_toolbar_menu_button_item(
             if image != nil {
                 let _: () = msg_send![toolbar_item, setImage: image];
             }
+        }
+
+        if let Some(url_str) = image_url.as_ref() {
+            load_toolbar_image_from_url(toolbar_item, url_str, image_circular);
         }
 
         state

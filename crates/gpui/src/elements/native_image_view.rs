@@ -1,11 +1,14 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
+use std::{ffi::c_void, fs, future::Future, io, sync::Arc};
 
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style, StyleRefinement,
-    Styled, Window, px,
+    AbsoluteLength, App, Asset, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Resource,
+    SharedString, SharedUri, Style, StyleRefinement, Styled, Window, px,
 };
+use anyhow::Context as _;
+use futures::AsyncReadExt;
+use thiserror::Error;
 
 /// SF Symbol weight values matching NSFontWeight constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -86,6 +89,20 @@ pub enum NativeImageSource {
     },
     /// Raw image data (PNG, JPEG, etc.).
     Data(Vec<u8>),
+    /// An image loaded from a URI, file path, or embedded asset resource.
+    Resource(Resource),
+}
+
+impl From<Resource> for NativeImageSource {
+    fn from(value: Resource) -> Self {
+        Self::Resource(value)
+    }
+}
+
+impl From<SharedUri> for NativeImageSource {
+    fn from(value: SharedUri) -> Self {
+        Self::Resource(Resource::Uri(value))
+    }
 }
 
 /// Creates a native NSImageView element.
@@ -146,6 +163,18 @@ impl NativeImageView {
         self
     }
 
+    /// Sets the image from a GPUI resource.
+    pub fn image_resource(mut self, resource: impl Into<Resource>) -> Self {
+        self.source = Some(NativeImageSource::Resource(resource.into()));
+        self
+    }
+
+    /// Sets the image from a URI.
+    pub fn image_uri(mut self, uri: impl Into<SharedUri>) -> Self {
+        self.source = Some(NativeImageSource::Resource(Resource::Uri(uri.into())));
+        self
+    }
+
     /// Sets the image scaling mode.
     pub fn scaling(mut self, scaling: NativeImageScaling) -> Self {
         self.scaling = scaling;
@@ -181,8 +210,100 @@ impl Drop for NativeImageViewState {
 
 unsafe impl Send for NativeImageViewState {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeImageApplyState {
+    Applied,
+    Pending,
+    Failed,
+}
+
+type NativeImageResourceLoader = AssetLogger<NativeImageAssetLoader>;
+
+#[derive(Clone)]
+enum NativeImageAssetLoader {}
+
+impl Asset for NativeImageAssetLoader {
+    type Source = Resource;
+    type Output = Result<Arc<Vec<u8>>, NativeImageLoadError>;
+
+    fn load(
+        source: Self::Source,
+        cx: &mut App,
+    ) -> impl Future<Output = Self::Output> + Send + 'static {
+        let client = cx.http_client();
+        let asset_source = cx.asset_source().clone();
+        async move {
+            match source.clone() {
+                Resource::Path(path) => Ok(Arc::new(fs::read(path.as_ref())?)),
+                Resource::Uri(uri) => {
+                    let mut response = client
+                        .get(uri.as_ref(), ().into(), true)
+                        .await
+                        .with_context(|| format!("loading native image resource from {uri:?}"))?;
+                    let mut body = Vec::new();
+                    response.body_mut().read_to_end(&mut body).await?;
+                    if !response.status().is_success() {
+                        let mut response_body = String::from_utf8_lossy(&body).into_owned();
+                        let first_line = response_body.lines().next().unwrap_or("").trim_end();
+                        response_body.truncate(first_line.len());
+                        return Err(NativeImageLoadError::BadStatus {
+                            uri,
+                            status: response.status(),
+                            body: response_body,
+                        });
+                    }
+                    Ok(Arc::new(body))
+                }
+                Resource::Embedded(path) => {
+                    let data = asset_source.load(&path).ok().flatten();
+                    if let Some(data) = data {
+                        Ok(Arc::new(data.to_vec()))
+                    } else {
+                        Err(NativeImageLoadError::Asset(
+                            format!("Embedded resource not found: {path}").into(),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone)]
+enum NativeImageLoadError {
+    #[error("error: {0}")]
+    Other(Arc<anyhow::Error>),
+    #[error("io error: {0}")]
+    Io(Arc<io::Error>),
+    #[error("unexpected http status for {uri}: {status}, body: {body}")]
+    BadStatus {
+        uri: SharedUri,
+        status: http_client::StatusCode,
+        body: String,
+    },
+    #[error("asset error: {0}")]
+    Asset(SharedString),
+}
+
+impl From<anyhow::Error> for NativeImageLoadError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::Other(Arc::new(value))
+    }
+}
+
+impl From<io::Error> for NativeImageLoadError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(Arc::new(value))
+    }
+}
+
 #[cfg(target_os = "macos")]
-unsafe fn apply_image_source(view: cocoa::base::id, source: &NativeImageSource) {
+unsafe fn apply_image_source(
+    view: cocoa::base::id,
+    source: &NativeImageSource,
+    window: &mut Window,
+    cx: &mut App,
+) -> NativeImageApplyState {
     unsafe {
         use crate::platform::native_controls;
         match source {
@@ -201,9 +322,30 @@ unsafe fn apply_image_source(view: cocoa::base::id, source: &NativeImageSource) 
                 } else {
                     native_controls::set_native_image_view_sf_symbol(view, name.as_ref());
                 }
+                NativeImageApplyState::Applied
             }
             NativeImageSource::Data(data) => {
                 native_controls::set_native_image_view_image_from_data(view, data);
+                NativeImageApplyState::Applied
+            }
+            NativeImageSource::Resource(resource) => {
+                match window.use_asset::<NativeImageResourceLoader>(resource, cx) {
+                    Some(Ok(data)) => {
+                        native_controls::set_native_image_view_image_from_data(
+                            view,
+                            data.as_ref().as_slice(),
+                        );
+                        NativeImageApplyState::Applied
+                    }
+                    Some(Err(_)) => {
+                        native_controls::clear_native_image_view_image(view);
+                        NativeImageApplyState::Failed
+                    }
+                    None => {
+                        native_controls::clear_native_image_view_image(view);
+                        NativeImageApplyState::Pending
+                    }
+                }
             }
         }
     }
@@ -272,7 +414,7 @@ impl Element for NativeImageView {
         _request_layout: &mut Self::RequestLayoutState,
         _prepaint: &mut Self::PrepaintState,
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) {
         #[cfg(target_os = "macos")]
         {
@@ -300,13 +442,29 @@ impl Element for NativeImageView {
                             );
 
                             if element_state.current_source != source {
-                                if let Some(ref src) = source {
+                                let source_state = if let Some(ref src) = source {
                                     apply_image_source(
                                         element_state.view_ptr as cocoa::base::id,
                                         src,
+                                        window,
+                                        cx,
+                                    )
+                                } else {
+                                    native_controls::clear_native_image_view_image(
+                                        element_state.view_ptr as cocoa::base::id,
                                     );
+                                    NativeImageApplyState::Applied
+                                };
+
+                                match source_state {
+                                    NativeImageApplyState::Applied
+                                    | NativeImageApplyState::Failed => {
+                                        element_state.current_source = source;
+                                    }
+                                    NativeImageApplyState::Pending => {
+                                        element_state.current_source = None;
+                                    }
                                 }
-                                element_state.current_source = source;
                             }
 
                             if element_state.current_scaling != scaling {
@@ -335,10 +493,15 @@ impl Element for NativeImageView {
                     } else {
                         unsafe {
                             let view = native_controls::create_native_image_view();
-
-                            if let Some(ref src) = source {
-                                apply_image_source(view, src);
-                            }
+                            let current_source = if let Some(ref src) = source {
+                                match apply_image_source(view, src, window, cx) {
+                                    NativeImageApplyState::Applied
+                                    | NativeImageApplyState::Failed => source.clone(),
+                                    NativeImageApplyState::Pending => None,
+                                }
+                            } else {
+                                None
+                            };
                             native_controls::set_native_image_view_scaling(view, scaling.to_raw());
                             if let Some((r, g, b, a)) = tint_color {
                                 native_controls::set_native_image_view_content_tint_color(
@@ -359,7 +522,7 @@ impl Element for NativeImageView {
 
                             NativeImageViewState {
                                 view_ptr: view as *mut c_void,
-                                current_source: source,
+                                current_source,
                                 current_scaling: scaling,
                                 current_tint: tint_color,
                                 attached: true,

@@ -1095,6 +1095,8 @@ pub struct NativeToolbarMenuButton {
     label: SharedString,
     tool_tip: Option<SharedString>,
     icon: Option<SharedString>,
+    image_url: Option<SharedString>,
+    image_circular: bool,
     shows_indicator: bool,
     items: Vec<NativeToolbarMenuItem>,
     on_select:
@@ -1113,6 +1115,8 @@ impl NativeToolbarMenuButton {
             label: label.into(),
             tool_tip: None,
             icon: None,
+            image_url: None,
+            image_circular: false,
             shows_indicator: true,
             items,
             on_select: None,
@@ -1128,6 +1132,19 @@ impl NativeToolbarMenuButton {
     /// Sets an SF Symbol name to display as the button icon.
     pub fn icon(mut self, symbol_name: impl Into<SharedString>) -> Self {
         self.icon = Some(symbol_name.into());
+        self
+    }
+
+    /// Sets a URL for an image to display as the button icon.
+    /// The image is loaded asynchronously and cached.
+    pub fn image_url(mut self, url: impl Into<SharedString>) -> Self {
+        self.image_url = Some(url.into());
+        self
+    }
+
+    /// When true, the loaded image is clipped to a circle (for avatars).
+    pub fn image_circular(mut self, circular: bool) -> Self {
+        self.image_circular = circular;
         self
     }
 
@@ -1489,6 +1506,8 @@ impl NativeToolbar {
                         label: menu_button.label,
                         tool_tip: menu_button.tool_tip,
                         icon: menu_button.icon,
+                        image_url: menu_button.image_url,
+                        image_circular: menu_button.image_circular,
                         shows_indicator: menu_button.shows_indicator,
                         items: convert_toolbar_menu_items(&menu_button.items),
                         on_select,
