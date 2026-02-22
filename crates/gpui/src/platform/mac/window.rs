@@ -3036,6 +3036,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 let mut lock = window_state.lock();
                 lock.request_frame_callback = Some(callback);
                 lock.renderer.set_presents_with_transaction(false);
+                sync_renderer_drawable_size(&mut *lock);
                 lock.start_display_link();
             }
         } else {
@@ -3117,17 +3118,29 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
         let _: () = msg_send![super(this, class!(NSView)), setFrameSize: size];
     }
 
-    let scale_factor = lock.scale_factor();
-    let drawable_size = new_size.to_device_pixels(scale_factor);
-    lock.renderer.update_drawable_size(drawable_size);
+    // When request_frame_callback is None, we're inside a frame rendering
+    // cycle (display_layer/step took the callback). Updating the renderer's
+    // drawable size mid-render and calling the resize callback would cause
+    // re-entrant entity updates (RefCell already borrowed) and potentially
+    // corrupt Metal state. Defer both — the next frame will pick up the
+    // correct size via content_size() and bounds_changed().
+    let mid_frame = lock.request_frame_callback.is_none();
 
-    if let Some(mut callback) = lock.resize_callback.take() {
-        let content_size = lock.content_size();
+    if !mid_frame {
         let scale_factor = lock.scale_factor();
-        drop(lock);
-        callback(content_size, scale_factor);
-        window_state.lock().resize_callback = Some(callback);
-    };
+        let drawable_size = new_size.to_device_pixels(scale_factor);
+        lock.renderer.update_drawable_size(drawable_size);
+    }
+
+    if !mid_frame {
+        if let Some(mut callback) = lock.resize_callback.take() {
+            let content_size = lock.content_size();
+            let scale_factor = lock.scale_factor();
+            drop(lock);
+            callback(content_size, scale_factor);
+            window_state.lock().resize_callback = Some(callback);
+        };
+    }
 }
 
 extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
@@ -3142,6 +3155,9 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
         lock.renderer.set_presents_with_transaction(false);
+        // Sync renderer drawable size in case setFrameSize: was deferred
+        // during the frame (e.g. native sidebar view reparenting).
+        sync_renderer_drawable_size(&mut *lock);
         lock.start_display_link();
     }
 }
@@ -3154,8 +3170,25 @@ unsafe extern "C" fn step(view: *mut c_void) {
     if let Some(mut callback) = lock.request_frame_callback.take() {
         drop(lock);
         callback(Default::default());
-        window_state.lock().request_frame_callback = Some(callback);
+        let mut lock = window_state.lock();
+        // Sync renderer drawable size in case setFrameSize: was deferred
+        sync_renderer_drawable_size(&mut *lock);
+        lock.request_frame_callback = Some(callback);
     }
+}
+
+/// Re-syncs the renderer's drawable size with the native view's current frame.
+/// Called after a frame rendering cycle to pick up any deferred size changes
+/// from setFrameSize: calls that occurred mid-render.
+fn sync_renderer_drawable_size(state: &mut MacWindowState) {
+    let current_size: Size<Pixels> = unsafe {
+        let view = state.native_view.as_ptr();
+        let frame: NSRect = msg_send![view, frame];
+        Size::<Pixels>::from(frame.size)
+    };
+    let scale_factor = state.scale_factor();
+    let drawable_size = current_size.to_device_pixels(scale_factor);
+    state.renderer.update_drawable_size(drawable_size);
 }
 
 extern "C" fn valid_attributes_for_marked_text(_: &Object, _: Sel) -> id {
@@ -3310,12 +3343,24 @@ extern "C" fn do_command_by_selector(this: &Object, _: Sel, _: Sel) {
     drop(lock);
 
     if let Some((keystroke, mut callback)) = keystroke.zip(event_callback.as_mut()) {
-        let handled = (callback)(PlatformInput::KeyDown(KeyDownEvent {
-            keystroke,
-            is_held: false,
-            prefer_character_input: false,
+        // AppKit calls this Objective-C method directly. If user callback code
+        // panics, we must not unwind across the FFI boundary.
+        let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            (callback)(PlatformInput::KeyDown(KeyDownEvent {
+                keystroke,
+                is_held: false,
+                prefer_character_input: false,
+            }))
         }));
-        state.as_ref().lock().do_command_handled = Some(!handled.propagate);
+        match handled {
+            Ok(handled) => {
+                state.as_ref().lock().do_command_handled = Some(!handled.propagate);
+            }
+            Err(_) => {
+                log::error!("panic while handling do_command_by_selector");
+                state.as_ref().lock().do_command_handled = Some(false);
+            }
+        }
     }
 
     state.as_ref().lock().event_callback = event_callback;

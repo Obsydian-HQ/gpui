@@ -42,6 +42,8 @@ pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> Na
         collapsed: false,
         embed_in_sidebar: false,
         sidebar_view: None,
+        manage_window_chrome: true,
+        manage_toolbar: true,
         on_select: None,
         style: StyleRefinement::default(),
     }
@@ -60,6 +62,16 @@ pub struct NativeSidebar {
     /// When set, a secondary GpuiSurface renders this view in the sidebar pane
     /// while the main GPUI content view stays in the detail pane.
     sidebar_view: Option<AnyView>,
+    /// When `true` (default), GPUI configures native window chrome (toolbar and
+    /// titlebar attributes) for AppKit-style sidebar behavior.
+    ///
+    /// Set this to `false` to preserve host-app window styling while still
+    /// using the native sidebar split view container.
+    manage_window_chrome: bool,
+    /// When `true` (default), the sidebar creates its own NSToolbar with a toggle
+    /// button and configures window titlebar attributes. Set to `false` if the
+    /// host app already has its own toolbar and titlebar setup.
+    manage_toolbar: bool,
     on_select: Option<Box<dyn Fn(&SidebarSelectEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
@@ -118,6 +130,25 @@ impl NativeSidebar {
     /// parent themselves to the surface's NSView.
     pub fn sidebar_view<V: Render>(mut self, view: crate::Entity<V>) -> Self {
         self.sidebar_view = Some(AnyView::from(view));
+        self
+    }
+
+    /// Controls whether native sidebar integration is allowed to modify window
+    /// toolbar/titlebar chrome. Defaults to `true`.
+    pub fn manage_window_chrome(mut self, manage_window_chrome: bool) -> Self {
+        self.manage_window_chrome = manage_window_chrome;
+        self
+    }
+
+    /// Controls whether the sidebar creates its own NSToolbar with a toggle
+    /// button and configures titlebar attributes. Defaults to `true`.
+    ///
+    /// Set to `false` when the host app already manages its own toolbar and
+    /// titlebar styling. The NSSplitViewController is still installed as the
+    /// window's contentViewController (when `manage_window_chrome` is `true`),
+    /// so the sidebar toggle action (`toggleSidebar:`) remains available.
+    pub fn manage_toolbar(mut self, manage_toolbar: bool) -> Self {
+        self.manage_toolbar = manage_toolbar;
         self
     }
 
@@ -260,6 +291,8 @@ impl Element for NativeSidebar {
             let max_sidebar_width = self.max_sidebar_width.max(min_sidebar_width);
             let collapsed = self.collapsed;
             let embed_in_sidebar = self.embed_in_sidebar;
+            let manage_window_chrome = self.manage_window_chrome;
+            let manage_toolbar = self.manage_toolbar;
 
             // When sidebar_view is set, we create the sidebar container in
             // "embed" mode (plain NSView + VFX background, no table) but
@@ -280,6 +313,8 @@ impl Element for NativeSidebar {
                                 state.control_ptr as cocoa::base::id,
                                 native_view as cocoa::base::id,
                                 effective_embed_for_configure,
+                                manage_window_chrome,
+                                manage_toolbar,
                             );
                         }
 
@@ -348,15 +383,14 @@ impl Element for NativeSidebar {
                                 let item_strs: Vec<&str> =
                                     items.iter().map(|item| item.as_ref()).collect();
                                 unsafe {
-                                    state.target_ptr =
-                                        native_controls::set_native_sidebar_items(
-                                            state.control_ptr as cocoa::base::id,
-                                            &item_strs,
-                                            selected_index,
-                                            min_sidebar_width,
-                                            max_sidebar_width,
-                                            callback,
-                                        );
+                                    state.target_ptr = native_controls::set_native_sidebar_items(
+                                        state.control_ptr as cocoa::base::id,
+                                        &item_strs,
+                                        selected_index,
+                                        min_sidebar_width,
+                                        max_sidebar_width,
+                                        callback,
+                                    );
                                 }
                                 state.current_items = items.clone();
                                 state.current_selected = selected_index;
@@ -424,6 +458,8 @@ impl Element for NativeSidebar {
                                 control,
                                 native_view as cocoa::base::id,
                                 effective_embed_for_configure,
+                                manage_window_chrome,
+                                manage_toolbar,
                             );
 
                             (control as *mut c_void, target)

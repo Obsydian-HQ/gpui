@@ -1,4 +1,5 @@
 use super::CALLBACK_IVAR;
+use crate::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
 use cocoa::{
     appkit::{
         NSEventModifierFlags, NSViewHeightSizable, NSViewWidthSizable, NSVisualEffectBlendingMode,
@@ -16,7 +17,6 @@ use objc::{
     runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
-use crate::{dispatch_get_main_queue, dispatch_sys::dispatch_async_f};
 use std::{ffi::c_void, ptr};
 
 const HOST_DATA_IVAR: &str = "sidebarHostDataPtr";
@@ -286,7 +286,8 @@ unsafe fn create_sidebar_toolbar() -> id {
         use super::super::ns_string;
 
         let toolbar: id = msg_send![class!(NSToolbar), alloc];
-        let toolbar: id = msg_send![toolbar, initWithIdentifier: ns_string("GPUINativeSidebarToolbar")];
+        let toolbar: id =
+            msg_send![toolbar, initWithIdentifier: ns_string("GPUINativeSidebarToolbar")];
         let _: () = msg_send![toolbar, setAllowsUserCustomization: 0i8];
         let _: () = msg_send![toolbar, setAutosavesConfiguration: 0i8];
         // NSToolbarDisplayModeIconOnly
@@ -477,14 +478,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
                 NSSize::new(initial_width, 420.0),
             )];
             NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
-            NSVisualEffectView::setBlendingMode_(
-                vfx,
-                NSVisualEffectBlendingMode::BehindWindow,
-            );
-            NSVisualEffectView::setState_(
-                vfx,
-                NSVisualEffectState::FollowsWindowActiveState,
-            );
+            NSVisualEffectView::setBlendingMode_(vfx, NSVisualEffectBlendingMode::BehindWindow);
+            NSVisualEffectView::setState_(vfx, NSVisualEffectState::FollowsWindowActiveState);
             let _: () =
                 msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
             // Insert as the bottom-most subview so it stays behind the MTKView.
@@ -501,14 +496,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
                 NSSize::new(initial_width, 420.0),
             )];
             NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
-            NSVisualEffectView::setBlendingMode_(
-                vfx,
-                NSVisualEffectBlendingMode::BehindWindow,
-            );
-            NSVisualEffectView::setState_(
-                vfx,
-                NSVisualEffectState::FollowsWindowActiveState,
-            );
+            NSVisualEffectView::setBlendingMode_(vfx, NSVisualEffectBlendingMode::BehindWindow);
+            NSVisualEffectView::setState_(vfx, NSVisualEffectState::FollowsWindowActiveState);
             let _: () =
                 msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
             (vfx, vfx)
@@ -552,7 +541,8 @@ pub(crate) unsafe fn create_native_sidebar_view(
             let _: () = msg_send![table, setHeaderView: nil];
             let _: () = msg_send![table, setFocusRingType: 1i64];
             let _: () = msg_send![table, setStyle: 3i64];
-            let _: () = msg_send![table, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+            let _: () =
+                msg_send![table, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
             let column: id = msg_send![class!(NSTableColumn), alloc];
             let column: id = msg_send![column, initWithIdentifier: ns_string("sidebar-item")];
@@ -663,6 +653,8 @@ pub(crate) unsafe fn configure_native_sidebar_window(
     host_view: id,
     parent_view: id,
     embed_in_sidebar: bool,
+    manage_window_chrome: bool,
+    manage_toolbar: bool,
 ) {
     unsafe {
         if host_view == nil || parent_view == nil {
@@ -681,7 +673,8 @@ pub(crate) unsafe fn configure_native_sidebar_window(
         if host_data.window != window {
             if host_data.window != nil {
                 let current_toolbar: id = msg_send![host_data.window, toolbar];
-                if host_data.sidebar_toolbar != nil && current_toolbar == host_data.sidebar_toolbar {
+                if host_data.sidebar_toolbar != nil && current_toolbar == host_data.sidebar_toolbar
+                {
                     let _: () = msg_send![host_data.window, setToolbar: host_data.previous_toolbar];
                 }
             }
@@ -743,42 +736,6 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                 let _: () = msg_send![previous_content_view_controller, retain];
                 host_data.previous_content_view_controller = previous_content_view_controller;
             }
-
-            let previous_toolbar: id = msg_send![window, toolbar];
-            if previous_toolbar != nil {
-                let _: () = msg_send![previous_toolbar, retain];
-                host_data.previous_toolbar = previous_toolbar;
-            }
-
-            let toolbar = create_sidebar_toolbar();
-            host_data.sidebar_toolbar = toolbar;
-
-            let style_mask: NSWindowStyleMask = msg_send![window, styleMask];
-            if !style_mask.contains(NSWindowStyleMask::NSFullSizeContentViewWindowMask) {
-                let _: () = msg_send![
-                    window,
-                    setStyleMask: style_mask | NSWindowStyleMask::NSFullSizeContentViewWindowMask
-                ];
-            }
-            let _: () = msg_send![window, setTitleVisibility: NSWindowTitleVisibility::NSWindowTitleHidden];
-            let _: () = msg_send![window, setTitlebarAppearsTransparent: 1i8];
-
-            let supports_toolbar_style: bool =
-                msg_send![window, respondsToSelector: sel!(setToolbarStyle:)];
-            if supports_toolbar_style {
-                let _: () = msg_send![window, setToolbarStyle: 3i64];
-            }
-
-            let supports_separator_style: bool =
-                msg_send![window, respondsToSelector: sel!(setTitlebarSeparatorStyle:)];
-            if supports_separator_style {
-                let _: () = msg_send![window, setTitlebarSeparatorStyle: 0i64];
-            }
-
-            let window_bg: id = msg_send![class!(NSColor), windowBackgroundColor];
-            if window_bg != nil {
-                let _: () = msg_send![window, setBackgroundColor: window_bg];
-            }
         }
 
         if host_data.embedded_content_view != parent_view {
@@ -804,19 +761,49 @@ pub(crate) unsafe fn configure_native_sidebar_window(
             }
         };
 
-        let current_content_view_controller: id = msg_send![window, contentViewController];
-        if current_content_view_controller != host_data.split_view_controller {
-            let _: () = msg_send![window, setContentViewController: host_data.split_view_controller];
-            let _: () = msg_send![window, setContentSize: content_size];
-            let _: () = msg_send![window, setContentMinSize: host_data.previous_content_min_size];
-            let _: () = msg_send![window, setContentMaxSize: host_data.previous_content_max_size];
-            let _: () = msg_send![host_data.split_view, adjustSubviews];
-            let split_view_controller_view: id = msg_send![host_data.split_view_controller, view];
-            let _: () = msg_send![split_view_controller_view, layoutSubtreeIfNeeded];
+        if manage_window_chrome {
+            let current_content_view_controller: id = msg_send![window, contentViewController];
+            if current_content_view_controller != host_data.split_view_controller {
+                let _: () =
+                    msg_send![window, setContentViewController: host_data.split_view_controller];
+                let _: () = msg_send![window, setContentSize: content_size];
+                let _: () =
+                    msg_send![window, setContentMinSize: host_data.previous_content_min_size];
+                let _: () =
+                    msg_send![window, setContentMaxSize: host_data.previous_content_max_size];
+                let _: () = msg_send![host_data.split_view, adjustSubviews];
+                let split_view_controller_view: id =
+                    msg_send![host_data.split_view_controller, view];
+                let _: () = msg_send![split_view_controller_view, layoutSubtreeIfNeeded];
+            }
+        } else {
+            let window_content_view: id = msg_send![window, contentView];
+            if window_content_view != nil {
+                let host_superview: id = msg_send![host_view, superview];
+                if host_superview != window_content_view {
+                    if host_superview != nil {
+                        let _: () = msg_send![host_view, removeFromSuperview];
+                    }
+                    let parent_bounds: NSRect = msg_send![window_content_view, bounds];
+                    let _: () = msg_send![host_view, setFrame: parent_bounds];
+                    let _: () = msg_send![
+                        host_view,
+                        setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable
+                    ];
+                    let _: () = msg_send![window_content_view, addSubview: host_view];
+                }
+            }
         }
 
+        let host_attached = if manage_window_chrome {
+            true
+        } else {
+            let host_superview: id = msg_send![host_view, superview];
+            host_superview != nil
+        };
+
         // Embed the GPUI content view into the appropriate pane.
-        if host_data.embedded_content_view != nil {
+        if host_data.embedded_content_view != nil && host_attached {
             let target_pane = if embed_in_sidebar {
                 // Embed in the sidebar (left) pane — the NSVisualEffectView container.
                 host_data.sidebar_container
@@ -826,12 +813,10 @@ pub(crate) unsafe fn configure_native_sidebar_window(
             };
 
             if target_pane != nil {
-                let current_superview: id =
-                    msg_send![host_data.embedded_content_view, superview];
+                let current_superview: id = msg_send![host_data.embedded_content_view, superview];
                 if current_superview != target_pane {
                     if current_superview != nil {
-                        let _: () =
-                            msg_send![host_data.embedded_content_view, removeFromSuperview];
+                        let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
                     }
 
                     if embed_in_sidebar {
@@ -860,8 +845,7 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                         let pane_trailing: id = msg_send![target_pane, trailingAnchor];
                         let pane_bottom: id = msg_send![target_pane, bottomAnchor];
 
-                        let view_top: id =
-                            msg_send![host_data.embedded_content_view, topAnchor];
+                        let view_top: id = msg_send![host_data.embedded_content_view, topAnchor];
                         let view_leading: id =
                             msg_send![host_data.embedded_content_view, leadingAnchor];
                         let view_trailing: id =
@@ -869,14 +853,11 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                         let view_bottom: id =
                             msg_send![host_data.embedded_content_view, bottomAnchor];
 
-                        let c1: id =
-                            msg_send![view_top, constraintEqualToAnchor: guide_top];
-                        let c2: id =
-                            msg_send![view_leading, constraintEqualToAnchor: pane_leading];
+                        let c1: id = msg_send![view_top, constraintEqualToAnchor: guide_top];
+                        let c2: id = msg_send![view_leading, constraintEqualToAnchor: pane_leading];
                         let c3: id =
                             msg_send![view_trailing, constraintEqualToAnchor: pane_trailing];
-                        let c4: id =
-                            msg_send![view_bottom, constraintEqualToAnchor: pane_bottom];
+                        let c4: id = msg_send![view_bottom, constraintEqualToAnchor: pane_bottom];
 
                         let _: () = msg_send![c1, setActive: 1i8];
                         let _: () = msg_send![c2, setActive: 1i8];
@@ -919,12 +900,63 @@ pub(crate) unsafe fn configure_native_sidebar_window(
             sync_sidebar_table_width(host_data);
         }
 
-        if host_data.sidebar_toolbar != nil {
-            let active_toolbar: id = msg_send![window, toolbar];
-            if active_toolbar != host_data.sidebar_toolbar {
-                let _: () = msg_send![window, setToolbar: host_data.sidebar_toolbar];
+        if manage_window_chrome && manage_toolbar {
+            if host_data.sidebar_toolbar == nil {
+                let previous_toolbar: id = msg_send![window, toolbar];
+                if previous_toolbar != nil {
+                    let _: () = msg_send![previous_toolbar, retain];
+                    host_data.previous_toolbar = previous_toolbar;
+                }
+
+                let toolbar = create_sidebar_toolbar();
+                host_data.sidebar_toolbar = toolbar;
+
+                let style_mask: NSWindowStyleMask = msg_send![window, styleMask];
+                if !style_mask.contains(NSWindowStyleMask::NSFullSizeContentViewWindowMask) {
+                    let _: () = msg_send![
+                        window,
+                        setStyleMask: style_mask | NSWindowStyleMask::NSFullSizeContentViewWindowMask
+                    ];
+                }
+                let _: () = msg_send![window, setTitleVisibility: NSWindowTitleVisibility::NSWindowTitleHidden];
+                let _: () = msg_send![window, setTitlebarAppearsTransparent: 1i8];
+
+                let supports_toolbar_style: bool =
+                    msg_send![window, respondsToSelector: sel!(setToolbarStyle:)];
+                if supports_toolbar_style {
+                    let _: () = msg_send![window, setToolbarStyle: 3i64];
+                }
+
+                let supports_separator_style: bool =
+                    msg_send![window, respondsToSelector: sel!(setTitlebarSeparatorStyle:)];
+                if supports_separator_style {
+                    let _: () = msg_send![window, setTitlebarSeparatorStyle: 0i64];
+                }
+
+                let window_bg: id = msg_send![class!(NSColor), windowBackgroundColor];
+                if window_bg != nil {
+                    let _: () = msg_send![window, setBackgroundColor: window_bg];
+                }
             }
-            ensure_sidebar_toggle_items(host_data.sidebar_toolbar);
+
+            if host_data.sidebar_toolbar != nil {
+                let active_toolbar: id = msg_send![window, toolbar];
+                if active_toolbar != host_data.sidebar_toolbar {
+                    let _: () = msg_send![window, setToolbar: host_data.sidebar_toolbar];
+                }
+                ensure_sidebar_toggle_items(host_data.sidebar_toolbar);
+            }
+        } else if host_data.sidebar_toolbar != nil {
+            let active_toolbar: id = msg_send![window, toolbar];
+            if active_toolbar == host_data.sidebar_toolbar {
+                let _: () = msg_send![window, setToolbar: host_data.previous_toolbar];
+            }
+            let _: () = msg_send![host_data.sidebar_toolbar, release];
+            host_data.sidebar_toolbar = nil;
+            if host_data.previous_toolbar != nil {
+                let _: () = msg_send![host_data.previous_toolbar, release];
+                host_data.previous_toolbar = nil;
+            }
         }
     }
 }
@@ -950,7 +982,9 @@ pub(crate) unsafe fn set_native_sidebar_width(
         let width =
             clamped_sidebar_width(host_data.split_view, sidebar_width, min_width, max_width);
         let _: () = msg_send![host_data.split_view, setPosition: width ofDividerAtIndex: 0i64];
-        let _: () = msg_send![host_data.split_view, adjustSubviews];
+        if host_data.window != nil {
+            let _: () = msg_send![host_data.split_view, adjustSubviews];
+        }
         sync_sidebar_table_width(host_data);
     }
 }
@@ -1151,6 +1185,10 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
         let host_data_ptr = host_data_ptr(host_view);
         if !host_data_ptr.is_null() {
             let host_data = Box::from_raw(host_data_ptr);
+            let host_superview: id = msg_send![host_view, superview];
+            if host_superview != nil {
+                let _: () = msg_send![host_view, removeFromSuperview];
+            }
             if host_data.window != nil {
                 let _: () = msg_send![
                     host_data.window,
@@ -1175,8 +1213,7 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                     let current_superview: id =
                         msg_send![host_data.embedded_content_view, superview];
                     if current_superview != nil {
-                        let _: () =
-                            msg_send![host_data.embedded_content_view, removeFromSuperview];
+                        let _: () = msg_send![host_data.embedded_content_view, removeFromSuperview];
                     }
                 }
 

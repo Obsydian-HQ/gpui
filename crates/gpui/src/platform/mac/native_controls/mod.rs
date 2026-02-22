@@ -84,18 +84,20 @@ pub(crate) unsafe fn set_native_view_frame(
     _scale_factor: f32,
 ) {
     unsafe {
-        let parent_frame: NSRect = msg_send![parent_view, frame];
-        let parent_height = parent_frame.size.height;
-
         let x = bounds.origin.x.0 as f64;
         let y = bounds.origin.y.0 as f64;
         let w = bounds.size.width.0 as f64;
         let h = bounds.size.height.0 as f64;
 
-        // NSView y-axis is bottom-up, GPUI is top-down
-        let flipped_y = parent_height - y - h;
+        let is_flipped: bool = msg_send![parent_view, isFlipped];
+        let final_y = if is_flipped {
+            y
+        } else {
+            let parent_frame: NSRect = msg_send![parent_view, frame];
+            parent_frame.size.height - y - h
+        };
 
-        let frame = NSRect::new(NSPoint::new(x, flipped_y), NSSize::new(w, h));
+        let frame = NSRect::new(NSPoint::new(x, final_y), NSSize::new(w, h));
         let _: () = msg_send![view, setFrame: frame];
     }
 }
