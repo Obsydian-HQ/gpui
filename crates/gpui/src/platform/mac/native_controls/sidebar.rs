@@ -47,6 +47,11 @@ struct SidebarHostData {
     min_width: f64,
     max_width: f64,
     embed_in_sidebar: bool,
+    header_view: id,
+    header_button_targets: Vec<id>,
+    header_on_click: Option<Box<dyn Fn(usize)>>,
+    scroll_view_top_constraint: id,
+    scroll_view_using_autolayout: bool,
 }
 
 struct SidebarCallbacks {
@@ -58,6 +63,7 @@ struct SidebarCallbacks {
 
 static mut SIDEBAR_HOST_VIEW_CLASS: *const Class = ptr::null();
 static mut SIDEBAR_DELEGATE_CLASS: *const Class = ptr::null();
+static mut SIDEBAR_HEADER_BUTTON_CLASS: *const Class = ptr::null();
 
 #[inline]
 unsafe fn toolbar_flexible_space_identifier() -> id {
@@ -107,6 +113,35 @@ unsafe fn build_sidebar_delegate_class() {
         );
 
         SIDEBAR_DELEGATE_CLASS = decl.register();
+    }
+}
+
+#[ctor]
+unsafe fn build_sidebar_header_button_class() {
+    unsafe {
+        let mut decl =
+            ClassDecl::new("GPUINativeSidebarHeaderButton", class!(NSObject)).unwrap();
+        decl.add_ivar::<*mut c_void>("hostViewPtr");
+        decl.add_ivar::<i64>("buttonIndex");
+        decl.add_method(
+            sel!(headerButtonAction:),
+            header_button_action as extern "C" fn(&Object, Sel, id),
+        );
+        SIDEBAR_HEADER_BUTTON_CLASS = decl.register();
+    }
+}
+
+extern "C" fn header_button_action(this: &Object, _sel: Sel, _sender: id) {
+    unsafe {
+        let host_view_ptr: *mut c_void = *this.get_ivar("hostViewPtr");
+        let index: i64 = *this.get_ivar("buttonIndex");
+        if !host_view_ptr.is_null() {
+            if let Some(host_data) = host_data_mut(host_view_ptr as id) {
+                if let Some(ref on_click) = host_data.header_on_click {
+                    on_click(index as usize);
+                }
+            }
+        }
     }
 }
 
@@ -471,20 +506,30 @@ pub(crate) unsafe fn create_native_sidebar_view(
             let _: () =
                 msg_send![wrapper, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
-            // NSVisualEffectView as a background subview for native vibrancy.
-            let vfx: id = msg_send![class!(NSVisualEffectView), alloc];
-            let vfx: id = msg_send![vfx, initWithFrame: NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(initial_width, 420.0),
-            )];
-            NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
-            NSVisualEffectView::setBlendingMode_(vfx, NSVisualEffectBlendingMode::BehindWindow);
-            NSVisualEffectView::setState_(vfx, NSVisualEffectState::FollowsWindowActiveState);
-            let _: () =
-                msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
-            // Insert as the bottom-most subview so it stays behind the MTKView.
-            let _: () = msg_send![wrapper, addSubview: vfx positioned: -1i64 /* NSWindowBelow */ relativeTo: nil];
-            let _: () = msg_send![vfx, release];
+            // On macOS 26+ (Liquid Glass), the sidebar glass material is applied
+            // automatically by NSSplitViewItem. Adding a legacy NSVisualEffectView
+            // blocks the glass from showing through, so we skip it.
+            let has_liquid_glass = Class::get("NSBackgroundExtensionView").is_some();
+
+            let vfx = if has_liquid_glass {
+                nil
+            } else {
+                // Pre-macOS 26: NSVisualEffectView as a background subview for
+                // native vibrancy.
+                let vfx: id = msg_send![class!(NSVisualEffectView), alloc];
+                let vfx: id = msg_send![vfx, initWithFrame: NSRect::new(
+                    NSPoint::new(0.0, 0.0),
+                    NSSize::new(initial_width, 420.0),
+                )];
+                NSVisualEffectView::setMaterial_(vfx, NSVisualEffectMaterial::Sidebar);
+                NSVisualEffectView::setBlendingMode_(vfx, NSVisualEffectBlendingMode::BehindWindow);
+                NSVisualEffectView::setState_(vfx, NSVisualEffectState::FollowsWindowActiveState);
+                let _: () =
+                    msg_send![vfx, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+                let _: () = msg_send![wrapper, addSubview: vfx positioned: -1i64 /* NSWindowBelow */ relativeTo: nil];
+                let _: () = msg_send![vfx, release];
+                vfx
+            };
 
             (wrapper, vfx)
         } else {
@@ -572,6 +617,25 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let _: () =
             msg_send![content_view, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
 
+        // On macOS 26+, wrap the content view in NSBackgroundExtensionView so
+        // the content appearance extends seamlessly under the floating glass
+        // sidebar.
+        let has_liquid_glass = Class::get("NSBackgroundExtensionView").is_some();
+        let content_vc_view = if has_liquid_glass && embed_in_sidebar {
+            let bg_ext_cls = Class::get("NSBackgroundExtensionView").expect("checked above");
+            let bg_ext: id = msg_send![bg_ext_cls, alloc];
+            let bg_ext: id = msg_send![bg_ext, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(520.0, 420.0),
+            )];
+            let _: () =
+                msg_send![bg_ext, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+            let _: () = msg_send![bg_ext, setContentView: content_view];
+            bg_ext
+        } else {
+            content_view
+        };
+
         let detail_label: id = if !embed_in_sidebar {
             let label: id =
                 msg_send![class!(NSTextField), labelWithString: ns_string("Select an item")];
@@ -592,7 +656,7 @@ pub(crate) unsafe fn create_native_sidebar_view(
 
         let content_vc: id = msg_send![class!(NSViewController), alloc];
         let content_vc: id = msg_send![content_vc, init];
-        let _: () = msg_send![content_vc, setView: content_view];
+        let _: () = msg_send![content_vc, setView: content_vc_view];
 
         let sidebar_item: id =
             msg_send![class!(NSSplitViewItem), sidebarWithViewController: sidebar_vc];
@@ -601,6 +665,18 @@ pub(crate) unsafe fn create_native_sidebar_view(
         let content_item: id =
             msg_send![class!(NSSplitViewItem), splitViewItemWithViewController: content_vc];
         configure_content_item(content_item);
+
+        // On macOS 26+, let the content extend under the floating glass
+        // sidebar so NSBackgroundExtensionView can mirror its edges.
+        if has_liquid_glass && embed_in_sidebar {
+            let responds: bool = msg_send![
+                content_item,
+                respondsToSelector: sel!(setAutomaticallyAdjustsSafeAreaInsets:)
+            ];
+            if responds {
+                let _: () = msg_send![content_item, setAutomaticallyAdjustsSafeAreaInsets: 1i8];
+            }
+        }
 
         let _: () = msg_send![split_view_controller, addSplitViewItem: sidebar_item];
         let _: () = msg_send![split_view_controller, addSplitViewItem: content_item];
@@ -635,6 +711,11 @@ pub(crate) unsafe fn create_native_sidebar_view(
             min_width,
             max_width,
             embed_in_sidebar,
+            header_view: nil,
+            header_button_targets: Vec::new(),
+            header_on_click: None,
+            scroll_view_top_constraint: nil,
+            scroll_view_using_autolayout: false,
         };
         let host_data_ptr = Box::into_raw(Box::new(host_data)) as *mut c_void;
         (*(host_view as *mut Object)).set_ivar::<*mut c_void>(HOST_DATA_IVAR, host_data_ptr);
@@ -1064,6 +1145,269 @@ pub(crate) unsafe fn set_native_sidebar_items(
     }
 }
 
+/// Updates the stored header click callback without rebuilding the header structure.
+pub(crate) unsafe fn update_native_sidebar_header_callback(
+    host_view: id,
+    callback: Option<Box<dyn Fn(usize)>>,
+) {
+    unsafe {
+        let Some(host_data) = host_data_mut(host_view) else {
+            return;
+        };
+        host_data.header_on_click = callback;
+    }
+}
+
+/// Builds or rebuilds the native sidebar header with a title label and/or buttons.
+/// Only works in source-list mode (when scroll_view is present).
+pub(crate) unsafe fn set_native_sidebar_header(
+    host_view: id,
+    title: Option<&str>,
+    button_symbols: &[&str],
+) {
+    unsafe {
+        use super::super::ns_string;
+
+        let Some(host_data) = host_data_mut(host_view) else {
+            return;
+        };
+
+        if host_data.scroll_view == nil || host_data.sidebar_container == nil {
+            return;
+        }
+
+        // Release old header button targets
+        for target in host_data.header_button_targets.drain(..) {
+            let _: () = msg_send![target, release];
+        }
+
+        // Remove old header view
+        if host_data.header_view != nil {
+            let _: () = msg_send![host_data.header_view, removeFromSuperview];
+            let _: () = msg_send![host_data.header_view, release];
+            host_data.header_view = nil;
+        }
+
+        // Deactivate old scroll_view top constraint
+        if host_data.scroll_view_top_constraint != nil {
+            let _: () = msg_send![host_data.scroll_view_top_constraint, setActive: 0i8];
+            let _: () = msg_send![host_data.scroll_view_top_constraint, release];
+            host_data.scroll_view_top_constraint = nil;
+        }
+
+        let container = host_data.sidebar_container;
+        let scroll_view = host_data.scroll_view;
+        let has_header = title.is_some() || !button_symbols.is_empty();
+
+        // Switch scroll_view to Auto Layout (one-time setup)
+        if !host_data.scroll_view_using_autolayout {
+            let _: () =
+                msg_send![scroll_view, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
+
+            let scroll_leading: id = msg_send![scroll_view, leadingAnchor];
+            let scroll_trailing: id = msg_send![scroll_view, trailingAnchor];
+            let scroll_bottom: id = msg_send![scroll_view, bottomAnchor];
+            let container_leading: id = msg_send![container, leadingAnchor];
+            let container_trailing: id = msg_send![container, trailingAnchor];
+            let container_bottom: id = msg_send![container, bottomAnchor];
+
+            let c1: id =
+                msg_send![scroll_leading, constraintEqualToAnchor: container_leading];
+            let c2: id =
+                msg_send![scroll_trailing, constraintEqualToAnchor: container_trailing];
+            let c3: id =
+                msg_send![scroll_bottom, constraintEqualToAnchor: container_bottom];
+            let _: () = msg_send![c1, setActive: 1i8];
+            let _: () = msg_send![c2, setActive: 1i8];
+            let _: () = msg_send![c3, setActive: 1i8];
+
+            host_data.scroll_view_using_autolayout = true;
+        }
+
+        // Get the safe area top anchor
+        let has_safe_area: bool =
+            msg_send![container, respondsToSelector: sel!(safeAreaLayoutGuide)];
+        let guide_top: id = if has_safe_area {
+            let guide: id = msg_send![container, safeAreaLayoutGuide];
+            msg_send![guide, topAnchor]
+        } else {
+            msg_send![container, topAnchor]
+        };
+
+        if !has_header {
+            // No header: pin scroll_view.top directly to safe area top
+            let scroll_top: id = msg_send![scroll_view, topAnchor];
+            let constraint: id =
+                msg_send![scroll_top, constraintEqualToAnchor: guide_top];
+            let _: () = msg_send![constraint, setActive: 1i8];
+            let _: () = msg_send![constraint, retain];
+            host_data.scroll_view_top_constraint = constraint;
+            let _: () = msg_send![container, layoutSubtreeIfNeeded];
+            return;
+        }
+
+        // Create header container
+        let header: id = msg_send![class!(NSView), alloc];
+        let header: id = msg_send![header, initWithFrame: NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(240.0, 28.0),
+        )];
+        let _: () =
+            msg_send![header, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
+
+        // Title label
+        if let Some(title_text) = title {
+            let label: id =
+                msg_send![class!(NSTextField), labelWithString: ns_string(title_text)];
+            let _: () =
+                msg_send![label, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
+
+            let font: id =
+                msg_send![class!(NSFont), systemFontOfSize: 11.0f64 weight: 0.3f64];
+            let _: () = msg_send![label, setFont: font];
+
+            let color: id = msg_send![class!(NSColor), secondaryLabelColor];
+            let _: () = msg_send![label, setTextColor: color];
+
+            let _: () = msg_send![header, addSubview: label];
+
+            let label_leading: id = msg_send![label, leadingAnchor];
+            let label_center_y: id = msg_send![label, centerYAnchor];
+            let header_leading: id = msg_send![header, leadingAnchor];
+            let header_center_y: id = msg_send![header, centerYAnchor];
+
+            let c1: id = msg_send![label_leading, constraintEqualToAnchor: header_leading constant: 12.0f64];
+            let c2: id = msg_send![label_center_y, constraintEqualToAnchor: header_center_y];
+            let _: () = msg_send![c1, setActive: 1i8];
+            let _: () = msg_send![c2, setActive: 1i8];
+        }
+
+        // Buttons (laid out right-to-left)
+        let mut targets = Vec::new();
+        let header_center_y: id = msg_send![header, centerYAnchor];
+        let mut prev_anchor: id = msg_send![header, trailingAnchor];
+        let mut first_button = true;
+
+        for (index, symbol) in button_symbols.iter().enumerate().rev() {
+            let button: id = msg_send![class!(NSButton), alloc];
+            let button: id = msg_send![button, initWithFrame: NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(20.0, 20.0),
+            )];
+            let _: () =
+                msg_send![button, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
+
+            let image: id = msg_send![
+                class!(NSImage),
+                imageWithSystemSymbolName: ns_string(symbol)
+                accessibilityDescription: nil
+            ];
+            if image != nil {
+                let _: () = msg_send![button, setImage: image];
+                // NSImageOnly = 1
+                let _: () = msg_send![button, setImagePosition: 1i64];
+            }
+
+            // Borderless toolbar-style appearance
+            let _: () = msg_send![button, setBezelStyle: 0i64];
+            let _: () = msg_send![button, setBordered: 0i8];
+
+            // Target/action via header button class
+            let target: id = msg_send![SIDEBAR_HEADER_BUTTON_CLASS, alloc];
+            let target: id = msg_send![target, init];
+            (*(target as *mut Object))
+                .set_ivar::<*mut c_void>("hostViewPtr", host_view as *mut c_void);
+            (*(target as *mut Object)).set_ivar::<i64>("buttonIndex", index as i64);
+            let _: () = msg_send![button, setTarget: target];
+            let _: () = msg_send![button, setAction: sel!(headerButtonAction:)];
+            targets.push(target);
+
+            let _: () = msg_send![header, addSubview: button];
+
+            let button_trailing: id = msg_send![button, trailingAnchor];
+            let button_center_y: id = msg_send![button, centerYAnchor];
+            let button_width: id = msg_send![button, widthAnchor];
+            let button_height: id = msg_send![button, heightAnchor];
+
+            let offset = if first_button { -8.0f64 } else { -2.0f64 };
+            first_button = false;
+
+            let c1: id = msg_send![button_trailing, constraintEqualToAnchor: prev_anchor constant: offset];
+            let c2: id = msg_send![button_center_y, constraintEqualToAnchor: header_center_y];
+            let c3: id = msg_send![button_width, constraintEqualToConstant: 20.0f64];
+            let c4: id = msg_send![button_height, constraintEqualToConstant: 20.0f64];
+            let _: () = msg_send![c1, setActive: 1i8];
+            let _: () = msg_send![c2, setActive: 1i8];
+            let _: () = msg_send![c3, setActive: 1i8];
+            let _: () = msg_send![c4, setActive: 1i8];
+
+            prev_anchor = msg_send![button, leadingAnchor];
+        }
+
+        // Separator line at bottom of header
+        let separator: id = msg_send![class!(NSBox), alloc];
+        let separator: id = msg_send![separator, initWithFrame: NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(240.0, 1.0),
+        )];
+        // NSBoxSeparator = 2
+        let _: () = msg_send![separator, setBoxType: 2u64];
+        let _: () =
+            msg_send![separator, setTranslatesAutoresizingMaskIntoConstraints: 0i8];
+        let _: () = msg_send![header, addSubview: separator];
+
+        let sep_leading: id = msg_send![separator, leadingAnchor];
+        let sep_trailing: id = msg_send![separator, trailingAnchor];
+        let sep_bottom: id = msg_send![separator, bottomAnchor];
+        let h_leading: id = msg_send![header, leadingAnchor];
+        let h_trailing: id = msg_send![header, trailingAnchor];
+        let h_bottom: id = msg_send![header, bottomAnchor];
+        let c1: id = msg_send![sep_leading, constraintEqualToAnchor: h_leading];
+        let c2: id = msg_send![sep_trailing, constraintEqualToAnchor: h_trailing];
+        let c3: id = msg_send![sep_bottom, constraintEqualToAnchor: h_bottom];
+        let _: () = msg_send![c1, setActive: 1i8];
+        let _: () = msg_send![c2, setActive: 1i8];
+        let _: () = msg_send![c3, setActive: 1i8];
+
+        // Add header to sidebar container
+        let _: () = msg_send![container, addSubview: header];
+
+        let header_top: id = msg_send![header, topAnchor];
+        let header_leading: id = msg_send![header, leadingAnchor];
+        let header_trailing: id = msg_send![header, trailingAnchor];
+        let header_height: id = msg_send![header, heightAnchor];
+        let container_leading: id = msg_send![container, leadingAnchor];
+        let container_trailing: id = msg_send![container, trailingAnchor];
+
+        let c1: id = msg_send![header_top, constraintEqualToAnchor: guide_top];
+        let c2: id =
+            msg_send![header_leading, constraintEqualToAnchor: container_leading];
+        let c3: id =
+            msg_send![header_trailing, constraintEqualToAnchor: container_trailing];
+        let c4: id =
+            msg_send![header_height, constraintEqualToConstant: 28.0f64];
+        let _: () = msg_send![c1, setActive: 1i8];
+        let _: () = msg_send![c2, setActive: 1i8];
+        let _: () = msg_send![c3, setActive: 1i8];
+        let _: () = msg_send![c4, setActive: 1i8];
+
+        // Pin scroll_view.top below header
+        let scroll_top: id = msg_send![scroll_view, topAnchor];
+        let header_bottom_anchor: id = msg_send![header, bottomAnchor];
+        let constraint: id =
+            msg_send![scroll_top, constraintEqualToAnchor: header_bottom_anchor];
+        let _: () = msg_send![constraint, setActive: 1i8];
+        let _: () = msg_send![constraint, retain];
+        host_data.scroll_view_top_constraint = constraint;
+
+        let _: () = msg_send![header, retain];
+        host_data.header_view = header;
+        host_data.header_button_targets = targets;
+
+        let _: () = msg_send![container, layoutSubtreeIfNeeded];
+    }
+}
+
 /// Embed a secondary view (e.g. GPUISurfaceView) into the sidebar (left) pane
 /// using Auto Layout constraints pinned below the titlebar safe area.
 /// The sidebar must have been created with embed_in_sidebar=true to have
@@ -1285,6 +1629,20 @@ pub(crate) unsafe fn release_native_sidebar_view(host_view: id) {
                     let _: () = msg_send![host_data.window, setToolbar: host_data.previous_toolbar];
                 }
             }
+            // Release header resources
+            for target in &host_data.header_button_targets {
+                let _: () = msg_send![*target, release];
+            }
+            if host_data.header_view != nil {
+                let _: () = msg_send![host_data.header_view, removeFromSuperview];
+                let _: () = msg_send![host_data.header_view, release];
+            }
+            if host_data.scroll_view_top_constraint != nil {
+                let _: () =
+                    msg_send![host_data.scroll_view_top_constraint, setActive: 0i8];
+                let _: () = msg_send![host_data.scroll_view_top_constraint, release];
+            }
+
             if host_data.sidebar_toolbar != nil {
                 let _: () = msg_send![host_data.sidebar_toolbar, release];
             }

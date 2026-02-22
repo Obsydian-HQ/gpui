@@ -22,6 +22,31 @@ pub struct SidebarSelectEvent {
     pub title: SharedString,
 }
 
+/// Event emitted when a native sidebar header button is clicked.
+#[derive(Clone, Debug)]
+pub struct SidebarHeaderClickEvent {
+    /// Zero-based button index in the header.
+    pub index: usize,
+    /// The button's user-defined ID.
+    pub id: SharedString,
+}
+
+/// A button to display in the native sidebar header.
+pub struct NativeSidebarHeaderButton {
+    pub(crate) id: SharedString,
+    pub(crate) symbol: SharedString,
+}
+
+impl NativeSidebarHeaderButton {
+    /// Creates a header button with a user-defined ID and an SF Symbol name.
+    pub fn new(id: impl Into<SharedString>, symbol: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            symbol: symbol.into(),
+        }
+    }
+}
+
 /// Creates a native macOS-style sidebar control backed by `NSSplitViewController`.
 ///
 /// By default, the sidebar's left pane shows a source-list with the provided `items`.
@@ -45,6 +70,9 @@ pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> Na
         manage_window_chrome: true,
         manage_toolbar: true,
         on_select: None,
+        header_title: None,
+        header_buttons: Vec::new(),
+        on_header_click: None,
         style: StyleRefinement::default(),
     }
 }
@@ -73,6 +101,10 @@ pub struct NativeSidebar {
     /// host app already has its own toolbar and titlebar setup.
     manage_toolbar: bool,
     on_select: Option<Box<dyn Fn(&SidebarSelectEvent, &mut Window, &mut App) + 'static>>,
+    header_title: Option<SharedString>,
+    header_buttons: Vec<NativeSidebarHeaderButton>,
+    on_header_click:
+        Option<Box<dyn Fn(&SidebarHeaderClickEvent, &mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
 
@@ -160,6 +192,28 @@ impl NativeSidebar {
         self.on_select = Some(Box::new(listener));
         self
     }
+
+    /// Sets a title label displayed in the sidebar header.
+    pub fn header_title(mut self, title: impl Into<SharedString>) -> Self {
+        self.header_title = Some(title.into());
+        self
+    }
+
+    /// Adds a button to the sidebar header. Buttons appear right-aligned.
+    /// The `button` specifies a user-defined ID and an SF Symbol name.
+    pub fn header_button(mut self, button: NativeSidebarHeaderButton) -> Self {
+        self.header_buttons.push(button);
+        self
+    }
+
+    /// Registers a callback fired when a sidebar header button is clicked.
+    pub fn on_header_click(
+        mut self,
+        listener: impl Fn(&SidebarHeaderClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_header_click = Some(Box::new(listener));
+        self
+    }
 }
 
 struct NativeSidebarState {
@@ -173,6 +227,8 @@ struct NativeSidebarState {
     current_collapsed: bool,
     embed_in_sidebar: bool,
     attached: bool,
+    current_header_title: Option<SharedString>,
+    current_header_button_symbols: Vec<SharedString>,
     /// Surface ID for the dual-surface sidebar mode.
     #[cfg(target_os = "macos")]
     surface_id: Option<SurfaceId>,
@@ -293,6 +349,11 @@ impl Element for NativeSidebar {
             let embed_in_sidebar = self.embed_in_sidebar;
             let manage_window_chrome = self.manage_window_chrome;
             let manage_toolbar = self.manage_toolbar;
+            let header_title = self.header_title.take();
+            let header_buttons = std::mem::take(&mut self.header_buttons);
+            let on_header_click = self.on_header_click.take();
+            let header_button_symbols: Vec<SharedString> =
+                header_buttons.iter().map(|b| b.symbol.clone()).collect();
 
             // When sidebar_view is set, we create the sidebar container in
             // "embed" mode (plain NSView + VFX background, no table) but
@@ -307,7 +368,7 @@ impl Element for NativeSidebar {
             window.with_optional_element_state::<NativeSidebarState, _>(
                 id,
                 |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
+                    let mut state = if let Some(Some(mut state)) = prev_state {
                         unsafe {
                             native_controls::configure_native_sidebar_window(
                                 state.control_ptr as cocoa::base::id,
@@ -491,9 +552,55 @@ impl Element for NativeSidebar {
                             current_collapsed: collapsed,
                             embed_in_sidebar: effective_embed_for_create,
                             attached: true,
+                            current_header_title: None,
+                            current_header_button_symbols: Vec::new(),
                             surface_id,
                         }
                     };
+
+                    // Update header click callback (every paint)
+                    unsafe {
+                        let callback = on_header_click.map(|handler| {
+                            let nfc = next_frame_callbacks.clone();
+                            let inv = invalidator.clone();
+                            let handler = Rc::new(handler);
+                            let button_ids: Vec<SharedString> =
+                                header_buttons.iter().map(|b| b.id.clone()).collect();
+                            schedule_native_callback(
+                                handler,
+                                move |index: usize| SidebarHeaderClickEvent {
+                                    index,
+                                    id: button_ids
+                                        .get(index)
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                },
+                                nfc,
+                                inv,
+                            )
+                        });
+                        native_controls::update_native_sidebar_header_callback(
+                            state.control_ptr as cocoa::base::id,
+                            callback,
+                        );
+                    }
+
+                    // Rebuild header structure when title or buttons change
+                    if state.current_header_title != header_title
+                        || state.current_header_button_symbols != header_button_symbols
+                    {
+                        let symbol_strs: Vec<&str> =
+                            header_button_symbols.iter().map(|s| s.as_ref()).collect();
+                        unsafe {
+                            native_controls::set_native_sidebar_header(
+                                state.control_ptr as cocoa::base::id,
+                                header_title.as_deref().map(|v| &**v),
+                                &symbol_strs,
+                            );
+                        }
+                        state.current_header_title = header_title;
+                        state.current_header_button_symbols = header_button_symbols;
+                    }
 
                     ((), Some(state))
                 },

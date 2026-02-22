@@ -1,6 +1,7 @@
 use gpui::{
     App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
-    Window, WindowBounds, WindowOptions, actions, div, native_sidebar, prelude::*, px, size,
+    NativeSidebarHeaderButton, Window, WindowBounds, WindowOptions, actions, div, native_sidebar,
+    prelude::*, px, size,
 };
 
 actions!(native_sidebar_example, [ToggleSidebar]);
@@ -28,18 +29,35 @@ impl SidebarExample {
 }
 
 impl Render for SidebarExample {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(
-                |this: &mut SidebarExample, _: &ToggleSidebar, _, cx| {
-                    this.collapsed = !this.collapsed;
-                    cx.notify();
-                },
-            ))
+            .on_action({
+                let entity = _cx.entity().downgrade();
+                move |_: &ToggleSidebar, _window, cx: &mut App| {
+                    entity
+                        .update(cx, |this, cx| {
+                            this.collapsed = !this.collapsed;
+                            cx.notify();
+                        })
+                        .ok();
+                }
+            })
             .child(
                 native_sidebar("sidebar", &Self::ITEMS)
+                    .header_title("Navigation")
+                    .header_button(NativeSidebarHeaderButton::new("add", "plus"))
+                    .header_button(NativeSidebarHeaderButton::new("filter", "line.3.horizontal.decrease"))
+                    .on_header_click(|event, _window, _cx| {
+                        println!(
+                            "Header button clicked: id={}, index={}",
+                            event.id, event.index
+                        );
+                    })
+                    .on_select(|event, _window, _cx| {
+                        println!("Selected: {} (index {})", event.title, event.index);
+                    })
                     .selected_index(Some(0))
                     .sidebar_width(260.0)
                     .min_sidebar_width(180.0)
