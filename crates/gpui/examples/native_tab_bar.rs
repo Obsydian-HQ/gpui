@@ -666,7 +666,15 @@ impl Render for SidebarTabPanel {
         let weak_main = weak.clone();
         let weak_self = cx.entity().downgrade();
 
-        let mut tab_list = div().flex().flex_col().gap_1().p_2().w_full();
+        let mut tab_list = div()
+            .id("sidebar-tab-list")
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .w_full()
+            .flex_1()
+            .overflow_y_scroll();
 
         for (idx, tab) in tabs.iter().enumerate() {
             let is_selected = idx == selected;
