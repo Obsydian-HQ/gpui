@@ -919,6 +919,17 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         std::ptr::null()
     }
 
+    /// Register a callback for mouse events originating from a secondary
+    /// rendering surface. The callback receives the surface view's native
+    /// pointer (for identifying which surface) and the platform input event.
+    /// Only available on macOS.
+    #[cfg(target_os = "macos")]
+    fn on_surface_input(
+        &self,
+        _callback: Box<dyn FnMut(*mut std::ffi::c_void, PlatformInput) -> DispatchEventResult>,
+    ) {
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None

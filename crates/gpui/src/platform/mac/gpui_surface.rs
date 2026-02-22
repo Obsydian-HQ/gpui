@@ -196,11 +196,12 @@ extern "C" fn handle_surface_view_event(this: &Object, _sel: Sel, native_event: 
             _ => {}
         }
 
+        let native_view_ptr = this as *const _ as *mut c_void;
         let mut lock = window_state.as_ref().lock();
-        if let Some(mut callback) = lock.event_callback.take() {
+        if let Some(mut callback) = lock.surface_event_callback.take() {
             drop(lock);
-            callback(event);
-            window_state.lock().event_callback = Some(callback);
+            callback(native_view_ptr, event);
+            window_state.lock().surface_event_callback = Some(callback);
         }
     }
 }

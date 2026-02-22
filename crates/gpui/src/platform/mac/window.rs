@@ -283,6 +283,11 @@ unsafe fn build_classes() {
                 );
 
                 decl.add_method(
+                    sel!(isFlipped),
+                    view_is_flipped as extern "C" fn(&Object, Sel) -> BOOL,
+                );
+
+                decl.add_method(
                     sel!(characterIndexForPoint:),
                     character_index_for_point as extern "C" fn(&Object, Sel, NSPoint) -> u64,
                 );
@@ -323,13 +328,6 @@ unsafe fn build_classes() {
     }
 }
 
-pub(crate) fn convert_mouse_position(position: NSPoint, window_height: Pixels) -> Point<Pixels> {
-    point(
-        px(position.x as f32),
-        // macOS screen coordinates are relative to bottom left
-        window_height - px(position.y as f32),
-    )
-}
 
 unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const Class {
     unsafe {
@@ -533,6 +531,7 @@ pub(crate) struct MacWindowState {
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     pub(crate) event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
+    pub(crate) surface_event_callback: Option<Box<dyn FnMut(*mut c_void, PlatformInput) -> crate::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     resize_callback: Option<Box<dyn FnMut(Size<Pixels>, f32)>>,
     moved_callback: Option<Box<dyn FnMut()>>,
@@ -712,7 +711,22 @@ impl MacWindowState {
         unsafe {
             let frame = NSWindow::frame(self.native_window);
             let content_layout_rect: CGRect = msg_send![self.native_window, contentLayoutRect];
-            px((frame.size.height - content_layout_rect.size.height) as f32)
+            let native_titlebar = frame.size.height - content_layout_rect.size.height;
+
+            // When the native_view is reparented into a split-view pane
+            // that doesn't extend behind the titlebar (e.g. the
+            // NSSplitViewController adjusts for safe area), the view's
+            // height is less than the contentView's height. The difference
+            // is the pane's offset from the full content area, which
+            // reduces the effective titlebar overlap.
+            let view_height =
+                NSView::frame(self.native_view.as_ptr() as id).size.height;
+            let content_view: id = msg_send![self.native_window, contentView];
+            let content_view_height = NSView::frame(content_view).size.height;
+            let pane_offset = content_view_height - view_height;
+            let effective = (native_titlebar - pane_offset).max(0.0);
+
+            px(effective as f32)
         }
     }
 
@@ -868,6 +882,7 @@ impl MacWindow {
                 ),
                 request_frame_callback: None,
                 event_callback: None,
+                surface_event_callback: None,
                 activate_callback: None,
                 resize_callback: None,
                 moved_callback: None,
@@ -962,6 +977,23 @@ impl MacWindow {
                         native_window.setLevel_(NSNormalWindowLevel);
                     }
                     native_window.setAcceptsMouseMovedEvents_(YES);
+
+                    // Add a tracking area so the view receives mouseMoved:
+                    // events based on mouse position rather than first-responder
+                    // status. When a native sidebar reparents the view into an
+                    // NSSplitView, removeFromSuperview causes it to resign first
+                    // responder, and mouseMoved: would stop being delivered
+                    // without a tracking area.
+                    let tracking_area: id = msg_send![class!(NSTrackingArea), alloc];
+                    let _: () = msg_send![
+                        tracking_area,
+                        initWithRect: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))
+                        options: NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                        owner: native_view
+                        userInfo: nil
+                    ];
+                    let _: () =
+                        msg_send![native_view, addTrackingArea: tracking_area.autorelease()];
 
                     if let Some(tabbing_identifier) = tabbing_identifier {
                         let tabbing_id = ns_string(tabbing_identifier.as_str());
@@ -2028,13 +2060,13 @@ impl PlatformWindow for MacWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        let position = unsafe {
-            self.0
-                .lock()
-                .native_window
-                .mouseLocationOutsideOfEventStream()
-        };
-        convert_mouse_position(position, self.content_size().height)
+        let lock = self.0.lock();
+        let window_point =
+            unsafe { lock.native_window.mouseLocationOutsideOfEventStream() };
+        let native_view = lock.native_view.as_ptr() as id;
+        let local_point: NSPoint =
+            unsafe { msg_send![native_view, convertPoint:window_point fromView:nil] };
+        point(px(local_point.x as f32), px(local_point.y as f32))
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -2351,6 +2383,13 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().event_callback = Some(callback);
     }
 
+    fn on_surface_input(
+        &self,
+        callback: Box<dyn FnMut(*mut c_void, PlatformInput) -> crate::DispatchEventResult>,
+    ) {
+        self.0.as_ref().lock().surface_event_callback = Some(callback);
+    }
+
     fn on_active_status_change(&self, callback: Box<dyn FnMut(bool)>) {
         self.0.as_ref().lock().activate_callback = Some(callback);
     }
@@ -2653,8 +2692,9 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.as_ref().lock();
 
-    let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height), None) };
+    let event = unsafe {
+        PlatformInput::from_native(native_event, None, Some(this as *const _ as id))
+    };
 
     let Some(event) = event else {
         return NO;
@@ -2770,8 +2810,9 @@ extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     let window_state = unsafe { get_window_state(this) };
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
-    let window_height = lock.content_size().height;
-    let event = unsafe { PlatformInput::from_native(native_event, Some(window_height), None) };
+    let event = unsafe {
+        PlatformInput::from_native(native_event, None, Some(this as *const _ as id))
+    };
 
     if let Some(mut event) = event {
         match &mut event {
@@ -3385,6 +3426,10 @@ extern "C" fn accepts_first_mouse(this: &Object, _: Sel, _: id) -> BOOL {
     YES
 }
 
+extern "C" fn view_is_flipped(_: &Object, _: Sel) -> BOOL {
+    YES
+}
+
 extern "C" fn character_index_for_point(this: &Object, _: Sel, position: NSPoint) -> u64 {
     let position = screen_point_to_gpui_point(this, position);
     with_input_handler(this, |input_handler| {
@@ -3509,7 +3554,11 @@ fn send_file_drop_event(
 
 fn drag_event_position(window_state: &Mutex<MacWindowState>, dragging_info: id) -> Point<Pixels> {
     let drag_location: NSPoint = unsafe { msg_send![dragging_info, draggingLocation] };
-    convert_mouse_position(drag_location, window_state.lock().content_size().height)
+    let lock = window_state.lock();
+    let native_view = lock.native_view.as_ptr() as id;
+    let local_point: NSPoint =
+        unsafe { msg_send![native_view, convertPoint:drag_location fromView:nil] };
+    point(px(local_point.x as f32), px(local_point.y as f32))
 }
 
 fn with_input_handler<F, R>(window: &Object, f: F) -> Option<R>

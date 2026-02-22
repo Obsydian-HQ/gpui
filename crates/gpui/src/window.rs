@@ -100,6 +100,8 @@ pub(crate) struct SurfaceState {
     pub scene: Scene,
     pub layout_engine: Option<TaffyLayoutEngine>,
     pub dirty: bool,
+    pub mouse_listeners: Vec<Option<AnyMouseListener>>,
+    pub hitboxes: Vec<Hitbox>,
 }
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -2629,7 +2631,7 @@ pub(crate) struct CursorStyleRequest {
     pub(crate) style: CursorStyle,
 }
 
-#[derive(Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq)]
 pub(crate) struct HitTest {
     pub(crate) ids: SmallVec<[HitboxId; 8]>,
     pub(crate) hover_hitbox_count: usize,
@@ -3407,6 +3409,19 @@ impl Window {
                     .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
                     .log_err()
                     .unwrap_or(DispatchEventResult::default())
+            })
+        });
+        #[cfg(target_os = "macos")]
+        platform_window.on_surface_input({
+            let handle = handle.clone();
+            let mut cx = cx.to_async();
+            Box::new(move |native_view_ptr, event| {
+                handle
+                    .update(&mut cx, |_, window, cx| {
+                        window.dispatch_surface_event(native_view_ptr, event, cx)
+                    })
+                    .log_err();
+                DispatchEventResult::default()
             })
         });
         platform_window.on_hit_test_window_control({
@@ -4246,12 +4261,10 @@ impl Window {
 
         let mut gpui_surface = GpuiSurface::new(shared, true);
 
-        // Attach the window's event state so the surface view can forward
-        // mouse events through the same event_callback as the main view.
-        let state_ptr = self.platform_window.window_state_ptr();
-        if !state_ptr.is_null() {
-            gpui_surface.set_window_state(state_ptr);
-        }
+        // Attach window state so the surface view can forward events
+        // through MacWindowState::surface_event_callback.
+        let window_state_ptr = self.platform_window.window_state_ptr();
+        gpui_surface.set_window_state(window_state_ptr);
 
         let native_view_ptr = gpui_surface.native_view_ptr();
 
@@ -4261,6 +4274,8 @@ impl Window {
             scene: Scene::default(),
             layout_engine: Some(TaffyLayoutEngine::new()),
             dirty: true,
+            mouse_listeners: Vec::new(),
+            hitboxes: Vec::new(),
         });
 
         GpuiSurfaceHandle {
@@ -4630,6 +4645,9 @@ impl Window {
 
     /// Draw all registered secondary surfaces. Each surface gets its own
     /// prepaint/paint cycle with an isolated scene and layout engine.
+    /// Frame state (mouse listeners, hitboxes, input handlers, cursor styles)
+    /// is saved before each surface draw and restored afterward so that
+    /// surface elements don't pollute the main frame's event dispatch.
     #[cfg(target_os = "macos")]
     fn draw_surfaces(&mut self, cx: &mut App) {
         let surface_ids: Vec<SurfaceId> = self.surfaces.keys().copied().collect();
@@ -4640,8 +4658,14 @@ impl Window {
             // Always redraw surfaces for now (dirty tracking can be refined later)
             surface.dirty = false;
 
-            // Save the main window's scene — we'll restore it after the surface paints
+            // Save the main frame's accumulated state so the surface draw
+            // doesn't add its listeners/hitboxes to the main dispatch path.
             let main_scene = std::mem::take(&mut self.next_frame.scene);
+            let main_mouse_listeners = std::mem::take(&mut self.next_frame.mouse_listeners);
+            let main_hitboxes = std::mem::take(&mut self.next_frame.hitboxes);
+            let main_input_handlers = std::mem::take(&mut self.next_frame.input_handlers);
+            let main_cursor_styles = std::mem::take(&mut self.next_frame.cursor_styles);
+            let main_tooltip_requests = std::mem::take(&mut self.next_frame.tooltip_requests);
 
             // Swap in the surface's layout engine
             let surface_layout = surface.layout_engine.take();
@@ -4672,9 +4696,17 @@ impl Window {
             // Pop native view override
             self.pop_native_view_override();
 
-            // Extract the surface scene and restore the main scene
+            // Extract the surface's scene, listeners, and hitboxes into
+            // SurfaceState so they can be used for surface event dispatch.
+            // Restore the main frame's state so the main dispatch path is
+            // unaffected.
             let surface = self.surfaces.get_mut(&id).unwrap();
             surface.scene = std::mem::replace(&mut self.next_frame.scene, main_scene);
+            surface.mouse_listeners = std::mem::replace(&mut self.next_frame.mouse_listeners, main_mouse_listeners);
+            surface.hitboxes = std::mem::replace(&mut self.next_frame.hitboxes, main_hitboxes);
+            self.next_frame.input_handlers = main_input_handlers;
+            self.next_frame.cursor_styles = main_cursor_styles;
+            self.next_frame.tooltip_requests = main_tooltip_requests;
 
             // Restore layout engines
             let surface_layout = std::mem::replace(&mut self.layout_engine, main_layout);
@@ -6380,6 +6412,112 @@ impl Window {
                 cx.active_drag = None;
                 self.refresh();
             }
+        }
+    }
+
+    /// Dispatch a mouse event that originated from a secondary rendering
+    /// surface. Temporarily swaps the surface's hitboxes and mouse position
+    /// into the window so that `Hitbox::is_hovered` and friends work
+    /// correctly for listeners registered by the surface's element tree.
+    #[cfg(target_os = "macos")]
+    fn dispatch_surface_event(
+        &mut self,
+        native_view_ptr: *mut std::ffi::c_void,
+        event: PlatformInput,
+        cx: &mut App,
+    ) {
+        // Find the surface that owns this native view.
+        let surface_id = self.surfaces.iter().find_map(|(id, s)| {
+            if s.gpui_surface.native_view_ptr() == native_view_ptr {
+                Some(*id)
+            } else {
+                None
+            }
+        });
+        let Some(surface_id) = surface_id else { return };
+
+        // Extract the mouse position from the event.
+        let event_position = match &event {
+            PlatformInput::MouseDown(e) => e.position,
+            PlatformInput::MouseUp(e) => e.position,
+            PlatformInput::MouseMove(e) => e.position,
+            PlatformInput::ScrollWheel(e) => e.position,
+            PlatformInput::MouseExited(_) => self.mouse_position,
+            _ => return,
+        };
+
+        cx.propagate_event = true;
+
+        // Save main frame state that we'll temporarily override.
+        let saved_mouse_position = self.mouse_position;
+        let saved_hit_test = self.mouse_hit_test.clone();
+
+        // Set the mouse position to the surface-local coordinates.
+        self.mouse_position = event_position;
+
+        // Compute hit test against the surface's hitboxes.
+        let surface = self.surfaces.get(&surface_id).unwrap();
+        let hit_test = {
+            let mut set_hover_hitbox_count = false;
+            let mut ht = HitTest::default();
+            for hitbox in surface.hitboxes.iter().rev() {
+                let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+                if bounds.contains(&event_position) {
+                    ht.ids.push(hitbox.id);
+                    if !set_hover_hitbox_count
+                        && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
+                    {
+                        ht.hover_hitbox_count = ht.ids.len();
+                        set_hover_hitbox_count = true;
+                    }
+                    if hitbox.behavior == HitboxBehavior::BlockMouse {
+                        break;
+                    }
+                }
+            }
+            if !set_hover_hitbox_count {
+                ht.hover_hitbox_count = ht.ids.len();
+            }
+            ht
+        };
+        self.mouse_hit_test = hit_test;
+
+        // Take the surface's mouse listeners for dispatch.
+        let surface = self.surfaces.get_mut(&surface_id).unwrap();
+        let mut mouse_listeners = mem::take(&mut surface.mouse_listeners);
+
+        if let Some(any_mouse_event) = event.mouse_event() {
+            // Capture phase (front to back).
+            for listener in &mut mouse_listeners {
+                let listener = listener.as_mut().unwrap();
+                listener(any_mouse_event, DispatchPhase::Capture, self, cx);
+                if !cx.propagate_event {
+                    break;
+                }
+            }
+
+            // Bubble phase (back to front).
+            if cx.propagate_event {
+                for listener in mouse_listeners.iter_mut().rev() {
+                    let listener = listener.as_mut().unwrap();
+                    listener(any_mouse_event, DispatchPhase::Bubble, self, cx);
+                    if !cx.propagate_event {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Put listeners back.
+        let surface = self.surfaces.get_mut(&surface_id).unwrap();
+        surface.mouse_listeners = mouse_listeners;
+
+        // Restore main frame state.
+        self.mouse_position = saved_mouse_position;
+        self.mouse_hit_test = saved_hit_test;
+
+        if self.invalidator.is_dirty() {
+            self.refresh();
         }
     }
 
