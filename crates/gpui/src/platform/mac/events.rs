@@ -12,8 +12,9 @@ use crate::{
 use cocoa::{
     appkit::{NSEvent, NSEventModifierFlags, NSEventPhase, NSEventType},
     base::{YES, id},
-    foundation::NSPoint,
+    foundation::{NSPoint, NSRect},
 };
+use objc::runtime::BOOL;
 use core_foundation::data::{CFDataGetBytePtr, CFDataRef};
 use core_graphics::event::CGKeyCode;
 use objc::{msg_send, sel, sel_impl};
@@ -322,10 +323,23 @@ unsafe fn mouse_position(
         if let Some(view) = native_view {
             let window_point: NSPoint = msg_send![native_event, locationInWindow];
             let local_point: NSPoint = msg_send![view, convertPoint:window_point fromView:cocoa::base::nil];
-            Some(point(
-                px(local_point.x as f32),
-                px(local_point.y as f32),
-            ))
+            // The view uses standard macOS coordinates (Y=0 at bottom).
+            // Flip Y to GPUI's top-down coordinate system using the
+            // view's bounds height, which correctly accounts for the
+            // view's actual size when reparented into a split-view pane.
+            let is_flipped: BOOL = msg_send![view, isFlipped];
+            if is_flipped == YES {
+                Some(point(
+                    px(local_point.x as f32),
+                    px(local_point.y as f32),
+                ))
+            } else {
+                let bounds: NSRect = msg_send![view, bounds];
+                Some(point(
+                    px(local_point.x as f32),
+                    px((bounds.size.height - local_point.y) as f32),
+                ))
+            }
         } else {
             window_height.map(|window_height| {
                 let loc = native_event.locationInWindow();

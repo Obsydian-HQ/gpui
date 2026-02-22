@@ -2064,9 +2064,15 @@ impl PlatformWindow for MacWindow {
         let window_point =
             unsafe { lock.native_window.mouseLocationOutsideOfEventStream() };
         let native_view = lock.native_view.as_ptr() as id;
-        let local_point: NSPoint =
-            unsafe { msg_send![native_view, convertPoint:window_point fromView:nil] };
-        point(px(local_point.x as f32), px(local_point.y as f32))
+        unsafe {
+            let local_point: NSPoint =
+                msg_send![native_view, convertPoint:window_point fromView:nil];
+            let bounds: NSRect = msg_send![native_view, bounds];
+            point(
+                px(local_point.x as f32),
+                px((bounds.size.height - local_point.y) as f32),
+            )
+        }
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -3427,7 +3433,7 @@ extern "C" fn accepts_first_mouse(this: &Object, _: Sel, _: id) -> BOOL {
 }
 
 extern "C" fn view_is_flipped(_: &Object, _: Sel) -> BOOL {
-    YES
+    NO
 }
 
 extern "C" fn character_index_for_point(this: &Object, _: Sel, position: NSPoint) -> u64 {
@@ -3556,9 +3562,15 @@ fn drag_event_position(window_state: &Mutex<MacWindowState>, dragging_info: id) 
     let drag_location: NSPoint = unsafe { msg_send![dragging_info, draggingLocation] };
     let lock = window_state.lock();
     let native_view = lock.native_view.as_ptr() as id;
-    let local_point: NSPoint =
-        unsafe { msg_send![native_view, convertPoint:drag_location fromView:nil] };
-    point(px(local_point.x as f32), px(local_point.y as f32))
+    unsafe {
+        let local_point: NSPoint =
+            msg_send![native_view, convertPoint:drag_location fromView:nil];
+        let bounds: NSRect = msg_send![native_view, bounds];
+        point(
+            px(local_point.x as f32),
+            px((bounds.size.height - local_point.y) as f32),
+        )
+    }
 }
 
 fn with_input_handler<F, R>(window: &Object, f: F) -> Option<R>
