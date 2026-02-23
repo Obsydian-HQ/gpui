@@ -845,8 +845,24 @@ pub(crate) unsafe fn configure_native_sidebar_window(
         if manage_window_chrome {
             let current_content_view_controller: id = msg_send![window, contentViewController];
             if current_content_view_controller != host_data.split_view_controller {
+                // Save window styling set by GPUI (set_background_appearance)
+                // before setContentViewController: which may reset them.
+                let saved_opaque: i8 = msg_send![window, isOpaque];
+                let saved_bg_color: id = msg_send![window, backgroundColor];
+                if saved_bg_color != nil {
+                    let _: () = msg_send![saved_bg_color, retain];
+                }
+
                 let _: () =
                     msg_send![window, setContentViewController: host_data.split_view_controller];
+
+                // Restore window styling.
+                let _: () = msg_send![window, setOpaque: saved_opaque];
+                if saved_bg_color != nil {
+                    let _: () = msg_send![window, setBackgroundColor: saved_bg_color];
+                    let _: () = msg_send![saved_bg_color, release];
+                }
+
                 let _: () = msg_send![window, setContentSize: content_size];
                 let _: () =
                     msg_send![window, setContentMinSize: host_data.previous_content_min_size];
@@ -856,6 +872,28 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                 let split_view_controller_view: id =
                     msg_send![host_data.split_view_controller, view];
                 let _: () = msg_send![split_view_controller_view, layoutSubtreeIfNeeded];
+            }
+
+            // When the host app manages its own toolbar, the content (detail)
+            // pane should NOT extend behind the titlebar — only the sidebar
+            // needs full-height layout. This prevents NSBackgroundExtensionView
+            // from mirroring content under the titlebar.
+            if !manage_toolbar {
+                let items: id = msg_send![host_data.split_view_controller, splitViewItems];
+                if items != nil {
+                    let count: u64 = msg_send![items, count];
+                    if count >= 2 {
+                        let content_item: id = msg_send![items, objectAtIndex: 1u64];
+                        let supports_full_height: bool = msg_send![
+                            content_item,
+                            respondsToSelector: sel!(setAllowsFullHeightLayout:)
+                        ];
+                        if supports_full_height {
+                            let _: () =
+                                msg_send![content_item, setAllowsFullHeightLayout: 0i8];
+                        }
+                    }
+                }
             }
         } else {
             let window_content_view: id = msg_send![window, contentView];
