@@ -587,24 +587,8 @@ struct MacPanelState {
 }
 
 impl MacWindowState {
-    fn log_traffic_light_focus_state(&self, event: &str) {
+    fn log_traffic_light_appkit_state(&self, phase: &str) {
         unsafe {
-            let frame = NSWindow::frame(self.native_window);
-            let content_layout_rect: CGRect = msg_send![self.native_window, contentLayoutRect];
-            let content_view: id = msg_send![self.native_window, contentView];
-            let content_view_height = if content_view != nil {
-                NSView::frame(content_view).size.height
-            } else {
-                0.0
-            };
-            let view_height = NSView::frame(self.native_view.as_ptr() as id).size.height;
-            let pane_offset = content_view_height - view_height;
-            let window_number: NSInteger = msg_send![self.native_window, windowNumber];
-            let style_mask: NSWindowStyleMask = msg_send![self.native_window, styleMask];
-            let is_key_window = self.native_window.isKeyWindow() == YES;
-            let app: id = NSApplication::sharedApplication(nil);
-            let app_is_active: BOOL = msg_send![app, isActive];
-
             let close_button: id = msg_send![
                 self.native_window,
                 standardWindowButton: NSWindowButton::NSWindowCloseButton
@@ -637,26 +621,43 @@ impl MacWindowState {
                 None
             };
 
+            let button_container_height = if close_button != nil {
+                let superview: id = msg_send![close_button, superview];
+                if superview != nil {
+                    Some(NSView::frame(superview).size.height)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let button_container_is_flipped = if close_button != nil {
+                let superview: id = msg_send![close_button, superview];
+                if superview != nil {
+                    let is_flipped: BOOL = msg_send![superview, isFlipped];
+                    Some(is_flipped == YES)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             let traffic_light_position = self
                 .traffic_light_position
                 .map(|position| (position.x.0, position.y.0));
+            let app: id = NSApplication::sharedApplication(nil);
+            let app_is_active: BOOL = msg_send![app, isActive];
 
-            eprintln!(
-                "[gpui_focus_debug] event={} window={} key={} app_active={} fullscreen={} style_mask=0x{:x} traffic_pos={:?} native_titlebar={:.2} effective_titlebar={:.2} frame_h={:.2} content_layout_h={:.2} content_view_h={:.2} view_h={:.2} pane_offset={:.2} close={:?} min={:?} zoom={:?}",
-                event,
-                window_number,
-                is_key_window,
+            log::info!(
+                "[appkit_traffic_lights] phase={} key={} app_active={} traffic_pos={:?} container_h={:?} container_flipped={:?} native_titlebar={:.2} close={:?} min={:?} zoom={:?}",
+                phase,
+                self.native_window.isKeyWindow() == YES,
                 app_is_active == YES,
-                self.is_fullscreen(),
-                style_mask.bits(),
                 traffic_light_position,
+                button_container_height,
+                button_container_is_flipped,
                 self.native_titlebar_height().0,
-                self.titlebar_height().0,
-                frame.size.height,
-                content_layout_rect.size.height,
-                content_view_height,
-                view_height,
-                pane_offset,
                 close_frame,
                 min_frame,
                 zoom_frame,
@@ -666,11 +667,9 @@ impl MacWindowState {
 
     fn move_traffic_light(&self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
-            self.log_traffic_light_focus_state("move_traffic_light_before");
             if self.is_fullscreen() {
                 // Moving traffic lights while fullscreen doesn't work,
                 // see https://github.com/zed-industries/zed/issues/4712
-                self.log_traffic_light_focus_state("move_traffic_light_skipped_fullscreen");
                 return;
             }
 
@@ -697,11 +696,28 @@ impl MacWindowState {
                 let mut close_button_frame: CGRect = msg_send![close_button, frame];
                 let mut min_button_frame: CGRect = msg_send![min_button, frame];
                 let mut zoom_button_frame: CGRect = msg_send![zoom_button, frame];
+                let (button_container_height, button_container_is_flipped) = {
+                    let superview: id = msg_send![close_button, superview];
+                    if superview != nil {
+                        let is_flipped: BOOL = msg_send![superview, isFlipped];
+                        (
+                            NSView::frame(superview).size.height as f32,
+                            is_flipped == YES,
+                        )
+                    } else {
+                        (titlebar_height.0, false)
+                    }
+                };
+                let y = if button_container_is_flipped {
+                    traffic_light_position.y
+                } else {
+                    px(button_container_height)
+                        - traffic_light_position.y
+                        - px(close_button_frame.size.height as f32)
+                };
                 let mut origin = point(
                     traffic_light_position.x,
-                    titlebar_height
-                        - traffic_light_position.y
-                        - px(close_button_frame.size.height as f32),
+                    y,
                 );
                 let button_spacing =
                     px((min_button_frame.origin.x - close_button_frame.origin.x) as f32);
@@ -718,8 +734,6 @@ impl MacWindowState {
                 let _: () = msg_send![zoom_button, setFrame: zoom_button_frame];
                 origin.x += button_spacing;
             }
-
-            self.log_traffic_light_focus_state("move_traffic_light_after");
         }
     }
 
@@ -3205,14 +3219,12 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     let is_active = unsafe { lock.native_window.isKeyWindow() == YES };
-    let selector_name = if selector == sel!(windowDidBecomeKey:) {
-        "windowDidBecomeKey"
-    } else if selector == sel!(windowDidResignKey:) {
-        "windowDidResignKey"
-    } else {
-        "unknown_key_selector"
-    };
-    lock.log_traffic_light_focus_state(selector_name);
+    let selector_name = if selector == sel!(windowDidBecomeKey:) { "windowDidBecomeKey" } else if selector == sel!(windowDidResignKey:) { "windowDidResignKey" } else { "unknown_key_selector" };
+    log::info!(
+        "[appkit_key_status] selector={} is_active={}",
+        selector_name,
+        is_active
+    );
 
     // When opening a pop-up while the application isn't active, Cocoa sends a spurious
     // `windowDidBecomeKey` message to the previous key window even though that window
@@ -3224,22 +3236,16 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     // in theory, we're not supposed to invoke this method manually but it balances out
     // the spurious `becomeKeyWindow` event and helps us work around that bug.
     if selector == sel!(windowDidBecomeKey:) && !is_active {
-        lock.log_traffic_light_focus_state("windowDidBecomeKey_spurious_before_resign");
+        log::info!("[appkit_key_status] spurious windowDidBecomeKey detected");
         unsafe {
             let _: () = msg_send![lock.native_window, resignKeyWindow];
             return;
         }
     }
 
-    // Keep traffic lights stable across key-status transitions (e.g. cmd+tab)
-    // by applying position synchronously in this delegate callback.
+    lock.log_traffic_light_appkit_state("key_status_sync_before_move");
     lock.move_traffic_light();
-    let sync_moved_event = if is_active {
-        "key_status_sync_after_move_active"
-    } else {
-        "key_status_sync_after_move_inactive"
-    };
-    lock.log_traffic_light_focus_state(sync_moved_event);
+    lock.log_traffic_light_appkit_state("key_status_sync_after_move");
 
     let executor = lock.foreground_executor.clone();
     drop(lock);
@@ -3275,17 +3281,18 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     executor
         .spawn(async move {
             let mut lock = window_state.as_ref().lock();
-            let async_event = if is_active {
-                "key_status_async_active"
-            } else {
-                "key_status_async_inactive"
-            };
-            lock.log_traffic_light_focus_state(async_event);
-
+            log::info!("[appkit_key_status] async callback is_active={}", is_active);
+            lock.log_traffic_light_appkit_state("key_status_async_before_move");
+            lock.move_traffic_light();
+            lock.log_traffic_light_appkit_state("key_status_async_after_move");
             if let Some(mut callback) = lock.activate_callback.take() {
                 drop(lock);
                 callback(is_active);
-                window_state.lock().activate_callback = Some(callback);
+                let mut lock = window_state.lock();
+                lock.activate_callback = Some(callback);
+                lock.log_traffic_light_appkit_state("key_status_after_activate_callback_before_move");
+                lock.move_traffic_light();
+                lock.log_traffic_light_appkit_state("key_status_after_activate_callback_after_move");
             };
         })
         .detach();
@@ -4290,6 +4297,7 @@ unsafe fn create_toolbar_search_item(
         let move_up_identifier = identifier_string.to_owned();
         let move_down_identifier = identifier_string.to_owned();
         let cancel_identifier = identifier_string.to_owned();
+        let begin_editing_identifier = identifier_string.to_owned();
         let end_editing_identifier = identifier_string.to_owned();
 
         let on_change = Some(Box::new(move |text: String| {
@@ -4352,9 +4360,19 @@ unsafe fn create_toolbar_search_item(
             }
         }) as Box<dyn Fn(String)>);
 
+        let on_begin_editing_cb = Some(Box::new(move || {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&begin_editing_identifier)
+                && let Some(callback) = search_item.on_begin_editing.as_ref()
+            {
+                callback();
+            }
+        }) as Box<dyn Fn()>);
+
         let callbacks = crate::platform::native_controls::TextFieldCallbacks {
             on_change,
-            on_begin_editing: None,
+            on_begin_editing: on_begin_editing_cb,
             on_end_editing,
             on_submit,
             on_move_up,

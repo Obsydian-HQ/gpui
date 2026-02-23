@@ -194,19 +194,9 @@ fn transfer_first_responder_to_main_view(surface_view: &Object, window_state: &A
     unsafe {
         let window: id = msg_send![surface_view, window];
         if window == nil {
-            log::warn!("[GPUISurfaceView] transfer_first_responder: surface view has no window");
             return;
         }
-        let current_responder: id = msg_send![window, firstResponder];
-        let success: BOOL = msg_send![window, makeFirstResponder: main_view];
-        let new_responder: id = msg_send![window, firstResponder];
-        log::info!(
-            "[GPUISurfaceView] transfer_first_responder: success={}, prev_responder={:?}, new_responder={:?}, main_view={:?}",
-            success,
-            current_responder,
-            new_responder,
-            main_view,
-        );
+        let _: BOOL = msg_send![window, makeFirstResponder: main_view];
     }
 }
 
@@ -324,11 +314,9 @@ extern "C" fn handle_surface_view_event(this: &Object, _sel: Sel, native_event: 
 
 /// Forwards keyDown: to the main window view after ensuring it is first responder.
 extern "C" fn handle_surface_key_down(this: &Object, _sel: Sel, native_event: id) {
-    log::info!("[GPUISurfaceView] handle_surface_key_down: forwarding to main view");
     let Some(window_state) = get_window_state(this) else {
         return;
     };
-    transfer_first_responder_to_main_view(this, &window_state);
     let main_view = get_main_native_view(&window_state);
     unsafe {
         let _: () = msg_send![main_view, keyDown: native_event];
@@ -337,7 +325,6 @@ extern "C" fn handle_surface_key_down(this: &Object, _sel: Sel, native_event: id
 
 /// Forwards keyUp: to the main window view.
 extern "C" fn handle_surface_key_up(this: &Object, _sel: Sel, native_event: id) {
-    log::info!("[GPUISurfaceView] handle_surface_key_up: forwarding to main view");
     let Some(window_state) = get_window_state(this) else {
         return;
     };
@@ -349,7 +336,6 @@ extern "C" fn handle_surface_key_up(this: &Object, _sel: Sel, native_event: id) 
 
 /// Forwards flagsChanged: to the main window view (modifier key tracking).
 extern "C" fn handle_surface_flags_changed(this: &Object, _sel: Sel, native_event: id) {
-    log::info!("[GPUISurfaceView] handle_surface_flags_changed: forwarding to main view");
     let Some(window_state) = get_window_state(this) else {
         return;
     };

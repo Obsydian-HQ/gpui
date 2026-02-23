@@ -559,6 +559,7 @@ pub(crate) struct PlatformNativeToolbarSearchFieldItem {
     pub on_move_up: Option<Box<dyn Fn()>>,
     pub on_move_down: Option<Box<dyn Fn()>>,
     pub on_cancel: Option<Box<dyn Fn()>>,
+    pub on_begin_editing: Option<Box<dyn Fn()>>,
     pub on_end_editing: Option<Box<dyn Fn(String)>>,
 }
 

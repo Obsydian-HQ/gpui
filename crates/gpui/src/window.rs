@@ -752,6 +752,7 @@ pub struct NativeToolbarSearchField {
     on_move_up: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
     on_move_down: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
     on_cancel: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_begin_editing: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
     on_end_editing: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
 }
 
@@ -769,6 +770,7 @@ impl NativeToolbarSearchField {
             on_move_up: None,
             on_move_down: None,
             on_cancel: None,
+            on_begin_editing: None,
             on_end_editing: None,
         }
     }
@@ -839,6 +841,15 @@ impl NativeToolbarSearchField {
         listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_cancel = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the search field gains focus (editing begins).
+    pub fn on_begin_editing(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_begin_editing = Some(Box::new(listener));
         self
     }
 
@@ -1473,6 +1484,19 @@ impl NativeToolbar {
                         )
                     });
 
+                    let begin_editing_id = search.id.clone();
+                    let on_begin_editing = search.on_begin_editing.map(|handler| {
+                        schedule_native_toolbar_callback_no_args(
+                            Rc::new(handler),
+                            move || NativeToolbarSearchEvent {
+                                item_id: begin_editing_id.clone(),
+                                text: String::new(),
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
                     let end_editing_id = search.id.clone();
                     let on_end_editing = search.on_end_editing.map(|handler| {
                         schedule_native_toolbar_callback(
@@ -1497,6 +1521,7 @@ impl NativeToolbar {
                         on_move_up,
                         on_move_down,
                         on_cancel,
+                        on_begin_editing,
                         on_end_editing,
                     })
                 }
@@ -4871,7 +4896,18 @@ impl Window {
             surface.scene = std::mem::replace(&mut self.next_frame.scene, main_scene);
             surface.mouse_listeners = std::mem::replace(&mut self.next_frame.mouse_listeners, main_mouse_listeners);
             surface.hitboxes = std::mem::replace(&mut self.next_frame.hitboxes, main_hitboxes);
-            self.next_frame.input_handlers = main_input_handlers;
+            // Preserve any input handlers registered by surface elements (e.g.
+            // focused text fields) so they survive to the set_input_handler call
+            // after draw. The main frame handlers are restored first, then surface
+            // handlers are appended — .pop() at line ~4600 will pick up whichever
+            // was last pushed (i.e. the focused element's handler).
+            let surface_input_handlers = std::mem::replace(
+                &mut self.next_frame.input_handlers,
+                main_input_handlers,
+            );
+            self.next_frame
+                .input_handlers
+                .extend(surface_input_handlers);
             self.next_frame.cursor_styles = main_cursor_styles;
             self.next_frame.tooltip_requests = main_tooltip_requests;
 
