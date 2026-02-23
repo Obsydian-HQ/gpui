@@ -485,6 +485,9 @@ fn build_text_field_callbacks(
         on_begin_editing: begin_cb,
         on_end_editing: end_cb,
         on_submit: submit_cb,
+        on_move_up: None,
+        on_move_down: None,
+        on_cancel: None,
     }
 }
 

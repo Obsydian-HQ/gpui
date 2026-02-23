@@ -23,6 +23,9 @@ pub(crate) struct TextFieldCallbacks {
     pub on_begin_editing: Option<Box<dyn Fn()>>,
     pub on_end_editing: Option<Box<dyn Fn(String)>>,
     pub on_submit: Option<Box<dyn Fn(String)>>,
+    pub on_move_up: Option<Box<dyn Fn()>>,
+    pub on_move_down: Option<Box<dyn Fn()>>,
+    pub on_cancel: Option<Box<dyn Fn()>>,
 }
 
 static mut TEXT_FIELD_DELEGATE_CLASS: *const Class = ptr::null();
@@ -123,20 +126,37 @@ extern "C" fn text_do_command(
     command_selector: Sel,
 ) -> i8 {
     unsafe {
-        // Check if the command is insertNewline: (Enter key)
+        let ptr: *mut c_void = *this.get_ivar(CALLBACK_IVAR);
+        if ptr.is_null() {
+            return 0;
+        }
+        let callbacks = &*(ptr as *const TextFieldCallbacks);
+
         if command_selector == sel!(insertNewline:) {
-            let ptr: *mut c_void = *this.get_ivar(CALLBACK_IVAR);
-            if !ptr.is_null() {
-                let callbacks = &*(ptr as *const TextFieldCallbacks);
-                if let Some(ref on_submit) = callbacks.on_submit {
-                    let ns_str: id = msg_send![control, stringValue];
-                    let text = string_from_ns_string(ns_str);
-                    on_submit(text);
-                    return 1; // YES — we handled it
-                }
+            if let Some(ref on_submit) = callbacks.on_submit {
+                let ns_str: id = msg_send![control, stringValue];
+                let text = string_from_ns_string(ns_str);
+                on_submit(text);
+                return 1;
+            }
+        } else if command_selector == sel!(moveUp:) {
+            if let Some(ref on_move_up) = callbacks.on_move_up {
+                on_move_up();
+                return 1;
+            }
+        } else if command_selector == sel!(moveDown:) {
+            if let Some(ref on_move_down) = callbacks.on_move_down {
+                on_move_down();
+                return 1;
+            }
+        } else if command_selector == sel!(cancelOperation:) {
+            if let Some(ref on_cancel) = callbacks.on_cancel {
+                on_cancel();
+                return 1;
             }
         }
-        0 // NO — let the system handle it
+
+        0
     }
 }
 

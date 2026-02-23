@@ -40,6 +40,9 @@ pub fn native_search_field(id: impl Into<ElementId>) -> NativeSearchField {
         on_submit: None,
         on_focus: None,
         on_blur: None,
+        on_move_up: None,
+        on_move_down: None,
+        on_cancel: None,
         style: StyleRefinement::default(),
     }
 }
@@ -56,6 +59,9 @@ pub struct NativeSearchField {
     on_submit: Option<Box<dyn Fn(&SearchSubmitEvent, &mut Window, &mut App) + 'static>>,
     on_focus: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_blur: Option<Box<dyn Fn(&SearchSubmitEvent, &mut Window, &mut App) + 'static>>,
+    on_move_up: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_move_down: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_cancel: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
     style: StyleRefinement,
 }
 
@@ -120,6 +126,33 @@ impl NativeSearchField {
         listener: impl Fn(&SearchSubmitEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_blur = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the up-arrow key is pressed.
+    pub fn on_move_up(
+        mut self,
+        listener: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_move_up = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the down-arrow key is pressed.
+    pub fn on_move_down(
+        mut self,
+        listener: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_move_down = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when Escape is pressed.
+    pub fn on_cancel(
+        mut self,
+        listener: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_cancel = Some(Box::new(listener));
         self
     }
 }
@@ -231,6 +264,9 @@ impl Element for NativeSearchField {
             let on_submit = self.on_submit.take();
             let on_focus = self.on_focus.take();
             let on_blur = self.on_blur.take();
+            let on_move_up = self.on_move_up.take();
+            let on_move_down = self.on_move_down.take();
+            let on_cancel = self.on_cancel.take();
             let value = self.value.clone();
             let placeholder = self.placeholder.clone();
             let sends_immediately = self.sends_search_string_immediately;
@@ -259,10 +295,20 @@ impl Element for NativeSearchField {
                                 state.current_placeholder = placeholder.clone();
                             }
                             if state.current_value != value {
-                                native_controls::set_native_search_field_string_value(
+                                // Read the actual NSSearchField value to avoid calling
+                                // setStringValue: when the field already shows the
+                                // correct text (e.g. user just typed it). Calling
+                                // setStringValue: on a focused field kills the editing
+                                // session and causes focus loss.
+                                let actual = native_controls::get_native_text_field_string_value(
                                     state.search_field_ptr as cocoa::base::id,
-                                    &value,
                                 );
+                                if actual.as_str() != value.as_ref() {
+                                    native_controls::set_native_search_field_string_value(
+                                        state.search_field_ptr as cocoa::base::id,
+                                        &value,
+                                    );
+                                }
                                 state.current_value = value.clone();
                             }
                             if state.current_sends_immediately != sends_immediately {
@@ -293,6 +339,9 @@ impl Element for NativeSearchField {
                             on_submit,
                             on_focus,
                             on_blur,
+                            on_move_up,
+                            on_move_down,
+                            on_cancel,
                             next_frame_callbacks,
                             invalidator,
                         );
@@ -302,7 +351,6 @@ impl Element for NativeSearchField {
                                 callbacks,
                             );
                         }
-
                         state
                     } else {
                         let (search_field_ptr, delegate_ptr) = unsafe {
@@ -338,6 +386,9 @@ impl Element for NativeSearchField {
                                 on_submit,
                                 on_focus,
                                 on_blur,
+                                on_move_up,
+                                on_move_down,
+                                on_cancel,
                                 next_frame_callbacks,
                                 invalidator,
                             );
@@ -371,6 +422,9 @@ fn build_search_field_callbacks(
     on_submit: Option<Box<dyn Fn(&SearchSubmitEvent, &mut Window, &mut App) + 'static>>,
     on_focus: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
     on_blur: Option<Box<dyn Fn(&SearchSubmitEvent, &mut Window, &mut App) + 'static>>,
+    on_move_up: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_move_down: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    on_cancel: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     invalidator: crate::WindowInvalidator,
 ) -> crate::platform::native_controls::TextFieldCallbacks {
@@ -411,11 +465,38 @@ fn build_search_field_callbacks(
         )
     });
 
+    let move_up_cb = on_move_up.map(|h| {
+        schedule_native_focus_callback(
+            Rc::new(h),
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
+    });
+
+    let move_down_cb = on_move_down.map(|h| {
+        schedule_native_focus_callback(
+            Rc::new(h),
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
+    });
+
+    let cancel_cb = on_cancel.map(|h| {
+        schedule_native_focus_callback(
+            Rc::new(h),
+            next_frame_callbacks.clone(),
+            invalidator.clone(),
+        )
+    });
+
     TextFieldCallbacks {
         on_change: change_cb,
         on_begin_editing: begin_cb,
         on_end_editing: end_cb,
         on_submit: submit_cb,
+        on_move_up: move_up_cb,
+        on_move_down: move_down_cb,
+        on_cancel: cancel_cb,
     }
 }
 

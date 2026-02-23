@@ -1054,12 +1054,12 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                             addSubview: host_data.embedded_content_view
                         ];
                     }
+
+                    // Restore first responder after reparenting so the view
+                    // continues to receive keyboard events.
+                    let _: () = msg_send![window, makeFirstResponder: host_data.embedded_content_view];
                 }
             }
-
-            // Restore first responder after reparenting so the view
-            // continues to receive keyboard events.
-            let _: () = msg_send![window, makeFirstResponder: host_data.embedded_content_view];
 
             // Hide the placeholder label when content is embedded in the detail pane.
             if !embed_in_sidebar && host_data.detail_label != nil {

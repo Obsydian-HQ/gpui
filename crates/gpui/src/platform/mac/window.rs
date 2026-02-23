@@ -1921,7 +1921,22 @@ impl PlatformWindow for MacWindow {
                 }
             },
             PlatformNativePanelAnchor::Point { x, y } => unsafe {
-                crate::platform::native_controls::set_native_panel_frame_top_left(panel, x, y);
+                // x, y are in GPUI screen coordinates (top-left origin).
+                // Convert to Cocoa screen coordinates (bottom-left origin) for
+                // setFrameTopLeftPoint:.
+                let screen = NSWindow::screen(this.native_window);
+                let (cocoa_x, cocoa_y) = if screen != nil {
+                    let screen_frame = NSScreen::frame(screen);
+                    (
+                        x + screen_frame.origin.x,
+                        screen_frame.size.height - y + screen_frame.origin.y,
+                    )
+                } else {
+                    (x, y)
+                };
+                crate::platform::native_controls::set_native_panel_frame_top_left(
+                    panel, cocoa_x, cocoa_y,
+                );
                 crate::platform::native_controls::show_native_panel(panel);
             },
             PlatformNativePanelAnchor::Centered => unsafe {
@@ -4128,6 +4143,9 @@ unsafe fn create_toolbar_search_item(
             on_begin_editing: None,
             on_end_editing: None,
             on_submit,
+            on_move_up: None,
+            on_move_down: None,
+            on_cancel: None,
         };
         let delegate =
             crate::platform::native_controls::set_native_text_field_delegate(field, callbacks);
