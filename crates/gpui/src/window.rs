@@ -1211,6 +1211,9 @@ pub enum NativeToolbarItem {
     MenuButton(NativeToolbarMenuButton),
     /// A text-only label item with no click behavior.
     Label(NativeToolbarLabel),
+    /// The system-provided sidebar toggle button (NSToolbarToggleSidebarItemIdentifier).
+    /// macOS handles the button appearance and the `toggleSidebar:` action automatically.
+    SidebarToggle,
 }
 
 impl NativeToolbarItem {
@@ -1350,6 +1353,7 @@ impl NativeToolbar {
                 }
                 NativeToolbarItem::Space => PlatformNativeToolbarItem::Space,
                 NativeToolbarItem::FlexibleSpace => PlatformNativeToolbarItem::FlexibleSpace,
+                NativeToolbarItem::SidebarToggle => PlatformNativeToolbarItem::SidebarToggle,
                 NativeToolbarItem::SearchField(search) => {
                     let search_id = search.id.clone();
                     let on_change = search.on_change.map(|handler| {

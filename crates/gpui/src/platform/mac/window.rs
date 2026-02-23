@@ -133,6 +133,7 @@ unsafe extern "C" {
 
     static NSToolbarFlexibleSpaceItemIdentifier: id;
     static NSToolbarSpaceItemIdentifier: id;
+    static NSToolbarToggleSidebarItemIdentifier: id;
 }
 
 #[ctor]
@@ -463,7 +464,9 @@ impl ToolbarState {
             PlatformNativeToolbarItem::ComboBox(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::MenuButton(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::Label(item) => item.id.as_ref() == identifier,
-            PlatformNativeToolbarItem::Space | PlatformNativeToolbarItem::FlexibleSpace => false,
+            PlatformNativeToolbarItem::Space
+            | PlatformNativeToolbarItem::FlexibleSpace
+            | PlatformNativeToolbarItem::SidebarToggle => false,
         })
     }
 }
@@ -3717,6 +3720,13 @@ unsafe fn build_native_toolbar_for_window(
                     allowed_item_identifiers.push(label.id.clone());
                     default_item_identifiers.push(label.id.clone());
                 }
+                PlatformNativeToolbarItem::SidebarToggle => {
+                    let identifier = SharedString::from(ns_string_to_owned(
+                        NSToolbarToggleSidebarItemIdentifier,
+                    ));
+                    allowed_item_identifiers.push(identifier.clone());
+                    default_item_identifiers.push(identifier);
+                }
             }
         }
 
@@ -3807,7 +3817,9 @@ extern "C" fn toolbar_item_for_identifier(
         let is_space: BOOL = msg_send![identifier, isEqual: NSToolbarSpaceItemIdentifier];
         let is_flexible_space: BOOL =
             msg_send![identifier, isEqual: NSToolbarFlexibleSpaceItemIdentifier];
-        if is_space == YES || is_flexible_space == YES {
+        let is_sidebar_toggle: BOOL =
+            msg_send![identifier, isEqual: NSToolbarToggleSidebarItemIdentifier];
+        if is_space == YES || is_flexible_space == YES || is_sidebar_toggle == YES {
             return nil;
         }
 
@@ -3838,6 +3850,7 @@ extern "C" fn toolbar_item_for_identifier(
             }
             Some(PlatformNativeToolbarItem::Space)
             | Some(PlatformNativeToolbarItem::FlexibleSpace)
+            | Some(PlatformNativeToolbarItem::SidebarToggle)
             | None => nil,
         }
     }

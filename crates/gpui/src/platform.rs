@@ -528,6 +528,7 @@ pub(crate) enum PlatformNativeToolbarItem {
     ComboBox(PlatformNativeToolbarComboBoxItem),
     MenuButton(PlatformNativeToolbarMenuButtonItem),
     Label(PlatformNativeToolbarLabelItem),
+    SidebarToggle,
 }
 
 pub(crate) struct PlatformNativeToolbarLabelItem {
