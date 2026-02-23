@@ -529,6 +529,7 @@ pub(crate) enum PlatformNativeToolbarItem {
     MenuButton(PlatformNativeToolbarMenuButtonItem),
     Label(PlatformNativeToolbarLabelItem),
     SidebarToggle,
+    SidebarTrackingSeparator,
 }
 
 pub(crate) struct PlatformNativeToolbarLabelItem {

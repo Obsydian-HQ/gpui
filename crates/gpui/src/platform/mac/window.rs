@@ -134,6 +134,7 @@ unsafe extern "C" {
     static NSToolbarFlexibleSpaceItemIdentifier: id;
     static NSToolbarSpaceItemIdentifier: id;
     static NSToolbarToggleSidebarItemIdentifier: id;
+    static NSToolbarSidebarTrackingSeparatorItemIdentifier: id;
 }
 
 #[ctor]
@@ -466,7 +467,8 @@ impl ToolbarState {
             PlatformNativeToolbarItem::Label(item) => item.id.as_ref() == identifier,
             PlatformNativeToolbarItem::Space
             | PlatformNativeToolbarItem::FlexibleSpace
-            | PlatformNativeToolbarItem::SidebarToggle => false,
+            | PlatformNativeToolbarItem::SidebarToggle
+            | PlatformNativeToolbarItem::SidebarTrackingSeparator => false,
         })
     }
 }
@@ -3678,6 +3680,14 @@ unsafe fn build_native_toolbar_for_window(
             let _: () = msg_send![native_window, setTitle: ns_string(title.as_ref())];
         }
 
+        let has_sidebar_items = toolbar.items.iter().any(|item| {
+            matches!(
+                item,
+                PlatformNativeToolbarItem::SidebarToggle
+                    | PlatformNativeToolbarItem::SidebarTrackingSeparator
+            )
+        });
+
         let mut allowed_item_identifiers = Vec::with_capacity(toolbar.items.len());
         let mut default_item_identifiers = Vec::with_capacity(toolbar.items.len());
         for item in &toolbar.items {
@@ -3727,6 +3737,13 @@ unsafe fn build_native_toolbar_for_window(
                     allowed_item_identifiers.push(identifier.clone());
                     default_item_identifiers.push(identifier);
                 }
+                PlatformNativeToolbarItem::SidebarTrackingSeparator => {
+                    let identifier = SharedString::from(ns_string_to_owned(
+                        NSToolbarSidebarTrackingSeparatorItemIdentifier,
+                    ));
+                    allowed_item_identifiers.push(identifier.clone());
+                    default_item_identifiers.push(identifier);
+                }
             }
         }
 
@@ -3755,6 +3772,14 @@ unsafe fn build_native_toolbar_for_window(
             msg_send![toolbar_obj, setSizeMode: toolbar_size_mode_to_native(toolbar.size_mode)];
 
         let _: () = msg_send![native_window, setToolbar: toolbar_obj];
+
+        if has_sidebar_items {
+            let supports_toolbar_style: bool =
+                msg_send![native_window, respondsToSelector: sel!(setToolbarStyle:)];
+            if supports_toolbar_style {
+                let _: () = msg_send![native_window, setToolbarStyle: 3i64];
+            }
+        }
 
         MacToolbarState {
             toolbar: toolbar_obj,
@@ -3819,7 +3844,13 @@ extern "C" fn toolbar_item_for_identifier(
             msg_send![identifier, isEqual: NSToolbarFlexibleSpaceItemIdentifier];
         let is_sidebar_toggle: BOOL =
             msg_send![identifier, isEqual: NSToolbarToggleSidebarItemIdentifier];
-        if is_space == YES || is_flexible_space == YES || is_sidebar_toggle == YES {
+        let is_sidebar_separator: BOOL =
+            msg_send![identifier, isEqual: NSToolbarSidebarTrackingSeparatorItemIdentifier];
+        if is_space == YES
+            || is_flexible_space == YES
+            || is_sidebar_toggle == YES
+            || is_sidebar_separator == YES
+        {
             return nil;
         }
 
@@ -3851,6 +3882,7 @@ extern "C" fn toolbar_item_for_identifier(
             Some(PlatformNativeToolbarItem::Space)
             | Some(PlatformNativeToolbarItem::FlexibleSpace)
             | Some(PlatformNativeToolbarItem::SidebarToggle)
+            | Some(PlatformNativeToolbarItem::SidebarTrackingSeparator)
             | None => nil,
         }
     }

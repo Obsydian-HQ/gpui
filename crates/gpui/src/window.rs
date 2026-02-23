@@ -1214,6 +1214,10 @@ pub enum NativeToolbarItem {
     /// The system-provided sidebar toggle button (NSToolbarToggleSidebarItemIdentifier).
     /// macOS handles the button appearance and the `toggleSidebar:` action automatically.
     SidebarToggle,
+    /// The system-provided sidebar tracking separator (NSToolbarSidebarTrackingSeparatorItemIdentifier).
+    /// Items before this separator appear in the sidebar area of the titlebar;
+    /// items after it appear in the main content area.
+    SidebarTrackingSeparator,
 }
 
 impl NativeToolbarItem {
@@ -1354,6 +1358,9 @@ impl NativeToolbar {
                 NativeToolbarItem::Space => PlatformNativeToolbarItem::Space,
                 NativeToolbarItem::FlexibleSpace => PlatformNativeToolbarItem::FlexibleSpace,
                 NativeToolbarItem::SidebarToggle => PlatformNativeToolbarItem::SidebarToggle,
+                NativeToolbarItem::SidebarTrackingSeparator => {
+                    PlatformNativeToolbarItem::SidebarTrackingSeparator
+                }
                 NativeToolbarItem::SearchField(search) => {
                     let search_id = search.id.clone();
                     let on_change = search.on_change.map(|handler| {
