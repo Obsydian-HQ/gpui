@@ -102,6 +102,8 @@ pub(crate) struct SurfaceState {
     pub dirty: bool,
     pub mouse_listeners: Vec<Option<AnyMouseListener>>,
     pub hitboxes: Vec<Hitbox>,
+    pub mouse_position: Point<Pixels>,
+    pub mouse_hit_test: HitTest,
 }
 
 pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
@@ -747,6 +749,10 @@ pub struct NativeToolbarSearchField {
     max_width: Pixels,
     on_change: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
     on_submit: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_move_up: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_move_down: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_cancel: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
+    on_end_editing: Option<Box<dyn Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static>>,
 }
 
 impl NativeToolbarSearchField {
@@ -760,6 +766,10 @@ impl NativeToolbarSearchField {
             max_width: px(320.0),
             on_change: None,
             on_submit: None,
+            on_move_up: None,
+            on_move_down: None,
+            on_cancel: None,
+            on_end_editing: None,
         }
     }
 
@@ -802,6 +812,42 @@ impl NativeToolbarSearchField {
         listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_submit = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the up arrow key is pressed.
+    pub fn on_move_up(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_move_up = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the down arrow key is pressed.
+    pub fn on_move_down(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_move_down = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when Escape is pressed.
+    pub fn on_cancel(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_cancel = Some(Box::new(listener));
+        self
+    }
+
+    /// Registers a callback invoked when the search field loses focus (editing ends).
+    pub fn on_end_editing(
+        mut self,
+        listener: impl Fn(&NativeToolbarSearchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_end_editing = Some(Box::new(listener));
         self
     }
 }
@@ -1388,6 +1434,58 @@ impl NativeToolbar {
                         )
                     });
 
+                    let move_up_id = search.id.clone();
+                    let on_move_up = search.on_move_up.map(|handler| {
+                        schedule_native_toolbar_callback_no_args(
+                            Rc::new(handler),
+                            move || NativeToolbarSearchEvent {
+                                item_id: move_up_id.clone(),
+                                text: String::new(),
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let move_down_id = search.id.clone();
+                    let on_move_down = search.on_move_down.map(|handler| {
+                        schedule_native_toolbar_callback_no_args(
+                            Rc::new(handler),
+                            move || NativeToolbarSearchEvent {
+                                item_id: move_down_id.clone(),
+                                text: String::new(),
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let cancel_id = search.id.clone();
+                    let on_cancel = search.on_cancel.map(|handler| {
+                        schedule_native_toolbar_callback_no_args(
+                            Rc::new(handler),
+                            move || NativeToolbarSearchEvent {
+                                item_id: cancel_id.clone(),
+                                text: String::new(),
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
+                    let end_editing_id = search.id.clone();
+                    let on_end_editing = search.on_end_editing.map(|handler| {
+                        schedule_native_toolbar_callback(
+                            Rc::new(handler),
+                            move |text: String| NativeToolbarSearchEvent {
+                                item_id: end_editing_id.clone(),
+                                text,
+                            },
+                            next_frame_callbacks.clone(),
+                            invalidator.clone(),
+                        )
+                    });
+
                     PlatformNativeToolbarItem::SearchField(PlatformNativeToolbarSearchFieldItem {
                         id: search.id,
                         placeholder: search.placeholder,
@@ -1396,6 +1494,10 @@ impl NativeToolbar {
                         max_width: search.max_width,
                         on_change,
                         on_submit,
+                        on_move_up,
+                        on_move_down,
+                        on_cancel,
+                        on_end_editing,
                     })
                 }
                 NativeToolbarItem::SegmentedControl(segmented) => {
@@ -1748,6 +1850,7 @@ fn convert_popover_content_items(
                 detail,
                 on_click,
                 enabled,
+                selected,
             } => {
                 let platform_on_click = on_click.map(|handler| -> Box<dyn Fn()> {
                     let handler = Rc::new(handler);
@@ -1767,6 +1870,7 @@ fn convert_popover_content_items(
                     detail,
                     on_click: platform_on_click,
                     enabled,
+                    selected,
                 }
             }
             NativePopoverContentItem::Separator => PlatformNativePopoverContentItem::Separator,
@@ -1914,6 +2018,8 @@ pub enum NativePopoverContentItem {
         on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
         /// Whether the row is interactive.
         enabled: bool,
+        /// Whether the row is visually selected (e.g. via keyboard navigation).
+        selected: bool,
     },
     /// A horizontal separator line.
     Separator,
@@ -2145,6 +2251,7 @@ pub struct NativePopoverClickableRow {
     detail: Option<SharedString>,
     on_click: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
     enabled: bool,
+    selected: bool,
 }
 
 impl NativePopoverClickableRow {
@@ -2156,6 +2263,7 @@ impl NativePopoverClickableRow {
             detail: None,
             on_click: None,
             enabled: true,
+            selected: false,
         }
     }
 
@@ -2182,6 +2290,12 @@ impl NativePopoverClickableRow {
         self.enabled = enabled;
         self
     }
+
+    /// Sets whether the row is visually selected (e.g. via keyboard navigation).
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
 }
 
 impl From<NativePopoverClickableRow> for NativePopoverContentItem {
@@ -2192,6 +2306,7 @@ impl From<NativePopoverClickableRow> for NativePopoverContentItem {
             detail: builder.detail,
             on_click: builder.on_click,
             enabled: builder.enabled,
+            selected: builder.selected,
         }
     }
 }
@@ -4287,6 +4402,8 @@ impl Window {
             dirty: true,
             mouse_listeners: Vec::new(),
             hitboxes: Vec::new(),
+            mouse_position: Point::default(),
+            mouse_hit_test: HitTest::default(),
         });
 
         GpuiSurfaceHandle {
@@ -4686,9 +4803,18 @@ impl Window {
             let root_view = surface.root_view.clone();
             let surface_size = surface.gpui_surface.content_size();
             let native_view_ptr = surface.gpui_surface.native_view_ptr();
+            let surface_mouse_position = surface.mouse_position;
+            let surface_mouse_hit_test = surface.mouse_hit_test.clone();
 
             // Push native view override so native controls parent to the surface's NSView
             self.push_native_view_override(native_view_ptr);
+
+            // Swap in the surface's mouse state so is_hovered() works correctly
+            // during this surface's render pass.
+            let saved_mouse_position = self.mouse_position;
+            let saved_mouse_hit_test = self.mouse_hit_test.clone();
+            self.mouse_position = surface_mouse_position;
+            self.mouse_hit_test = surface_mouse_hit_test;
 
             // Prepaint the surface's element tree
             self.invalidator.set_phase(DrawPhase::Prepaint);
@@ -4706,6 +4832,10 @@ impl Window {
 
             // Pop native view override
             self.pop_native_view_override();
+
+            // Restore the main window's mouse state
+            self.mouse_position = saved_mouse_position;
+            self.mouse_hit_test = saved_mouse_hit_test;
 
             // Extract the surface's scene, listeners, and hitboxes into
             // SurfaceState so they can be used for surface event dispatch.
@@ -6437,6 +6567,18 @@ impl Window {
         event: PlatformInput,
         cx: &mut App,
     ) {
+        let event_name = match &event {
+            PlatformInput::MouseDown(_) => "MouseDown",
+            PlatformInput::MouseUp(_) => "MouseUp",
+            PlatformInput::MouseMove(_) => "MouseMove",
+            PlatformInput::MouseExited(_) => "MouseExited",
+            PlatformInput::ScrollWheel(_) => "ScrollWheel",
+            PlatformInput::KeyDown(_) => "KeyDown",
+            PlatformInput::KeyUp(_) => "KeyUp",
+            PlatformInput::ModifiersChanged(_) => "ModifiersChanged",
+            _ => "Other",
+        };
+
         // Find the surface that owns this native view.
         let surface_id = self.surfaces.iter().find_map(|(id, s)| {
             if s.gpui_surface.native_view_ptr() == native_view_ptr {
@@ -6445,7 +6587,12 @@ impl Window {
                 None
             }
         });
-        let Some(surface_id) = surface_id else { return };
+        let Some(surface_id) = surface_id else {
+            log::warn!("[dispatch_surface_event] no surface found for native_view_ptr={:?}, event={}", native_view_ptr, event_name);
+            return;
+        };
+
+        log::info!("[dispatch_surface_event] event={}, surface_id={:?}, num_surfaces={}", event_name, surface_id, self.surfaces.len());
 
         // Extract the mouse position from the event.
         let event_position = match &event {
@@ -6454,7 +6601,10 @@ impl Window {
             PlatformInput::MouseMove(e) => e.position,
             PlatformInput::ScrollWheel(e) => e.position,
             PlatformInput::MouseExited(_) => self.mouse_position,
-            _ => return,
+            _ => {
+                log::warn!("[dispatch_surface_event] dropping non-mouse event: {}", event_name);
+                return;
+            }
         };
 
         cx.propagate_event = true;
@@ -6497,6 +6647,16 @@ impl Window {
         let surface = self.surfaces.get_mut(&surface_id).unwrap();
         let mut mouse_listeners = mem::take(&mut surface.mouse_listeners);
 
+        log::info!(
+            "[dispatch_surface_event] event={}, position=({:.1}, {:.1}), hitbox_ids={}, mouse_listeners={}, total_hitboxes={}",
+            event_name,
+            event_position.x.0,
+            event_position.y.0,
+            self.mouse_hit_test.ids.len(),
+            mouse_listeners.len(),
+            surface.hitboxes.len(),
+        );
+
         if let Some(any_mouse_event) = event.mouse_event() {
             // Capture phase (front to back).
             for listener in &mut mouse_listeners {
@@ -6519,15 +6679,23 @@ impl Window {
             }
         }
 
-        // Put listeners back.
-        let surface = self.surfaces.get_mut(&surface_id).unwrap();
-        surface.mouse_listeners = mouse_listeners;
+        // Put listeners back and persist the surface's hover state so that
+        // is_hovered() works correctly during the next surface render.
+        let hit_test_changed = {
+            let surface = self.surfaces.get_mut(&surface_id).unwrap();
+            surface.mouse_listeners = mouse_listeners;
+            let changed = surface.mouse_hit_test != self.mouse_hit_test;
+            surface.mouse_position = event_position;
+            surface.mouse_hit_test = self.mouse_hit_test.clone();
+            changed
+        };
 
         // Restore main frame state.
         self.mouse_position = saved_mouse_position;
         self.mouse_hit_test = saved_hit_test;
 
-        if self.invalidator.is_dirty() {
+        // If the surface's hover state changed, force a redraw so hover styles update.
+        if hit_test_changed || self.invalidator.is_dirty() {
             self.refresh();
         }
     }

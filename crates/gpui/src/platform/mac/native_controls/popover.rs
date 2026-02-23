@@ -8,10 +8,138 @@ use objc::{
     class,
     declare::ClassDecl,
     msg_send,
-    runtime::{Class, Object, Protocol, Sel},
+    runtime::{Class, Object, Protocol, Sel, BOOL, YES, NO},
     sel, sel_impl,
 };
 use std::{ffi::c_void, ptr};
+
+// ── GPUIHoverRowView ────────────────────────────────────────────────────────
+// Custom NSView subclass for clickable rows with hover and selected highlight.
+
+const HOVER_IVAR: &str = "_isHovered";
+const SELECTED_IVAR: &str = "_isSelected";
+
+struct HoverRowCallbacks {
+    on_click: Option<Box<dyn Fn()>>,
+}
+
+static mut HOVER_ROW_VIEW_CLASS: *const Class = ptr::null();
+
+#[ctor]
+unsafe fn build_hover_row_view_class() {
+    unsafe {
+        let mut decl = ClassDecl::new("GPUIHoverRowView", class!(NSView)).unwrap();
+        decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
+        decl.add_ivar::<BOOL>(HOVER_IVAR);
+        decl.add_ivar::<BOOL>(SELECTED_IVAR);
+
+        decl.add_method(
+            sel!(drawRect:),
+            hover_row_draw_rect as extern "C" fn(&Object, Sel, NSRect),
+        );
+        decl.add_method(
+            sel!(mouseEntered:),
+            hover_row_mouse_entered as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(mouseExited:),
+            hover_row_mouse_exited as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(mouseUp:),
+            hover_row_mouse_up as extern "C" fn(&Object, Sel, id),
+        );
+        decl.add_method(
+            sel!(updateTrackingAreas),
+            hover_row_update_tracking_areas as extern "C" fn(&Object, Sel),
+        );
+
+        HOVER_ROW_VIEW_CLASS = decl.register();
+    }
+}
+
+extern "C" fn hover_row_draw_rect(this: &Object, _sel: Sel, dirty_rect: NSRect) {
+    unsafe {
+        let is_hovered: BOOL = *this.get_ivar(HOVER_IVAR);
+        let is_selected: BOOL = *this.get_ivar(SELECTED_IVAR);
+
+        if is_hovered == YES || is_selected == YES {
+            let alpha: f64 = if is_selected == YES { 0.15 } else { 0.08 };
+
+            // Use the system accent color with transparency for a native look
+            let color: id = msg_send![class!(NSColor), controlAccentColor];
+            let blended: id = msg_send![color, colorWithAlphaComponent: alpha];
+            let _: () = msg_send![blended, setFill];
+
+            let bounds: NSRect = msg_send![this, bounds];
+            let path: id = msg_send![
+                class!(NSBezierPath),
+                bezierPathWithRoundedRect: bounds
+                xRadius: 6.0f64
+                yRadius: 6.0f64
+            ];
+            let _: () = msg_send![path, fill];
+        }
+
+        // Draw subviews on top (not strictly needed since subviews draw themselves,
+        // but we don't call super since we only want the background here).
+        let _ = dirty_rect;
+    }
+}
+
+extern "C" fn hover_row_mouse_entered(this: &Object, _sel: Sel, _event: id) {
+    unsafe {
+        (*(this as *const Object as *mut Object)).set_ivar::<BOOL>(HOVER_IVAR, YES);
+        let _: () = msg_send![this, setNeedsDisplay: YES];
+    }
+}
+
+extern "C" fn hover_row_mouse_exited(this: &Object, _sel: Sel, _event: id) {
+    unsafe {
+        (*(this as *const Object as *mut Object)).set_ivar::<BOOL>(HOVER_IVAR, NO);
+        let _: () = msg_send![this, setNeedsDisplay: YES];
+    }
+}
+
+extern "C" fn hover_row_mouse_up(this: &Object, _sel: Sel, event: id) {
+    unsafe {
+        // Only fire if the mouse is still within the view
+        let location: NSPoint = msg_send![event, locationInWindow];
+        let local: NSPoint = msg_send![this, convertPoint: location fromView: nil];
+        let bounds: NSRect = msg_send![this, bounds];
+        let in_bounds: BOOL = msg_send![this, mouse: local inRect: bounds];
+        if in_bounds == YES {
+            let ptr: *mut c_void = *this.get_ivar(CALLBACK_IVAR);
+            if !ptr.is_null() {
+                let callbacks = &*(ptr as *const HoverRowCallbacks);
+                if let Some(ref on_click) = callbacks.on_click {
+                    on_click();
+                }
+            }
+        }
+    }
+}
+
+extern "C" fn hover_row_update_tracking_areas(this: &Object, _sel: Sel) {
+    unsafe {
+        // Remove old tracking areas
+        let areas: id = msg_send![this, trackingAreas];
+        let count: u64 = msg_send![areas, count];
+        for i in (0..count).rev() {
+            let area: id = msg_send![areas, objectAtIndex: i];
+            let _: () = msg_send![this, removeTrackingArea: area];
+        }
+
+        // Add fresh tracking area covering entire bounds
+        let bounds: NSRect = msg_send![this, bounds];
+        // MouseEnteredAndExited | ActiveInActiveApp | InVisibleRect
+        let options: u64 = 0x01 | 0x40 | 0x200;
+        let area: id = msg_send![class!(NSTrackingArea), alloc];
+        let area: id = msg_send![area, initWithRect: bounds options: options owner: this userInfo: nil];
+        let _: () = msg_send![this, addTrackingArea: area];
+        let _: () = msg_send![area, release];
+    }
+}
 
 struct PopoverCallbacks {
     on_close: Option<Box<dyn Fn()>>,
@@ -620,7 +748,8 @@ pub(crate) unsafe fn add_native_popover_color_dot(
 }
 
 /// Adds a clickable row (optional icon + text + optional detail) to a popover content view.
-/// Returns the button target pointer for cleanup (or null if not clickable).
+/// Uses GPUIHoverRowView for hover highlight and keyboard-selected state.
+/// Returns the callback pointer for cleanup (or null if not clickable).
 pub(crate) unsafe fn add_native_popover_clickable_row(
     content_view: id,
     icon: Option<&str>,
@@ -630,18 +759,42 @@ pub(crate) unsafe fn add_native_popover_clickable_row(
     y: f64,
     width: f64,
     enabled: bool,
+    selected: bool,
     on_click: Option<Box<dyn Fn()>>,
 ) -> *mut c_void {
     unsafe {
         use super::super::ns_string;
 
+        let has_detail = detail.is_some();
+        let row_height = if has_detail { 36.0 } else { 28.0 };
+        let inset = 4.0;
+
+        // Create the hover row container view
+        let row_view: id = msg_send![HOVER_ROW_VIEW_CLASS, alloc];
+        let row_frame = NSRect::new(NSPoint::new(x - inset, y), NSSize::new(width + inset * 2.0, row_height));
+        let row_view: id = msg_send![row_view, initWithFrame: row_frame];
+
+        // Initialize ivars
+        (*(row_view as *mut Object)).set_ivar::<BOOL>(HOVER_IVAR, NO);
+        (*(row_view as *mut Object)).set_ivar::<BOOL>(SELECTED_IVAR, if selected { YES } else { NO });
+        (*(row_view as *mut Object)).set_ivar::<*mut c_void>(CALLBACK_IVAR, ptr::null_mut());
+
+        // Set up tracking area for hover
+        let bounds: NSRect = msg_send![row_view, bounds];
+        let options: u64 = 0x01 | 0x40 | 0x200; // MouseEnteredAndExited | ActiveInActiveApp | InVisibleRect
+        let area: id = msg_send![class!(NSTrackingArea), alloc];
+        let area: id = msg_send![area, initWithRect: bounds options: options owner: row_view userInfo: nil];
+        let _: () = msg_send![row_view, addTrackingArea: area];
+        let _: () = msg_send![area, release];
+
+        // All subview positions are relative to the row_view (local coords)
+        let local_x = inset;
+        let local_y = 0.0;
         let icon_offset = if icon.is_some() { 22.0 } else { 0.0 };
-        let text_x = x + icon_offset;
+        let text_x = local_x + icon_offset;
         let text_width = width - icon_offset;
 
-        let has_detail = detail.is_some();
-
-        // Icon (if provided) — vertically aligned with title
+        // Icon (if provided)
         if let Some(icon_name) = icon {
             let image: id = msg_send![
                 class!(NSImage),
@@ -649,25 +802,24 @@ pub(crate) unsafe fn add_native_popover_clickable_row(
                 accessibilityDescription: nil
             ];
             let icon_size = 16.0;
-            let icon_y = if has_detail { y + 16.0 } else { y + 6.0 };
+            let icon_y = if has_detail { local_y + 16.0 } else { local_y + 6.0 };
             let icon_view: id = msg_send![class!(NSImageView), alloc];
             let icon_frame =
-                NSRect::new(NSPoint::new(x, icon_y), NSSize::new(icon_size, icon_size));
+                NSRect::new(NSPoint::new(local_x, icon_y), NSSize::new(icon_size, icon_size));
             let icon_view: id = msg_send![icon_view, initWithFrame: icon_frame];
             if image != nil {
                 let _: () = msg_send![icon_view, setImage: image];
             }
-            // NSImageScaleProportionallyUpOrDown = 3
             let _: () = msg_send![icon_view, setImageScaling: 3i64];
             let tint: id = msg_send![class!(NSColor), secondaryLabelColor];
             let _: () = msg_send![icon_view, setContentTintColor: tint];
-            let _: () = msg_send![content_view, addSubview: icon_view];
+            let _: () = msg_send![row_view, addSubview: icon_view];
             let _: () = msg_send![icon_view, release];
         }
 
         // Text label
         let label: id = msg_send![class!(NSTextField), alloc];
-        let label_y = if has_detail { y + 16.0 } else { y + 5.0 };
+        let label_y = if has_detail { local_y + 16.0 } else { local_y + 5.0 };
         let label_frame = NSRect::new(NSPoint::new(text_x, label_y), NSSize::new(text_width, 18.0));
         let label: id = msg_send![label, initWithFrame: label_frame];
         let _: () = msg_send![label, setStringValue: ns_string(text)];
@@ -681,14 +833,14 @@ pub(crate) unsafe fn add_native_popover_clickable_row(
             let disabled_color: id = msg_send![class!(NSColor), tertiaryLabelColor];
             let _: () = msg_send![label, setTextColor: disabled_color];
         }
-        let _: () = msg_send![content_view, addSubview: label];
+        let _: () = msg_send![row_view, addSubview: label];
         let _: () = msg_send![label, release];
 
-        // Detail label (if provided) — positioned in lower portion of item
+        // Detail label (if provided)
         if let Some(detail_text) = detail {
             let detail_label: id = msg_send![class!(NSTextField), alloc];
             let detail_frame =
-                NSRect::new(NSPoint::new(text_x, y + 1.0), NSSize::new(text_width, 14.0));
+                NSRect::new(NSPoint::new(text_x, local_y + 1.0), NSSize::new(text_width, 14.0));
             let detail_label: id = msg_send![detail_label, initWithFrame: detail_frame];
             let _: () = msg_send![detail_label, setStringValue: ns_string(detail_text)];
             let _: () = msg_send![detail_label, setBezeled: false];
@@ -699,29 +851,24 @@ pub(crate) unsafe fn add_native_popover_clickable_row(
             let _: () = msg_send![detail_label, setFont: small_font];
             let detail_color: id = msg_send![class!(NSColor), secondaryLabelColor];
             let _: () = msg_send![detail_label, setTextColor: detail_color];
-            let _: () = msg_send![content_view, addSubview: detail_label];
+            let _: () = msg_send![row_view, addSubview: detail_label];
             let _: () = msg_send![detail_label, release];
         }
 
-        // Overlay transparent button for click handling
-        if let Some(callback) = on_click {
-            let row_height = if detail.is_some() { 36.0 } else { 24.0 };
-            let button: id = msg_send![class!(NSButton), alloc];
-            let button_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, row_height));
-            let button: id = msg_send![button, initWithFrame: button_frame];
-            let _: () = msg_send![button, setTitle: ns_string("")];
-            let _: () = msg_send![button, setTransparent: true];
-            // NSBezelStyleSmallSquare = 10
-            let _: () = msg_send![button, setBezelStyle: 10i64];
-            let _: () = msg_send![button, setEnabled: enabled as i8];
-            let _: () = msg_send![content_view, addSubview: button];
-
-            let target = super::set_native_button_action(button, callback);
-            let _: () = msg_send![button, release];
-            target
+        // Set up click callback
+        let callbacks_ptr = if on_click.is_some() && enabled {
+            let callbacks = HoverRowCallbacks { on_click };
+            let ptr = Box::into_raw(Box::new(callbacks)) as *mut c_void;
+            (*(row_view as *mut Object)).set_ivar::<*mut c_void>(CALLBACK_IVAR, ptr);
+            ptr
         } else {
             ptr::null_mut()
-        }
+        };
+
+        let _: () = msg_send![content_view, addSubview: row_view];
+        let _: () = msg_send![row_view, release];
+
+        callbacks_ptr
     }
 }
 
@@ -736,5 +883,14 @@ pub(crate) unsafe fn release_native_popover_switch_target(target: *mut c_void) {
 pub(crate) unsafe fn release_native_popover_checkbox_target(target: *mut c_void) {
     unsafe {
         super::release_native_checkbox_target(target);
+    }
+}
+
+/// Releases a hover row callback target for popover/panel cleanup.
+pub(crate) unsafe fn release_native_hover_row_target(target: *mut c_void) {
+    unsafe {
+        if !target.is_null() {
+            let _ = Box::from_raw(target as *mut HoverRowCallbacks);
+        }
     }
 }

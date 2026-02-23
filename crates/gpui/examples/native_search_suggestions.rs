@@ -3,6 +3,8 @@
 /// Production-ready search suggestion panel using NSPanel anchored below a
 /// toolbar search field. Features:
 /// - Filter-as-you-type with categorized results (bookmarks, history, web search)
+/// - Hover highlight on rows
+/// - Keyboard navigation (up/down arrows, enter to select, escape to dismiss)
 /// - Auto-dismiss when a suggestion is selected or the panel loses focus
 /// - Adaptive dark/light appearance
 /// - SF Symbol icons per category
@@ -66,6 +68,19 @@ fn filter_suggestions(query: &str) -> Vec<Suggestion> {
         .collect()
 }
 
+/// Counts the total number of clickable rows for a given query (used for wrapping navigation).
+fn count_rows(query: &str) -> usize {
+    let matches = filter_suggestions(query);
+    let mut count = 0;
+    count += matches.iter().filter(|s| s.category == Category::TopHit).count();
+    count += matches.iter().filter(|s| s.category == Category::Bookmark).count();
+    count += matches.iter().filter(|s| s.category == Category::History).count();
+    if !query.is_empty() {
+        count += 1; // web search row
+    }
+    count
+}
+
 // ── App state ───────────────────────────────────────────────────────────────
 
 struct SearchApp {
@@ -74,6 +89,7 @@ struct SearchApp {
     current_url: String,
     current_title: String,
     panel_visible: bool,
+    selected_index: Option<usize>,
     history: Vec<(String, String)>,
     history_index: Option<usize>,
 }
@@ -86,6 +102,7 @@ impl SearchApp {
             current_url: String::new(),
             current_title: "New Tab".to_string(),
             panel_visible: false,
+            selected_index: None,
             history: Vec::new(),
             history_index: None,
         }
@@ -124,7 +141,6 @@ impl SearchApp {
             }
         }
     }
-
 }
 
 impl Render for SearchApp {
@@ -134,6 +150,10 @@ impl Render for SearchApp {
             let weak_forward = cx.entity().downgrade();
             let weak_change = cx.entity().downgrade();
             let weak_submit = cx.entity().downgrade();
+            let weak_move_up = cx.entity().downgrade();
+            let weak_move_down = cx.entity().downgrade();
+            let weak_cancel = cx.entity().downgrade();
+            let weak_end_editing = cx.entity().downgrade();
 
             window.set_native_toolbar(Some(
                 NativeToolbar::new("search_suggestions.toolbar")
@@ -174,25 +194,22 @@ impl Render for SearchApp {
                             .max_width(px(600.0))
                             .on_change(move |event: &NativeToolbarSearchEvent, window, cx| {
                                 let text = event.text.clone();
-                                // Show/update suggestion panel as user types
                                 weak_change
                                     .update(cx, |this, cx| {
                                         this.search_text = text.clone();
                                         this.panel_visible = !text.is_empty();
+                                        this.selected_index = None;
                                         cx.notify();
                                     })
                                     .ok();
-                                // Show the panel from outside the entity update
-                                // (we need Window access which isn't available inside update)
                                 if text.is_empty() {
                                     window.dismiss_native_panel();
                                 } else {
-                                    // Read the filtered suggestions and show the panel
                                     let matches = filter_suggestions(&text);
                                     if matches.is_empty() {
                                         window.dismiss_native_panel();
                                     } else {
-                                        show_suggestion_panel(&text, window);
+                                        show_suggestion_panel(&text, None, window);
                                     }
                                 }
                             })
@@ -201,7 +218,18 @@ impl Render for SearchApp {
                                 window.dismiss_native_panel();
                                 weak_submit
                                     .update(cx, |this, cx| {
+                                        // If a row is selected via keyboard, navigate to it
+                                        if let Some(selected) = this.selected_index {
+                                            if let Some(url) = url_for_selected_row(&this.search_text, selected) {
+                                                this.navigate_to(&url, &url);
+                                                this.panel_visible = false;
+                                                this.selected_index = None;
+                                                cx.notify();
+                                                return;
+                                            }
+                                        }
                                         this.panel_visible = false;
+                                        this.selected_index = None;
                                         if text.starts_with("http://")
                                             || text.starts_with("https://")
                                         {
@@ -213,6 +241,69 @@ impl Render for SearchApp {
                                             );
                                             this.navigate_to(&url, &format!("Search: {}", text));
                                         }
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            })
+                            .on_move_down(move |_event: &NativeToolbarSearchEvent, window, cx| {
+                                weak_move_down
+                                    .update(cx, |this, cx| {
+                                        let total = count_rows(&this.search_text);
+                                        if total == 0 {
+                                            return;
+                                        }
+                                        this.selected_index = Some(match this.selected_index {
+                                            Some(i) => (i + 1) % total,
+                                            None => 0,
+                                        });
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                // Re-read state to show updated panel
+                                if let Ok(text) = weak_move_down.read_with(cx, |this, _| this.search_text.clone()) {
+                                    let selected = weak_move_down.read_with(cx, |this, _| this.selected_index).ok().flatten();
+                                    if !text.is_empty() {
+                                        show_suggestion_panel(&text, selected, window);
+                                    }
+                                }
+                            })
+                            .on_move_up(move |_event: &NativeToolbarSearchEvent, window, cx| {
+                                weak_move_up
+                                    .update(cx, |this, cx| {
+                                        let total = count_rows(&this.search_text);
+                                        if total == 0 {
+                                            return;
+                                        }
+                                        this.selected_index = Some(match this.selected_index {
+                                            Some(0) | None => total.saturating_sub(1),
+                                            Some(i) => i - 1,
+                                        });
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                if let Ok(text) = weak_move_up.read_with(cx, |this, _| this.search_text.clone()) {
+                                    let selected = weak_move_up.read_with(cx, |this, _| this.selected_index).ok().flatten();
+                                    if !text.is_empty() {
+                                        show_suggestion_panel(&text, selected, window);
+                                    }
+                                }
+                            })
+                            .on_cancel(move |_event: &NativeToolbarSearchEvent, window, cx| {
+                                window.dismiss_native_panel();
+                                weak_cancel
+                                    .update(cx, |this, cx| {
+                                        this.panel_visible = false;
+                                        this.selected_index = None;
+                                        cx.notify();
+                                    })
+                                    .ok();
+                            })
+                            .on_end_editing(move |_event: &NativeToolbarSearchEvent, window, cx| {
+                                window.dismiss_native_panel();
+                                weak_end_editing
+                                    .update(cx, |this, cx| {
+                                        this.panel_visible = false;
+                                        this.selected_index = None;
                                         cx.notify();
                                     })
                                     .ok();
@@ -275,10 +366,46 @@ impl Render for SearchApp {
     }
 }
 
-/// Builds and shows the suggestion panel from the toolbar callback context.
-fn show_suggestion_panel(query: &str, window: &mut Window) {
+/// Returns the URL for a given selected row index, or None if out of bounds.
+/// Rows are ordered: search row (if query non-empty), top hits, bookmarks, history.
+fn url_for_selected_row(query: &str, index: usize) -> Option<String> {
     let matches = filter_suggestions(query);
-    if matches.is_empty() {
+    let mut current = 0;
+
+    // Web search row first
+    if !query.is_empty() {
+        if current == index {
+            return Some(format!("https://google.com/search?q={}", query));
+        }
+        current += 1;
+    }
+
+    for suggestion in matches.iter().filter(|s| s.category == Category::TopHit) {
+        if current == index {
+            return Some(suggestion.url.to_string());
+        }
+        current += 1;
+    }
+    for suggestion in matches.iter().filter(|s| s.category == Category::Bookmark) {
+        if current == index {
+            return Some(suggestion.url.to_string());
+        }
+        current += 1;
+    }
+    for suggestion in matches.iter().filter(|s| s.category == Category::History) {
+        if current == index {
+            return Some(suggestion.url.to_string());
+        }
+        current += 1;
+    }
+
+    None
+}
+
+/// Builds and shows the suggestion panel from the toolbar callback context.
+fn show_suggestion_panel(query: &str, selected_index: Option<usize>, window: &mut Window) {
+    let matches = filter_suggestions(query);
+    if matches.is_empty() && query.is_empty() {
         window.dismiss_native_panel();
         return;
     }
@@ -298,20 +425,43 @@ fn show_suggestion_panel(query: &str, window: &mut Window) {
 
     let mut items: Vec<NativePopoverContentItem> = Vec::new();
     let mut row_count = 0usize;
+    let mut row_index = 0usize;
+
+    // "Search Google" row first
+    if !query.is_empty() {
+        let search_label = format!("Search \"{}\"", query);
+        items.push(
+            NativePopoverClickableRow::new(search_label)
+                .icon("magnifyingglass")
+                .detail("Google Search")
+                .selected(selected_index == Some(row_index))
+                .on_click(|window, _cx| {
+                    window.dismiss_native_panel();
+                })
+                .into(),
+        );
+        row_count += 1;
+        row_index += 1;
+    }
 
     if !top_hits.is_empty() {
+        if !items.is_empty() {
+            items.push(NativePopoverContentItem::separator());
+        }
         items.push(NativePopoverContentItem::heading("Top Hits"));
         for suggestion in &top_hits {
             items.push(
                 NativePopoverClickableRow::new(suggestion.title)
                     .icon(suggestion.icon)
                     .detail(suggestion.detail.unwrap_or(""))
+                    .selected(selected_index == Some(row_index))
                     .on_click(|window, _cx| {
                         window.dismiss_native_panel();
                     })
                     .into(),
             );
             row_count += 1;
+            row_index += 1;
         }
     }
 
@@ -325,12 +475,14 @@ fn show_suggestion_panel(query: &str, window: &mut Window) {
                 NativePopoverClickableRow::new(suggestion.title)
                     .icon(suggestion.icon)
                     .detail(suggestion.detail.unwrap_or(""))
+                    .selected(selected_index == Some(row_index))
                     .on_click(|window, _cx| {
                         window.dismiss_native_panel();
                     })
                     .into(),
             );
             row_count += 1;
+            row_index += 1;
         }
     }
 
@@ -344,31 +496,15 @@ fn show_suggestion_panel(query: &str, window: &mut Window) {
                 NativePopoverClickableRow::new(suggestion.title)
                     .icon(suggestion.icon)
                     .detail(suggestion.detail.unwrap_or(""))
+                    .selected(selected_index == Some(row_index))
                     .on_click(|window, _cx| {
                         window.dismiss_native_panel();
                     })
                     .into(),
             );
             row_count += 1;
+            row_index += 1;
         }
-    }
-
-    // Web search row
-    if !query.is_empty() {
-        if !items.is_empty() {
-            items.push(NativePopoverContentItem::separator());
-        }
-        let search_label = format!("Search \"{}\"", query);
-        items.push(
-            NativePopoverClickableRow::new(search_label)
-                .icon("magnifyingglass")
-                .detail("Google Search")
-                .on_click(|window, _cx| {
-                    window.dismiss_native_panel();
-                })
-                .into(),
-        );
-        row_count += 1;
     }
 
     let heading_count = [!top_hits.is_empty(), !bookmarks.is_empty(), !history.is_empty()]
@@ -386,9 +522,16 @@ fn show_suggestion_panel(query: &str, window: &mut Window) {
     let row_height = 28.0;
     let heading_height = 28.0;
     let separator_height = 12.0;
+    // Add separator for the search row if there are other sections
+    let search_separator = if !query.is_empty() && (!top_hits.is_empty() || !bookmarks.is_empty() || !history.is_empty()) {
+        separator_height
+    } else {
+        0.0
+    };
     let content_height = (row_count as f64 * row_height)
         + (heading_count as f64 * heading_height)
         + (separator_count as f64 * separator_height)
+        + search_separator
         + padding * 2.0;
     let panel_height = content_height.min(400.0);
 

@@ -556,6 +556,10 @@ pub(crate) struct PlatformNativeToolbarSearchFieldItem {
     pub max_width: Pixels,
     pub on_change: Option<Box<dyn Fn(String)>>,
     pub on_submit: Option<Box<dyn Fn(String)>>,
+    pub on_move_up: Option<Box<dyn Fn()>>,
+    pub on_move_down: Option<Box<dyn Fn()>>,
+    pub on_cancel: Option<Box<dyn Fn()>>,
+    pub on_end_editing: Option<Box<dyn Fn(String)>>,
 }
 
 pub(crate) struct PlatformNativeToolbarSegmentedItem {
@@ -701,6 +705,7 @@ pub(crate) enum PlatformNativePopoverContentItem {
         detail: Option<SharedString>,
         on_click: Option<Box<dyn Fn()>>,
         enabled: bool,
+        selected: bool,
     },
     Separator,
 }

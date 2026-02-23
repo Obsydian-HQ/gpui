@@ -529,7 +529,7 @@ pub(crate) struct MacWindowState {
     foreground_executor: ForegroundExecutor,
     background_executor: BackgroundExecutor,
     native_window: id,
-    native_view: NonNull<Object>,
+    pub(crate) native_view: NonNull<Object>,
     blurred_view: Option<id>,
     background_appearance: WindowBackgroundAppearance,
     display_link: Option<DisplayLink>,
@@ -574,6 +574,7 @@ struct MacPopoverState {
     button_targets: Vec<*mut c_void>,
     switch_targets: Vec<*mut c_void>,
     checkbox_targets: Vec<*mut c_void>,
+    hover_row_targets: Vec<*mut c_void>,
 }
 
 struct MacPanelState {
@@ -582,18 +583,102 @@ struct MacPanelState {
     button_targets: Vec<*mut c_void>,
     switch_targets: Vec<*mut c_void>,
     checkbox_targets: Vec<*mut c_void>,
+    hover_row_targets: Vec<*mut c_void>,
 }
 
 impl MacWindowState {
+    fn log_traffic_light_focus_state(&self, event: &str) {
+        unsafe {
+            let frame = NSWindow::frame(self.native_window);
+            let content_layout_rect: CGRect = msg_send![self.native_window, contentLayoutRect];
+            let content_view: id = msg_send![self.native_window, contentView];
+            let content_view_height = if content_view != nil {
+                NSView::frame(content_view).size.height
+            } else {
+                0.0
+            };
+            let view_height = NSView::frame(self.native_view.as_ptr() as id).size.height;
+            let pane_offset = content_view_height - view_height;
+            let window_number: NSInteger = msg_send![self.native_window, windowNumber];
+            let style_mask: NSWindowStyleMask = msg_send![self.native_window, styleMask];
+            let is_key_window = self.native_window.isKeyWindow() == YES;
+            let app: id = NSApplication::sharedApplication(nil);
+            let app_is_active: BOOL = msg_send![app, isActive];
+
+            let close_button: id = msg_send![
+                self.native_window,
+                standardWindowButton: NSWindowButton::NSWindowCloseButton
+            ];
+            let min_button: id = msg_send![
+                self.native_window,
+                standardWindowButton: NSWindowButton::NSWindowMiniaturizeButton
+            ];
+            let zoom_button: id = msg_send![
+                self.native_window,
+                standardWindowButton: NSWindowButton::NSWindowZoomButton
+            ];
+
+            let close_frame = if close_button != nil {
+                let frame: CGRect = msg_send![close_button, frame];
+                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
+            } else {
+                None
+            };
+            let min_frame = if min_button != nil {
+                let frame: CGRect = msg_send![min_button, frame];
+                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
+            } else {
+                None
+            };
+            let zoom_frame = if zoom_button != nil {
+                let frame: CGRect = msg_send![zoom_button, frame];
+                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
+            } else {
+                None
+            };
+
+            let traffic_light_position = self
+                .traffic_light_position
+                .map(|position| (position.x.0, position.y.0));
+
+            eprintln!(
+                "[gpui_focus_debug] event={} window={} key={} app_active={} fullscreen={} style_mask=0x{:x} traffic_pos={:?} native_titlebar={:.2} effective_titlebar={:.2} frame_h={:.2} content_layout_h={:.2} content_view_h={:.2} view_h={:.2} pane_offset={:.2} close={:?} min={:?} zoom={:?}",
+                event,
+                window_number,
+                is_key_window,
+                app_is_active == YES,
+                self.is_fullscreen(),
+                style_mask.bits(),
+                traffic_light_position,
+                self.native_titlebar_height().0,
+                self.titlebar_height().0,
+                frame.size.height,
+                content_layout_rect.size.height,
+                content_view_height,
+                view_height,
+                pane_offset,
+                close_frame,
+                min_frame,
+                zoom_frame,
+            );
+        }
+    }
+
     fn move_traffic_light(&self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
+            self.log_traffic_light_focus_state("move_traffic_light_before");
             if self.is_fullscreen() {
                 // Moving traffic lights while fullscreen doesn't work,
                 // see https://github.com/zed-industries/zed/issues/4712
+                self.log_traffic_light_focus_state("move_traffic_light_skipped_fullscreen");
                 return;
             }
 
-            let titlebar_height = self.titlebar_height();
+            // Traffic lights should be anchored to the native titlebar region.
+            // The effective overlap height can change when the content view is
+            // reparented into split-view panes, which would make button
+            // placement drift during sidebar/mode transitions.
+            let titlebar_height = self.native_titlebar_height();
 
             unsafe {
                 let close_button: id = msg_send![
@@ -633,6 +718,8 @@ impl MacWindowState {
                 let _: () = msg_send![zoom_button, setFrame: zoom_button_frame];
                 origin.x += button_spacing;
             }
+
+            self.log_traffic_light_focus_state("move_traffic_light_after");
         }
     }
 
@@ -712,11 +799,17 @@ impl MacWindowState {
         get_scale_factor(self.native_window)
     }
 
-    fn titlebar_height(&self) -> Pixels {
+    fn native_titlebar_height(&self) -> Pixels {
         unsafe {
             let frame = NSWindow::frame(self.native_window);
             let content_layout_rect: CGRect = msg_send![self.native_window, contentLayoutRect];
-            let native_titlebar = frame.size.height - content_layout_rect.size.height;
+            px((frame.size.height - content_layout_rect.size.height) as f32)
+        }
+    }
+
+    fn titlebar_height(&self) -> Pixels {
+        unsafe {
+            let native_titlebar = self.native_titlebar_height().0 as f64;
 
             // When the native_view is reparented into a split-view pane
             // that doesn't extend behind the titlebar (e.g. the
@@ -1336,6 +1429,7 @@ impl PlatformWindow for MacWindow {
         let mut button_targets = Vec::new();
         let mut switch_targets = Vec::new();
         let mut checkbox_targets = Vec::new();
+        let mut hover_row_targets = Vec::new();
 
         // Populate content view with items
         unsafe {
@@ -1512,6 +1606,7 @@ impl PlatformWindow for MacWindow {
                         detail,
                         on_click,
                         enabled,
+                        selected,
                     } => {
                         let target =
                             crate::platform::native_controls::add_native_popover_clickable_row(
@@ -1523,10 +1618,11 @@ impl PlatformWindow for MacWindow {
                                 flipped_y,
                                 content_width,
                                 enabled,
+                                selected,
                                 on_click,
                             );
                         if !target.is_null() {
-                            button_targets.push(target);
+                            hover_row_targets.push(target);
                         }
                     }
                     PlatformNativePopoverContentItem::Separator => {
@@ -1572,6 +1668,7 @@ impl PlatformWindow for MacWindow {
             button_targets,
             switch_targets,
             checkbox_targets,
+            hover_row_targets,
         });
     }
 
@@ -1655,6 +1752,7 @@ impl PlatformWindow for MacWindow {
         let mut button_targets = Vec::new();
         let mut switch_targets = Vec::new();
         let mut checkbox_targets = Vec::new();
+        let mut hover_row_targets = Vec::new();
 
         // Populate panel content inside an NSScrollView for scrollability
         unsafe {
@@ -1857,6 +1955,7 @@ impl PlatformWindow for MacWindow {
                         detail,
                         on_click,
                         enabled,
+                        selected,
                     } => {
                         let target =
                             crate::platform::native_controls::add_native_popover_clickable_row(
@@ -1868,10 +1967,11 @@ impl PlatformWindow for MacWindow {
                                 flipped_y,
                                 content_width,
                                 enabled,
+                                selected,
                                 on_click,
                             );
                         if !target.is_null() {
-                            button_targets.push(target);
+                            hover_row_targets.push(target);
                         }
                     }
                     PlatformNativePopoverContentItem::Separator => {
@@ -1950,6 +2050,7 @@ impl PlatformWindow for MacWindow {
             button_targets,
             switch_targets,
             checkbox_targets,
+            hover_row_targets,
         });
     }
 
@@ -2683,11 +2784,40 @@ extern "C" fn dealloc_view(this: &Object, _: Sel) {
     }
 }
 
+/// Returns true when the window's first responder is a field editor for a native
+/// control (e.g. NSSearchField in the toolbar). In that case, GPUI should not
+/// intercept key events so AppKit can dispatch them through the field editor's
+/// normal command handling chain (doCommandBySelector:).
+fn is_native_field_editor_active(view: &Object) -> bool {
+    unsafe {
+        let window: id = msg_send![view, window];
+        if window.is_null() {
+            return false;
+        }
+        let first_responder: id = msg_send![window, firstResponder];
+        if first_responder.is_null() {
+            return false;
+        }
+        let is_text_view: BOOL = msg_send![first_responder, isKindOfClass: class!(NSTextView)];
+        if is_text_view == NO {
+            return false;
+        }
+        let is_field_editor: BOOL = msg_send![first_responder, isFieldEditor];
+        is_field_editor != NO
+    }
+}
+
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
+    if is_native_field_editor_active(this) {
+        return NO;
+    }
     handle_key_event(this, native_event, true)
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {
+    if is_native_field_editor_active(this) {
+        return;
+    }
     handle_key_event(this, native_event, false);
 }
 
@@ -2833,6 +2963,18 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
 }
 
 extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
+    unsafe {
+        let event_type: u64 = msg_send![native_event, type];
+        // NSEventTypeLeftMouseDown = 1, NSEventTypeRightMouseDown = 3
+        if event_type == 1 || event_type == 3 {
+            if is_native_field_editor_active(this) {
+                let window: id = msg_send![this, window];
+                let nobody: id = std::ptr::null_mut();
+                let _: BOOL = msg_send![window, makeFirstResponder: nobody];
+            }
+        }
+    }
+
     let window_state = unsafe { get_window_state(this) };
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
@@ -3063,6 +3205,14 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     let is_active = unsafe { lock.native_window.isKeyWindow() == YES };
+    let selector_name = if selector == sel!(windowDidBecomeKey:) {
+        "windowDidBecomeKey"
+    } else if selector == sel!(windowDidResignKey:) {
+        "windowDidResignKey"
+    } else {
+        "unknown_key_selector"
+    };
+    lock.log_traffic_light_focus_state(selector_name);
 
     // When opening a pop-up while the application isn't active, Cocoa sends a spurious
     // `windowDidBecomeKey` message to the previous key window even though that window
@@ -3074,6 +3224,7 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     // in theory, we're not supposed to invoke this method manually but it balances out
     // the spurious `becomeKeyWindow` event and helps us work around that bug.
     if selector == sel!(windowDidBecomeKey:) && !is_active {
+        lock.log_traffic_light_focus_state("windowDidBecomeKey_spurious_before_resign");
         unsafe {
             let _: () = msg_send![lock.native_window, resignKeyWindow];
             return;
@@ -3114,8 +3265,15 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     executor
         .spawn(async move {
             let mut lock = window_state.as_ref().lock();
+            let async_event = if is_active {
+                "key_status_async_active"
+            } else {
+                "key_status_async_inactive"
+            };
+            lock.log_traffic_light_focus_state(async_event);
             if is_active {
                 lock.move_traffic_light();
+                lock.log_traffic_light_focus_state("key_status_async_after_move");
             }
 
             if let Some(mut callback) = lock.activate_callback.take() {
@@ -3649,6 +3807,9 @@ fn cleanup_popover_state(popover_state: &mut Option<MacPopoverState>) {
             for target in &state.checkbox_targets {
                 crate::platform::native_controls::release_native_popover_checkbox_target(*target);
             }
+            for target in &state.hover_row_targets {
+                crate::platform::native_controls::release_native_hover_row_target(*target);
+            }
             crate::platform::native_controls::release_native_popover(
                 state.popover,
                 state.delegate_ptr,
@@ -3668,6 +3829,9 @@ fn cleanup_panel_state(panel_state: &mut Option<MacPanelState>) {
             }
             for target in &state.checkbox_targets {
                 crate::platform::native_controls::release_native_popover_checkbox_target(*target);
+            }
+            for target in &state.hover_row_targets {
+                crate::platform::native_controls::release_native_hover_row_target(*target);
             }
             crate::platform::native_controls::release_native_panel(
                 state.panel,
@@ -4117,6 +4281,10 @@ unsafe fn create_toolbar_search_item(
         let state_ptr: *mut c_void = *this.get_ivar(TOOLBAR_STATE_IVAR);
         let change_identifier = identifier_string.to_owned();
         let submit_identifier = identifier_string.to_owned();
+        let move_up_identifier = identifier_string.to_owned();
+        let move_down_identifier = identifier_string.to_owned();
+        let cancel_identifier = identifier_string.to_owned();
+        let end_editing_identifier = identifier_string.to_owned();
 
         let on_change = Some(Box::new(move |text: String| {
             let state = &*(state_ptr as *const ToolbarState);
@@ -4138,14 +4306,54 @@ unsafe fn create_toolbar_search_item(
             }
         }) as Box<dyn Fn(String)>);
 
+        let on_move_up = Some(Box::new(move || {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&move_up_identifier)
+                && let Some(callback) = search_item.on_move_up.as_ref()
+            {
+                callback();
+            }
+        }) as Box<dyn Fn()>);
+
+        let on_move_down = Some(Box::new(move || {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&move_down_identifier)
+                && let Some(callback) = search_item.on_move_down.as_ref()
+            {
+                callback();
+            }
+        }) as Box<dyn Fn()>);
+
+        let on_cancel = Some(Box::new(move || {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&cancel_identifier)
+                && let Some(callback) = search_item.on_cancel.as_ref()
+            {
+                callback();
+            }
+        }) as Box<dyn Fn()>);
+
+        let on_end_editing = Some(Box::new(move |text: String| {
+            let state = &*(state_ptr as *const ToolbarState);
+            if let Some(PlatformNativeToolbarItem::SearchField(search_item)) =
+                state.item_for_identifier(&end_editing_identifier)
+                && let Some(callback) = search_item.on_end_editing.as_ref()
+            {
+                callback(text);
+            }
+        }) as Box<dyn Fn(String)>);
+
         let callbacks = crate::platform::native_controls::TextFieldCallbacks {
             on_change,
             on_begin_editing: None,
-            on_end_editing: None,
+            on_end_editing,
             on_submit,
-            on_move_up: None,
-            on_move_down: None,
-            on_cancel: None,
+            on_move_up,
+            on_move_down,
+            on_cancel,
         };
         let delegate =
             crate::platform::native_controls::set_native_text_field_delegate(field, callbacks);
