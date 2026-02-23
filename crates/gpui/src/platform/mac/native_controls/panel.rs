@@ -392,6 +392,12 @@ pub(crate) unsafe fn get_toolbar_item_screen_frame(
 /// Releases the panel and its delegate, freeing all callback memory.
 pub(crate) unsafe fn release_native_panel(panel: id, delegate_ptr: *mut c_void) {
     unsafe {
+        // Detach the delegate from the panel BEFORE closing, so `windowWillClose:`
+        // won't fire on our delegate after we've freed its callback memory.
+        if panel != nil {
+            let _: () = msg_send![panel, setDelegate: nil];
+        }
+
         if !delegate_ptr.is_null() {
             let delegate = delegate_ptr as id;
             let callbacks_ptr: *mut c_void = *(*delegate).get_ivar(CALLBACK_IVAR);

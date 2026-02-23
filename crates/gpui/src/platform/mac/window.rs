@@ -3231,6 +3231,16 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
         }
     }
 
+    // Keep traffic lights stable across key-status transitions (e.g. cmd+tab)
+    // by applying position synchronously in this delegate callback.
+    lock.move_traffic_light();
+    let sync_moved_event = if is_active {
+        "key_status_sync_after_move_active"
+    } else {
+        "key_status_sync_after_move_inactive"
+    };
+    lock.log_traffic_light_focus_state(sync_moved_event);
+
     let executor = lock.foreground_executor.clone();
     drop(lock);
 
@@ -3271,10 +3281,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
                 "key_status_async_inactive"
             };
             lock.log_traffic_light_focus_state(async_event);
-            if is_active {
-                lock.move_traffic_light();
-                lock.log_traffic_light_focus_state("key_status_async_after_move");
-            }
 
             if let Some(mut callback) = lock.activate_callback.take() {
                 drop(lock);

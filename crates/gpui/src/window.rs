@@ -4804,19 +4804,16 @@ impl Window {
             let surface_size = surface.gpui_surface.content_size();
             let native_view_ptr = surface.gpui_surface.native_view_ptr();
             let surface_mouse_position = surface.mouse_position;
-            let surface_mouse_hit_test = surface.mouse_hit_test.clone();
 
             // Push native view override so native controls parent to the surface's NSView
             self.push_native_view_override(native_view_ptr);
 
-            // Swap in the surface's mouse state so is_hovered() works correctly
-            // during this surface's render pass.
+            // Set the surface's mouse position for hit testing
             let saved_mouse_position = self.mouse_position;
             let saved_mouse_hit_test = self.mouse_hit_test.clone();
             self.mouse_position = surface_mouse_position;
-            self.mouse_hit_test = surface_mouse_hit_test;
 
-            // Prepaint the surface's element tree
+            // Prepaint the surface's element tree — this allocates fresh hitbox IDs
             self.invalidator.set_phase(DrawPhase::Prepaint);
             let mut root_element = root_view.into_any();
             root_element.prepaint_as_root(
@@ -4825,6 +4822,35 @@ impl Window {
                 self,
                 cx,
             );
+
+            // Recompute the hit test from the freshly allocated hitboxes so that
+            // is_hovered() sees matching IDs during paint. We cannot reuse the
+            // hit test stored from event dispatch because next_hitbox_id is
+            // monotonically increasing — old IDs are stale after a new render.
+            let hit_test = {
+                let mut set_hover_hitbox_count = false;
+                let mut ht = HitTest::default();
+                for hitbox in self.next_frame.hitboxes.iter().rev() {
+                    let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
+                    if bounds.contains(&surface_mouse_position) {
+                        ht.ids.push(hitbox.id);
+                        if !set_hover_hitbox_count
+                            && hitbox.behavior == HitboxBehavior::BlockMouseExceptScroll
+                        {
+                            ht.hover_hitbox_count = ht.ids.len();
+                            set_hover_hitbox_count = true;
+                        }
+                        if hitbox.behavior == HitboxBehavior::BlockMouse {
+                            break;
+                        }
+                    }
+                }
+                if !set_hover_hitbox_count {
+                    ht.hover_hitbox_count = ht.ids.len();
+                }
+                ht
+            };
+            self.mouse_hit_test = hit_test;
 
             // Paint the surface's element tree
             self.invalidator.set_phase(DrawPhase::Paint);
@@ -6567,18 +6593,6 @@ impl Window {
         event: PlatformInput,
         cx: &mut App,
     ) {
-        let event_name = match &event {
-            PlatformInput::MouseDown(_) => "MouseDown",
-            PlatformInput::MouseUp(_) => "MouseUp",
-            PlatformInput::MouseMove(_) => "MouseMove",
-            PlatformInput::MouseExited(_) => "MouseExited",
-            PlatformInput::ScrollWheel(_) => "ScrollWheel",
-            PlatformInput::KeyDown(_) => "KeyDown",
-            PlatformInput::KeyUp(_) => "KeyUp",
-            PlatformInput::ModifiersChanged(_) => "ModifiersChanged",
-            _ => "Other",
-        };
-
         // Find the surface that owns this native view.
         let surface_id = self.surfaces.iter().find_map(|(id, s)| {
             if s.gpui_surface.native_view_ptr() == native_view_ptr {
@@ -6587,12 +6601,7 @@ impl Window {
                 None
             }
         });
-        let Some(surface_id) = surface_id else {
-            log::warn!("[dispatch_surface_event] no surface found for native_view_ptr={:?}, event={}", native_view_ptr, event_name);
-            return;
-        };
-
-        log::info!("[dispatch_surface_event] event={}, surface_id={:?}, num_surfaces={}", event_name, surface_id, self.surfaces.len());
+        let Some(surface_id) = surface_id else { return };
 
         // Extract the mouse position from the event.
         let event_position = match &event {
@@ -6601,10 +6610,7 @@ impl Window {
             PlatformInput::MouseMove(e) => e.position,
             PlatformInput::ScrollWheel(e) => e.position,
             PlatformInput::MouseExited(_) => self.mouse_position,
-            _ => {
-                log::warn!("[dispatch_surface_event] dropping non-mouse event: {}", event_name);
-                return;
-            }
+            _ => return,
         };
 
         cx.propagate_event = true;
@@ -6646,16 +6652,6 @@ impl Window {
         // Take the surface's mouse listeners for dispatch.
         let surface = self.surfaces.get_mut(&surface_id).unwrap();
         let mut mouse_listeners = mem::take(&mut surface.mouse_listeners);
-
-        log::info!(
-            "[dispatch_surface_event] event={}, position=({:.1}, {:.1}), hitbox_ids={}, mouse_listeners={}, total_hitboxes={}",
-            event_name,
-            event_position.x.0,
-            event_position.y.0,
-            self.mouse_hit_test.ids.len(),
-            mouse_listeners.len(),
-            surface.hitboxes.len(),
-        );
 
         if let Some(any_mouse_event) = event.mouse_event() {
             // Capture phase (front to back).

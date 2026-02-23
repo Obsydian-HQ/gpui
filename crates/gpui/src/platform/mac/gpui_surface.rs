@@ -241,13 +241,6 @@ extern "C" fn update_tracking_areas(this: &Object, _sel: Sel) {
         ];
         let _: () = msg_send![this, addTrackingArea: tracking_area];
         let _: () = msg_send![tracking_area, release];
-
-        let bounds: NSRect = msg_send![this, bounds];
-        log::info!(
-            "[GPUISurfaceView] updateTrackingAreas: installed tracking area, bounds=({}, {}, {}, {}), removed {} old areas",
-            bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
-            count,
-        );
     }
 }
 
@@ -269,19 +262,6 @@ extern "C" fn handle_surface_view_event(this: &Object, _sel: Sel, native_event: 
     };
 
     if let Some(mut event) = event {
-        let event_name = match &event {
-            PlatformInput::MouseDown(_) => "MouseDown",
-            PlatformInput::MouseUp(_) => "MouseUp",
-            PlatformInput::MouseMove(_) => "MouseMove",
-            PlatformInput::MouseExited(_) => "MouseExited",
-            PlatformInput::ScrollWheel(_) => "ScrollWheel",
-            PlatformInput::KeyDown(_) => "KeyDown",
-            PlatformInput::KeyUp(_) => "KeyUp",
-            PlatformInput::ModifiersChanged(_) => "ModifiersChanged",
-            _ => "Other",
-        };
-        log::info!("[GPUISurfaceView] handle_surface_view_event: {}", event_name);
-
         let is_mouse_down = matches!(&event, PlatformInput::MouseDown(_));
 
         // Ctrl-left-click → right-click conversion (matches main window behavior)
@@ -330,7 +310,7 @@ extern "C" fn handle_surface_view_event(this: &Object, _sel: Sel, native_event: 
             window_state.lock().surface_event_callback = Some(callback);
         } else {
             drop(lock);
-            log::warn!("[GPUISurfaceView] no surface_event_callback registered for event: {}", event_name);
+            log::warn!("[GPUISurfaceView] no surface_event_callback registered");
         }
 
         // After a mouseDown, transfer first responder to the main window view
