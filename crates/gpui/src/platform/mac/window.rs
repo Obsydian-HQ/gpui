@@ -587,84 +587,6 @@ struct MacPanelState {
 }
 
 impl MacWindowState {
-    fn log_traffic_light_appkit_state(&self, phase: &str) {
-        unsafe {
-            let close_button: id = msg_send![
-                self.native_window,
-                standardWindowButton: NSWindowButton::NSWindowCloseButton
-            ];
-            let min_button: id = msg_send![
-                self.native_window,
-                standardWindowButton: NSWindowButton::NSWindowMiniaturizeButton
-            ];
-            let zoom_button: id = msg_send![
-                self.native_window,
-                standardWindowButton: NSWindowButton::NSWindowZoomButton
-            ];
-
-            let close_frame = if close_button != nil {
-                let frame: CGRect = msg_send![close_button, frame];
-                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
-            } else {
-                None
-            };
-            let min_frame = if min_button != nil {
-                let frame: CGRect = msg_send![min_button, frame];
-                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
-            } else {
-                None
-            };
-            let zoom_frame = if zoom_button != nil {
-                let frame: CGRect = msg_send![zoom_button, frame];
-                Some((frame.origin.x, frame.origin.y, frame.size.width, frame.size.height))
-            } else {
-                None
-            };
-
-            let button_container_height = if close_button != nil {
-                let superview: id = msg_send![close_button, superview];
-                if superview != nil {
-                    Some(NSView::frame(superview).size.height)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let button_container_is_flipped = if close_button != nil {
-                let superview: id = msg_send![close_button, superview];
-                if superview != nil {
-                    let is_flipped: BOOL = msg_send![superview, isFlipped];
-                    Some(is_flipped == YES)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let traffic_light_position = self
-                .traffic_light_position
-                .map(|position| (position.x.0, position.y.0));
-            let app: id = NSApplication::sharedApplication(nil);
-            let app_is_active: BOOL = msg_send![app, isActive];
-
-            log::info!(
-                "[appkit_traffic_lights] phase={} key={} app_active={} traffic_pos={:?} container_h={:?} container_flipped={:?} native_titlebar={:.2} close={:?} min={:?} zoom={:?}",
-                phase,
-                self.native_window.isKeyWindow() == YES,
-                app_is_active == YES,
-                traffic_light_position,
-                button_container_height,
-                button_container_is_flipped,
-                self.native_titlebar_height().0,
-                close_frame,
-                min_frame,
-                zoom_frame,
-            );
-        }
-    }
-
     fn move_traffic_light(&self) {
         if let Some(traffic_light_position) = self.traffic_light_position {
             if self.is_fullscreen() {
@@ -3219,12 +3141,6 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     let window_state = unsafe { get_window_state(this) };
     let mut lock = window_state.lock();
     let is_active = unsafe { lock.native_window.isKeyWindow() == YES };
-    let selector_name = if selector == sel!(windowDidBecomeKey:) { "windowDidBecomeKey" } else if selector == sel!(windowDidResignKey:) { "windowDidResignKey" } else { "unknown_key_selector" };
-    log::info!(
-        "[appkit_key_status] selector={} is_active={}",
-        selector_name,
-        is_active
-    );
 
     // When opening a pop-up while the application isn't active, Cocoa sends a spurious
     // `windowDidBecomeKey` message to the previous key window even though that window
@@ -3236,16 +3152,13 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     // in theory, we're not supposed to invoke this method manually but it balances out
     // the spurious `becomeKeyWindow` event and helps us work around that bug.
     if selector == sel!(windowDidBecomeKey:) && !is_active {
-        log::info!("[appkit_key_status] spurious windowDidBecomeKey detected");
         unsafe {
             let _: () = msg_send![lock.native_window, resignKeyWindow];
             return;
         }
     }
 
-    lock.log_traffic_light_appkit_state("key_status_sync_before_move");
     lock.move_traffic_light();
-    lock.log_traffic_light_appkit_state("key_status_sync_after_move");
 
     let executor = lock.foreground_executor.clone();
     drop(lock);
@@ -3281,18 +3194,13 @@ extern "C" fn window_did_change_key_status(this: &Object, selector: Sel, _: id) 
     executor
         .spawn(async move {
             let mut lock = window_state.as_ref().lock();
-            log::info!("[appkit_key_status] async callback is_active={}", is_active);
-            lock.log_traffic_light_appkit_state("key_status_async_before_move");
             lock.move_traffic_light();
-            lock.log_traffic_light_appkit_state("key_status_async_after_move");
             if let Some(mut callback) = lock.activate_callback.take() {
                 drop(lock);
                 callback(is_active);
                 let mut lock = window_state.lock();
                 lock.activate_callback = Some(callback);
-                lock.log_traffic_light_appkit_state("key_status_after_activate_callback_before_move");
                 lock.move_traffic_light();
-                lock.log_traffic_light_appkit_state("key_status_after_activate_callback_after_move");
             };
         })
         .detach();
