@@ -619,7 +619,9 @@ pub(crate) unsafe fn create_native_sidebar_view(
 
         // On macOS 26+, wrap the content view in NSBackgroundExtensionView so
         // the content appearance extends seamlessly under the floating glass
-        // sidebar.
+        // sidebar. Use automaticallyPlacesContentView=NO and pin the content
+        // to top/bottom/trailing so the extension only fills the leading
+        // (sidebar) edge, not the titlebar area.
         let has_liquid_glass = Class::get("NSBackgroundExtensionView").is_some();
         let content_vc_view = if has_liquid_glass && embed_in_sidebar {
             let bg_ext_cls = Class::get("NSBackgroundExtensionView").expect("checked above");
@@ -630,7 +632,50 @@ pub(crate) unsafe fn create_native_sidebar_view(
             )];
             let _: () =
                 msg_send![bg_ext, setAutoresizingMask: NSViewWidthSizable | NSViewHeightSizable];
+
+            // Disable automatic safe-area placement so we can control
+            // exactly which edges get the background extension effect.
+            let _: () = msg_send![bg_ext, setAutomaticallyPlacesContentView: 0i8];
             let _: () = msg_send![bg_ext, setContentView: content_view];
+
+            // Pin content to top, bottom, trailing — leave leading free so
+            // the extension fills only the sidebar overlap area.
+            let _: () = msg_send![
+                content_view,
+                setTranslatesAutoresizingMaskIntoConstraints: 0i8
+            ];
+            let cv_top: id = msg_send![content_view, topAnchor];
+            let cv_bottom: id = msg_send![content_view, bottomAnchor];
+            let cv_trailing: id = msg_send![content_view, trailingAnchor];
+            let cv_leading: id = msg_send![content_view, leadingAnchor];
+
+            let ext_top: id = msg_send![bg_ext, topAnchor];
+            let ext_bottom: id = msg_send![bg_ext, bottomAnchor];
+            let ext_trailing: id = msg_send![bg_ext, trailingAnchor];
+
+            // Use safeAreaLayoutGuide for the leading edge so the content
+            // starts after the sidebar overlap, leaving room for extension.
+            let has_safe_area: bool = msg_send![
+                bg_ext,
+                respondsToSelector: sel!(safeAreaLayoutGuide)
+            ];
+            let safe_leading: id = if has_safe_area {
+                let guide: id = msg_send![bg_ext, safeAreaLayoutGuide];
+                msg_send![guide, leadingAnchor]
+            } else {
+                msg_send![bg_ext, leadingAnchor]
+            };
+
+            let c1: id = msg_send![cv_top, constraintEqualToAnchor: ext_top];
+            let c2: id = msg_send![cv_bottom, constraintEqualToAnchor: ext_bottom];
+            let c3: id = msg_send![cv_trailing, constraintEqualToAnchor: ext_trailing];
+            let c4: id = msg_send![cv_leading, constraintEqualToAnchor: safe_leading];
+
+            let _: () = msg_send![c1, setActive: 1i8];
+            let _: () = msg_send![c2, setActive: 1i8];
+            let _: () = msg_send![c3, setActive: 1i8];
+            let _: () = msg_send![c4, setActive: 1i8];
+
             bg_ext
         } else {
             content_view
@@ -666,8 +711,13 @@ pub(crate) unsafe fn create_native_sidebar_view(
             msg_send![class!(NSSplitViewItem), splitViewItemWithViewController: content_vc];
         configure_content_item(content_item);
 
-        // On macOS 26+, let the content extend under the floating glass
-        // sidebar so NSBackgroundExtensionView can mirror its edges.
+        let _: () = msg_send![split_view_controller, addSplitViewItem: sidebar_item];
+        let _: () = msg_send![split_view_controller, addSplitViewItem: content_item];
+
+        // Enable safe area inset propagation so the sidebar overlap is
+        // reflected in the content item's safe area. Our manual constraints
+        // above only use the safe area for the leading edge, so this won't
+        // cause a titlebar extension.
         if has_liquid_glass && embed_in_sidebar {
             let responds: bool = msg_send![
                 content_item,
@@ -677,9 +727,6 @@ pub(crate) unsafe fn create_native_sidebar_view(
                 let _: () = msg_send![content_item, setAutomaticallyAdjustsSafeAreaInsets: 1i8];
             }
         }
-
-        let _: () = msg_send![split_view_controller, addSplitViewItem: sidebar_item];
-        let _: () = msg_send![split_view_controller, addSplitViewItem: content_item];
 
         let split_controller_view: id = msg_send![split_view_controller, view];
         let _: () = msg_send![split_controller_view, setFrame: NSRect::new(
@@ -912,6 +959,7 @@ pub(crate) unsafe fn configure_native_sidebar_window(
                     let _: () = msg_send![window_content_view, addSubview: host_view];
                 }
             }
+
         }
 
         let host_attached = if manage_window_chrome {
