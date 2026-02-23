@@ -372,6 +372,7 @@ impl MetalRenderer {
         );
     }
 
+    #[allow(dead_code)]
     pub fn update_transparency(&self, transparent: bool) {
         self.layer.set_opaque(!transparent);
     }

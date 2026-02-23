@@ -875,7 +875,9 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     ) -> Option<oneshot::Receiver<usize>> {
         None
     }
+    #[allow(dead_code)]
     fn present_as_sheet(&self, _child_window: &dyn PlatformWindow) {}
+    #[allow(dead_code)]
     fn dismiss_sheet(&self) {}
 
     #[cfg(target_os = "windows")]

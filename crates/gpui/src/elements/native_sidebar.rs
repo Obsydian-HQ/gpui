@@ -225,6 +225,7 @@ struct NativeSidebarState {
     current_min_sidebar_width: f64,
     current_max_sidebar_width: f64,
     current_collapsed: bool,
+    #[allow(dead_code)]
     embed_in_sidebar: bool,
     attached: bool,
     current_header_title: Option<SharedString>,

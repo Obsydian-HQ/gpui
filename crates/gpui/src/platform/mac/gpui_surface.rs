@@ -391,6 +391,7 @@ impl GpuiSurface {
     }
 
     /// Returns the CAMetalLayer pointer.
+    #[allow(dead_code)]
     pub fn layer_ptr(&self) -> *mut CAMetalLayer {
         self.renderer.layer_ptr()
     }
@@ -406,6 +407,7 @@ impl GpuiSurface {
     }
 
     /// Updates the transparency of the surface's Metal layer.
+    #[allow(dead_code)]
     pub fn update_transparency(&self, transparent: bool) {
         self.renderer.update_transparency(transparent);
     }
@@ -419,6 +421,7 @@ impl GpuiSurface {
     }
 
     /// Returns the scale factor from the view's backing properties.
+    #[allow(dead_code)]
     pub fn scale_factor(&self) -> f32 {
         unsafe {
             let window: id = msg_send![self.native_view, window];

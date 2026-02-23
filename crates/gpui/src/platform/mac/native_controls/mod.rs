@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod alert;
 mod button;
 mod checkbox;
@@ -6,21 +7,27 @@ mod combo_box;
 mod glass_effect_view;
 mod menu;
 mod outline;
+#[allow(dead_code)]
 mod panel;
 mod popover;
 mod popup;
 mod progress;
 mod search_field;
 mod segmented;
+#[allow(dead_code)]
 mod sidebar;
 mod slider;
+#[allow(dead_code)]
 mod stack_view;
 mod stepper;
 mod switch;
 mod tab_view;
 mod table;
+#[allow(dead_code)]
 mod image_view;
+#[allow(dead_code)]
 mod text_field;
+#[allow(dead_code)]
 mod tracking_area;
 mod visual_effect_view;
 
@@ -120,6 +127,7 @@ pub(crate) unsafe fn remove_native_view_from_parent(view: id) {
 }
 
 /// Alias for backwards compat.
+#[allow(dead_code)]
 pub(crate) unsafe fn remove_native_button_from_view(button: id) {
     unsafe { remove_native_view_from_parent(button) };
 }
