@@ -1574,6 +1574,85 @@ pub(crate) unsafe fn embed_surface_view_in_sidebar(host_view: id, surface_view: 
     }
 }
 
+/// Applies a solid background color to the entire sidebar container — both the
+/// content area and the titlebar region above the safe area. Sets the container's
+/// CALayer background color and hides any NSVisualEffectView subviews so vibrancy
+/// does not paint over the solid color. The transparent GPUI Metal surface renders
+/// on top, so GPUI content is visible and transparent areas show the solid layer.
+pub(crate) unsafe fn set_native_sidebar_background_color(
+    host_view: id,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+) {
+    unsafe {
+        let Some(host_data) = host_data_mut(host_view) else {
+            return;
+        };
+
+        let container = host_data.sidebar_container;
+        if container == nil {
+            return;
+        }
+
+        let _: () = msg_send![container, setWantsLayer: 1i8];
+        let layer: id = msg_send![container, layer];
+        if layer != nil {
+            let ns_color: id = msg_send![
+                class!(NSColor),
+                colorWithRed: r green: g blue: b alpha: a
+            ];
+            let cg_color: id = msg_send![ns_color, CGColor];
+            let _: () = msg_send![layer, setBackgroundColor: cg_color];
+        }
+
+        // Hide NSVisualEffectView subviews so vibrancy does not paint over the solid color.
+        let subviews: id = msg_send![container, subviews];
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let subview: id = msg_send![subviews, objectAtIndex: i];
+            let is_vfx: bool =
+                msg_send![subview, isKindOfClass: class!(NSVisualEffectView)];
+            if is_vfx {
+                let _: () = msg_send![subview, setHidden: 1i8];
+            }
+        }
+    }
+}
+
+/// Clears the solid background color from the sidebar container, restoring
+/// native glass or vibrancy by unhiding any NSVisualEffectView subviews.
+pub(crate) unsafe fn clear_native_sidebar_background_color(host_view: id) {
+    unsafe {
+        let Some(host_data) = host_data_mut(host_view) else {
+            return;
+        };
+
+        let container = host_data.sidebar_container;
+        if container == nil {
+            return;
+        }
+
+        let layer: id = msg_send![container, layer];
+        if layer != nil {
+            let _: () = msg_send![layer, setBackgroundColor: nil];
+        }
+
+        // Unhide NSVisualEffectView subviews to restore native vibrancy.
+        let subviews: id = msg_send![container, subviews];
+        let count: usize = msg_send![subviews, count];
+        for i in 0..count {
+            let subview: id = msg_send![subviews, objectAtIndex: i];
+            let is_vfx: bool =
+                msg_send![subview, isKindOfClass: class!(NSVisualEffectView)];
+            if is_vfx {
+                let _: () = msg_send![subview, setHidden: 0i8];
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn release_native_sidebar_target(target: *mut c_void) {
     unsafe {
         if target.is_null() {

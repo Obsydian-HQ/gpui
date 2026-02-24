@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::{
     AbsoluteLength, AnyView, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Length, Pixels, Render, SharedString, Style,
+    Hsla, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Render, SharedString, Style,
     StyleRefinement, Styled, Window, px,
 };
 
@@ -73,6 +73,7 @@ pub fn native_sidebar(id: impl Into<ElementId>, items: &[impl AsRef<str>]) -> Na
         header_title: None,
         header_buttons: Vec::new(),
         on_header_click: None,
+        sidebar_background_color: None,
         style: StyleRefinement::default(),
     }
 }
@@ -105,6 +106,7 @@ pub struct NativeSidebar {
     header_buttons: Vec<NativeSidebarHeaderButton>,
     on_header_click:
         Option<Box<dyn Fn(&SidebarHeaderClickEvent, &mut Window, &mut App) + 'static>>,
+    sidebar_background_color: Option<Hsla>,
     style: StyleRefinement,
 }
 
@@ -214,6 +216,14 @@ impl NativeSidebar {
         self.on_header_click = Some(Box::new(listener));
         self
     }
+
+    /// Sets a solid background color for the sidebar's titlebar area — the region
+    /// above the safe-area that is not covered by the GPUI surface view. Pass
+    /// `None` to restore native glass or vibrancy (default).
+    pub fn sidebar_background_color(mut self, color: Option<Hsla>) -> Self {
+        self.sidebar_background_color = color;
+        self
+    }
 }
 
 struct NativeSidebarState {
@@ -230,6 +240,7 @@ struct NativeSidebarState {
     attached: bool,
     current_header_title: Option<SharedString>,
     current_header_button_symbols: Vec<SharedString>,
+    current_sidebar_background_color: Option<(f64, f64, f64, f64)>,
     /// Surface ID for the dual-surface sidebar mode.
     #[cfg(target_os = "macos")]
     surface_id: Option<SurfaceId>,
@@ -355,6 +366,10 @@ impl Element for NativeSidebar {
             let on_header_click = self.on_header_click.take();
             let header_button_symbols: Vec<SharedString> =
                 header_buttons.iter().map(|b| b.symbol.clone()).collect();
+            let sidebar_background_color = self.sidebar_background_color.map(|color| {
+                let rgba = color.to_rgb();
+                (rgba.r as f64, rgba.g as f64, rgba.b as f64, rgba.a as f64)
+            });
 
             // When sidebar_view is set, we create the sidebar container in
             // "embed" mode (plain NSView + VFX background, no table) but
@@ -542,6 +557,16 @@ impl Element for NativeSidebar {
                             None
                         };
 
+                        // Apply initial background color if provided
+                        if let Some((r, g, b, a)) = sidebar_background_color {
+                            unsafe {
+                                native_controls::set_native_sidebar_background_color(
+                                    control_ptr as cocoa::base::id,
+                                    r, g, b, a,
+                                );
+                            }
+                        }
+
                         NativeSidebarState {
                             control_ptr,
                             target_ptr,
@@ -555,6 +580,7 @@ impl Element for NativeSidebar {
                             attached: true,
                             current_header_title: None,
                             current_header_button_symbols: Vec::new(),
+                            current_sidebar_background_color: sidebar_background_color,
                             surface_id,
                         }
                     };
@@ -601,6 +627,25 @@ impl Element for NativeSidebar {
                         }
                         state.current_header_title = header_title;
                         state.current_header_button_symbols = header_button_symbols;
+                    }
+
+                    if state.current_sidebar_background_color != sidebar_background_color {
+                        unsafe {
+                            match sidebar_background_color {
+                                Some((r, g, b, a)) => {
+                                    native_controls::set_native_sidebar_background_color(
+                                        state.control_ptr as cocoa::base::id,
+                                        r, g, b, a,
+                                    );
+                                }
+                                None => {
+                                    native_controls::clear_native_sidebar_background_color(
+                                        state.control_ptr as cocoa::base::id,
+                                    );
+                                }
+                            }
+                        }
+                        state.current_sidebar_background_color = sidebar_background_color;
                     }
 
                     ((), Some(state))
