@@ -22,7 +22,7 @@ use core_video::{
 };
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
-    CAMetalLayer, CommandQueue, MTLPixelFormat, MTLResourceOptions, NSRange,
+    CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
     RenderPassColorAttachmentDescriptorRef,
 };
 use objc::{self, msg_send, sel, sel_impl};
@@ -79,12 +79,19 @@ impl InstanceBufferPool {
         self.buffers.clear();
     }
 
-    pub(crate) fn acquire(&mut self, device: &metal::Device) -> InstanceBuffer {
+    pub(crate) fn acquire(
+        &mut self,
+        device: &metal::Device,
+        unified_memory: bool,
+    ) -> InstanceBuffer {
         let buffer = self.buffers.pop().unwrap_or_else(|| {
-            device.new_buffer(
-                self.buffer_size as u64,
-                MTLResourceOptions::StorageModeManaged,
-            )
+            let options = if unified_memory {
+                MTLResourceOptions::StorageModeShared
+                    | MTLResourceOptions::CPUCacheModeWriteCombined
+            } else {
+                MTLResourceOptions::StorageModeManaged
+            };
+            device.new_buffer(self.buffer_size as u64, options)
         });
         InstanceBuffer {
             metal_buffer: buffer,
@@ -120,6 +127,8 @@ pub(crate) struct SharedRenderResources {
     pub sprite_atlas: Arc<MetalAtlas>,
     pub core_video_texture_cache: CVMetalTextureCache,
     pub path_sample_count: u32,
+    pub is_apple_gpu: bool,
+    pub is_unified_memory: bool,
 }
 
 pub(crate) struct MetalRenderer {
@@ -198,6 +207,9 @@ impl MetalRenderer {
             .new_library_with_data(SHADERS_METALLIB)
             .expect("error building metal library");
 
+        let is_unified_memory = device.has_unified_memory();
+        let is_apple_gpu = device.supports_family(MTLGPUFamily::Apple1);
+
         fn to_float2_bits(point: PointF) -> u64 {
             let mut output = point.y.to_bits() as u64;
             output <<= 32;
@@ -216,7 +228,11 @@ impl MetalRenderer {
         let unit_vertices = device.new_buffer_with_data(
             unit_vertices.as_ptr() as *const c_void,
             mem::size_of_val(&unit_vertices) as u64,
-            MTLResourceOptions::StorageModeManaged,
+            if is_unified_memory {
+                MTLResourceOptions::StorageModeShared | MTLResourceOptions::CPUCacheModeWriteCombined
+            } else {
+                MTLResourceOptions::StorageModeManaged
+            },
         );
 
         let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
@@ -294,7 +310,7 @@ impl MetalRenderer {
         );
 
         let command_queue = device.new_command_queue();
-        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone()));
+        let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 
@@ -315,6 +331,8 @@ impl MetalRenderer {
             sprite_atlas,
             core_video_texture_cache,
             path_sample_count: PATH_SAMPLE_COUNT,
+            is_apple_gpu,
+            is_unified_memory,
         });
 
         Self {
@@ -368,6 +386,7 @@ impl MetalRenderer {
             self.shared.path_sample_count,
             &mut self.path_intermediate_texture,
             &mut self.path_intermediate_msaa_texture,
+            self.shared.is_apple_gpu,
             device_pixels_size,
         );
     }
@@ -412,7 +431,7 @@ impl MetalRenderer {
                 .shared
                 .instance_buffer_pool
                 .lock()
-                .acquire(&self.shared.device);
+                .acquire(&self.shared.device, self.shared.is_unified_memory);
 
             let command_buffer = draw_primitives(
                 &self.shared,
@@ -545,6 +564,7 @@ impl SurfaceRenderer {
             self.shared.path_sample_count,
             &mut self.path_intermediate_texture,
             &mut self.path_intermediate_msaa_texture,
+            self.shared.is_apple_gpu,
             size,
         );
     }
@@ -574,6 +594,7 @@ fn update_path_intermediate_textures(
     path_sample_count: u32,
     path_intermediate_texture: &mut Option<metal::Texture>,
     path_intermediate_msaa_texture: &mut Option<metal::Texture>,
+    is_apple_gpu: bool,
     size: Size<DevicePixels>,
 ) {
     // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
@@ -589,6 +610,7 @@ fn update_path_intermediate_textures(
     texture_descriptor.set_width(size.width.0 as u64);
     texture_descriptor.set_height(size.height.0 as u64);
     texture_descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+    texture_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
     texture_descriptor
         .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
     *path_intermediate_texture = Some(device.new_texture(&texture_descriptor));
@@ -596,7 +618,11 @@ fn update_path_intermediate_textures(
     if path_sample_count > 1 {
         let mut msaa_descriptor = texture_descriptor;
         msaa_descriptor.set_texture_type(metal::MTLTextureType::D2Multisample);
-        msaa_descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+        msaa_descriptor.set_storage_mode(if is_apple_gpu {
+            metal::MTLStorageMode::Memoryless
+        } else {
+            metal::MTLStorageMode::Private
+        });
         msaa_descriptor.set_sample_count(path_sample_count as _);
         *path_intermediate_msaa_texture = Some(device.new_texture(&msaa_descriptor));
     } else {
@@ -629,7 +655,10 @@ fn draw_scene(
     };
 
     loop {
-        let mut instance_buffer = shared.instance_buffer_pool.lock().acquire(&shared.device);
+        let mut instance_buffer = shared
+            .instance_buffer_pool
+            .lock()
+            .acquire(&shared.device, shared.is_unified_memory);
 
         let command_buffer = draw_primitives(
             shared,
@@ -819,10 +848,12 @@ fn draw_primitives(
 
     command_encoder.end_encoding();
 
-    instance_buffer.metal_buffer.did_modify_range(NSRange {
-        location: 0,
-        length: instance_offset as NSUInteger,
-    });
+    if !shared.is_unified_memory {
+        instance_buffer.metal_buffer.did_modify_range(NSRange {
+            location: 0,
+            length: instance_offset as NSUInteger,
+        });
+    }
     Ok(command_buffer.to_owned())
 }
 
