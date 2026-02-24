@@ -6,7 +6,7 @@ use crate::{
     PlatformDisplay, PlatformInput, PlatformNativeAlert, PlatformNativeAlertStyle,
     PlatformNativePanel, PlatformNativePanelAnchor, PlatformNativePanelLevel,
     PlatformNativePanelMaterial, PlatformNativePanelStyle,
-    PlatformNativePopover, PlatformNativePopoverAnchor,
+    PlatformNativePopover, PlatformNativePopoverAnchor, PlatformNativeSearchFieldTarget,
     PlatformNativePopoverContentItem, PlatformNativeToolbar, PlatformNativeToolbarDisplayMode,
     PlatformNativeToolbarItem, PlatformNativeToolbarMenuItemData, PlatformNativeToolbarSizeMode,
     PlatformWindow, Point, PromptButton,
@@ -1339,6 +1339,24 @@ impl PlatformWindow for MacWindow {
         };
 
         self.0.lock().toolbar = new_toolbar;
+    }
+
+    fn focus_native_search_field(
+        &self,
+        target: PlatformNativeSearchFieldTarget,
+        select_all: bool,
+    ) {
+        let native_window = self.0.lock().native_window;
+        unsafe {
+            match target {
+                PlatformNativeSearchFieldTarget::ToolbarItem(identifier) => {
+                    focus_toolbar_search_field(native_window, identifier.as_ref(), select_all);
+                }
+                PlatformNativeSearchFieldTarget::ContentView(identifier) => {
+                    focus_content_search_field(native_window, identifier.as_ref(), select_all);
+                }
+            }
+        }
     }
 
     fn show_native_popover(
@@ -3903,6 +3921,86 @@ unsafe fn ns_string_to_owned(ns_string: id) -> String {
             String::new()
         } else {
             CStr::from_ptr(cstr).to_string_lossy().into_owned()
+        }
+    }
+}
+
+unsafe fn focus_search_field(native_window: id, search_field: id, select_all: bool) {
+    unsafe {
+        if search_field == nil {
+            return;
+        }
+
+        if select_all {
+            let _: () = msg_send![search_field, selectText: nil];
+            return;
+        }
+
+        let _: BOOL = msg_send![native_window, makeFirstResponder: search_field];
+    }
+}
+
+unsafe fn find_content_search_field_by_identifier(view: id, identifier: &str) -> id {
+    unsafe {
+        if view == nil {
+            return nil;
+        }
+
+        let is_search_field: BOOL = msg_send![view, isKindOfClass: class!(NSSearchField)];
+        if is_search_field == YES {
+            let view_identifier: id = msg_send![view, identifier];
+            if view_identifier != nil && ns_string_to_owned(view_identifier) == identifier {
+                return view;
+            }
+        }
+
+        let subviews: id = msg_send![view, subviews];
+        let count: NSUInteger = msg_send![subviews, count];
+        for index in 0..count {
+            let child: id = msg_send![subviews, objectAtIndex: index];
+            let found = find_content_search_field_by_identifier(child, identifier);
+            if found != nil {
+                return found;
+            }
+        }
+
+        nil
+    }
+}
+
+unsafe fn focus_content_search_field(native_window: id, identifier: &str, select_all: bool) {
+    unsafe {
+        let content_view: id = msg_send![native_window, contentView];
+        if content_view == nil {
+            return;
+        }
+        let search_field = find_content_search_field_by_identifier(content_view, identifier);
+        focus_search_field(native_window, search_field, select_all);
+    }
+}
+
+unsafe fn focus_toolbar_search_field(native_window: id, identifier: &str, select_all: bool) {
+    unsafe {
+        let toolbar: id = msg_send![native_window, toolbar];
+        if toolbar == nil {
+            return;
+        }
+
+        let items: id = msg_send![toolbar, items];
+        let count: NSUInteger = msg_send![items, count];
+        for index in 0..count {
+            let item: id = msg_send![items, objectAtIndex: index];
+            let item_identifier: id = msg_send![item, itemIdentifier];
+            if item_identifier == nil || ns_string_to_owned(item_identifier) != identifier {
+                continue;
+            }
+
+            let view: id = msg_send![item, view];
+            let is_search_field: BOOL = msg_send![view, isKindOfClass: class!(NSSearchField)];
+            if is_search_field == YES {
+                focus_search_field(native_window, view, select_all);
+            }
+            return;
         }
     }
 }

@@ -9,7 +9,8 @@ use crate::{
     KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
     LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
     MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformNativeToolbar, PlatformNativeToolbarButtonItem,
+    PlatformInputHandler, PlatformNativeSearchFieldTarget, PlatformNativeToolbar,
+    PlatformNativeToolbarButtonItem,
     PlatformNativeToolbarComboBoxItem, PlatformNativeToolbarDisplayMode, PlatformNativeToolbarItem,
     PlatformNativeToolbarLabelItem, PlatformNativeToolbarMenuButtonItem,
     PlatformNativeToolbarMenuItemData,
@@ -584,6 +585,15 @@ pub struct NativeToolbarSearchEvent {
     pub item_id: SharedString,
     /// The current text of the search field.
     pub text: String,
+}
+
+/// Identifies a native search field that can be focused programmatically.
+#[derive(Clone, Debug)]
+pub enum NativeSearchFieldTarget {
+    /// A search field rendered in the native window toolbar.
+    ToolbarItem(SharedString),
+    /// A content-area native search field rendered via `native_search_field(...)`.
+    ContentElement(ElementId),
 }
 
 /// Event emitted when a native toolbar segmented control selection changes.
@@ -4288,6 +4298,27 @@ impl Window {
             toolbar.into_platform(self.next_frame_callbacks.clone(), self.invalidator.clone())
         });
         self.platform_window.set_native_toolbar(toolbar);
+    }
+
+    /// Focuses a native search field by target.
+    ///
+    /// This is designed for keyboard shortcut handlers (e.g. `cmd-l`) where
+    /// search focus should move to a native toolbar or content search field.
+    pub fn focus_native_search_field(
+        &mut self,
+        target: NativeSearchFieldTarget,
+        select_all_text: bool,
+    ) {
+        let platform_target = match target {
+            NativeSearchFieldTarget::ToolbarItem(item_id) => {
+                PlatformNativeSearchFieldTarget::ToolbarItem(item_id)
+            }
+            NativeSearchFieldTarget::ContentElement(element_id) => {
+                PlatformNativeSearchFieldTarget::ContentView(element_id.to_string().into())
+            }
+        };
+        self.platform_window
+            .focus_native_search_field(platform_target, select_all_text);
     }
 
     /// Shows a native popover (NSPopover) anchored to the given position.

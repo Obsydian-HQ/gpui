@@ -28,6 +28,10 @@ pub struct SearchSubmitEvent {
 }
 
 /// Creates a native search field (NSSearchField on macOS).
+///
+/// Use [`crate::Window::focus_native_search_field`] with
+/// [`crate::NativeSearchFieldTarget::ContentElement`] and the same element id
+/// to focus this control from shortcut handlers.
 pub fn native_search_field(id: impl Into<ElementId>) -> NativeSearchField {
     NativeSearchField {
         id: id.into(),
@@ -160,6 +164,7 @@ impl NativeSearchField {
 struct NativeSearchFieldElementState {
     search_field_ptr: *mut c_void,
     delegate_ptr: *mut c_void,
+    current_identifier: SharedString,
     current_placeholder: SharedString,
     current_value: SharedString,
     current_sends_immediately: bool,
@@ -267,6 +272,7 @@ impl Element for NativeSearchField {
             let on_move_up = self.on_move_up.take();
             let on_move_down = self.on_move_down.take();
             let on_cancel = self.on_cancel.take();
+            let identifier: SharedString = self.id.to_string().into();
             let value = self.value.clone();
             let placeholder = self.placeholder.clone();
             let sends_immediately = self.sends_search_string_immediately;
@@ -287,6 +293,13 @@ impl Element for NativeSearchField {
                                 native_view as cocoa::base::id,
                                 window.scale_factor(),
                             );
+                            if state.current_identifier != identifier {
+                                native_controls::set_native_search_field_identifier(
+                                    state.search_field_ptr as cocoa::base::id,
+                                    identifier.as_ref(),
+                                );
+                                state.current_identifier = identifier.clone();
+                            }
                             if state.current_placeholder != placeholder {
                                 native_controls::set_native_search_field_placeholder(
                                     state.search_field_ptr as cocoa::base::id,
@@ -355,6 +368,10 @@ impl Element for NativeSearchField {
                     } else {
                         let (search_field_ptr, delegate_ptr) = unsafe {
                             let field = native_controls::create_native_search_field(&placeholder);
+                            native_controls::set_native_search_field_identifier(
+                                field,
+                                identifier.as_ref(),
+                            );
                             if !value.is_empty() {
                                 native_controls::set_native_search_field_string_value(
                                     field, &value,
@@ -401,6 +418,7 @@ impl Element for NativeSearchField {
                         NativeSearchFieldElementState {
                             search_field_ptr,
                             delegate_ptr,
+                            current_identifier: identifier,
                             current_placeholder: placeholder,
                             current_value: value,
                             current_sends_immediately: sends_immediately,

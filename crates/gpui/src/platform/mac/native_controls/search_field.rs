@@ -41,6 +41,14 @@ pub(crate) unsafe fn set_native_search_field_placeholder(field: id, placeholder:
     }
 }
 
+/// Sets a stable identifier used for programmatic focus lookups.
+pub(crate) unsafe fn set_native_search_field_identifier(field: id, identifier: &str) {
+    unsafe {
+        use super::super::ns_string;
+        let _: () = msg_send![field, setIdentifier: ns_string(identifier)];
+    }
+}
+
 /// Controls whether the field sends each partial query as the user types.
 pub(crate) unsafe fn set_native_search_field_sends_immediately(field: id, sends: bool) {
     unsafe {

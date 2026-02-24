@@ -437,6 +437,10 @@ name = "native_search_suggestions"
 path = "examples/native_search_suggestions.rs"
 
 [[example]]
+name = "native_search_shortcuts"
+path = "examples/native_search_shortcuts.rs"
+
+[[example]]
 name = "native_visual_effect_view"
 path = "examples/native_visual_effect_view.rs"
 

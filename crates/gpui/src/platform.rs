@@ -563,6 +563,12 @@ pub(crate) struct PlatformNativeToolbarSearchFieldItem {
     pub on_end_editing: Option<Box<dyn Fn(String)>>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum PlatformNativeSearchFieldTarget {
+    ToolbarItem(SharedString),
+    ContentView(SharedString),
+}
+
 pub(crate) struct PlatformNativeToolbarSegmentedItem {
     pub id: SharedString,
     pub labels: Vec<SharedString>,
@@ -855,6 +861,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
     fn set_native_toolbar(&self, _toolbar: Option<PlatformNativeToolbar>) {}
+    fn focus_native_search_field(
+        &self,
+        _target: PlatformNativeSearchFieldTarget,
+        _select_all: bool,
+    ) {
+    }
     fn show_native_popover(
         &self,
         _popover: PlatformNativePopover,
