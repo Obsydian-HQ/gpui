@@ -881,6 +881,7 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     ) {
     }
     fn dismiss_native_panel(&self) {}
+    fn blur_native_field_editor(&self) {}
     fn show_native_alert_sheet(
         &self,
         _alert: PlatformNativeAlert,

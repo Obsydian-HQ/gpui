@@ -4321,6 +4321,14 @@ impl Window {
             .focus_native_search_field(platform_target, select_all_text);
     }
 
+    /// Resigns first responder from any active native field editor (e.g. NSSearchField),
+    /// causing the field to lose focus as if the user clicked away.
+    ///
+    /// On macOS this calls `[window makeFirstResponder: nil]`. On other platforms this is a no-op.
+    pub fn blur_native_field_editor(&mut self) {
+        self.platform_window.blur_native_field_editor();
+    }
+
     /// Shows a native popover (NSPopover) anchored to the given position.
     ///
     /// On macOS this creates an NSPopover with native appearance and behavior.

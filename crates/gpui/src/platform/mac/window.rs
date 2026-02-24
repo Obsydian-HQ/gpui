@@ -2013,6 +2013,14 @@ impl PlatformWindow for MacWindow {
         cleanup_panel_state(&mut this.panel);
     }
 
+    fn blur_native_field_editor(&self) {
+        let native_window = self.0.lock().native_window;
+        unsafe {
+            let nobody: id = std::ptr::null_mut();
+            let _: BOOL = msg_send![native_window, makeFirstResponder: nobody];
+        }
+    }
+
     fn show_native_alert_sheet(
         &self,
         alert_config: PlatformNativeAlert,
