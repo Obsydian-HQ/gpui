@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/collections",
     "crates/gpui",
+    "crates/gpui_platform",
     "crates/gpui_macros",
     "crates/gpui_tokio",
     "crates/http_client",
@@ -27,6 +28,7 @@ edition = "2024"
 
 collections = { path = "crates/collections", version = "0.1.0" }
 gpui = { path = "crates/gpui", default-features = false }
+gpui_platform = { path = "crates/gpui_platform", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
 gpui_tokio = { path = "crates/gpui_tokio" }
 http_client = { path = "crates/http_client" }
