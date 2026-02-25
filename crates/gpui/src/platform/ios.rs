@@ -1,19 +1,21 @@
 use crate::{
-    Action, AnyWindowHandle, AtlasKey, AtlasTextureId, AtlasTextureKind, AtlasTile,
-    BackgroundExecutor, Bounds, ClipboardItem, CursorStyle, DispatchEventResult, DisplayId,
-    DummyKeyboardMapper, ForegroundExecutor, GLOBAL_THREAD_TIMINGS, GpuSpecs, Keymap, Menu,
-    MenuItem, Modifiers, NoopTextSystem, OwnedMenu, PathPromptOptions, Pixels, Platform,
-    PlatformAtlas, PlatformDispatcher, PlatformDisplay, PlatformInput, PlatformInputHandler,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point,
-    Priority, PromptButton, RequestFrameOptions, Task, TaskTiming, ThermalState, THREAD_TIMINGS,
-    ThreadTaskTimings, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
-    WindowParams, point, px, size,
+    Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
+    DispatchEventResult, DisplayId, DummyKeyboardMapper, ForegroundExecutor, GLOBAL_THREAD_TIMINGS,
+    GpuSpecs, Keymap, Menu, MenuItem, Modifiers, NoopTextSystem, OwnedMenu, PathPromptOptions,
+    Pixels, Platform, PlatformAtlas, PlatformDispatcher, PlatformDisplay, PlatformInput,
+    PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    PlatformWindow, Point, Priority, PromptButton, RequestFrameOptions, Task, TaskTiming,
+    ThermalState, THREAD_TIMINGS, ThreadTaskTimings, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
 };
+use crate::platform::metal::renderer::{InstanceBufferPool, MetalRenderer, SharedRenderResources};
 use anyhow::{Result, anyhow};
+use ctor::ctor;
 use futures::channel::oneshot;
 use objc::{
     class, msg_send,
-    runtime::Object,
+    declare::ClassDecl,
+    runtime::{Class, Object, Sel},
     sel, sel_impl,
 };
 use parking_lot::Mutex;
@@ -21,7 +23,6 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, UiKitWindowHandle, WindowHandle,
 };
 use std::{
-    borrow::Cow,
     ffi::c_void,
     path::{Path, PathBuf},
     ptr::{NonNull, addr_of},
@@ -41,8 +42,11 @@ const DISPATCH_QUEUE_PRIORITY_HIGH: isize = 2;
 const DISPATCH_QUEUE_PRIORITY_DEFAULT: isize = 0;
 const DISPATCH_QUEUE_PRIORITY_LOW: isize = -2;
 
+const CALLBACK_IVAR: &str = "gpui_callback";
+
 unsafe extern "C" {
     static _dispatch_main_q: c_void;
+    static NSRunLoopCommonModes: *mut Object;
     fn dispatch_get_global_queue(identifier: isize, flags: usize) -> DispatchQueue;
     fn dispatch_async_f(
         queue: DispatchQueue,
@@ -56,6 +60,38 @@ unsafe extern "C" {
         work: Option<unsafe extern "C" fn(*mut c_void)>,
     );
     fn dispatch_time(when: DispatchTime, delta: i64) -> DispatchTime;
+}
+
+// ---------------------------------------------------------------------------
+// CADisplayLink target — an ObjC class whose `step:` method drives the frame
+// loop on iOS, equivalent to CVDisplayLink on macOS.
+// ---------------------------------------------------------------------------
+
+static mut DISPLAY_LINK_TARGET_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_display_link_target_class() {
+    let superclass = class!(NSObject);
+    let mut decl = ClassDecl::new("GPUIDisplayLinkTarget", superclass)
+        .expect("failed to declare GPUIDisplayLinkTarget class");
+    decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
+    decl.add_method(
+        sel!(step:),
+        display_link_step as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    unsafe {
+        DISPLAY_LINK_TARGET_CLASS = decl.register();
+    }
+}
+
+extern "C" fn display_link_step(this: &Object, _sel: Sel, _display_link: *mut Object) {
+    unsafe {
+        let callback_ptr: *mut c_void = *this.get_ivar(CALLBACK_IVAR);
+        if !callback_ptr.is_null() {
+            let callback = &*(callback_ptr as *const Box<dyn Fn()>);
+            callback();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -120,7 +156,8 @@ impl PlatformDisplay for IosDisplay {
     }
 
     fn uuid(&self) -> Result<uuid::Uuid> {
-        Ok(uuid::Uuid::new_v4())
+        // iOS has a single logical display; return a fixed deterministic UUID.
+        Ok(uuid::Uuid::from_bytes([0x01; 16]))
     }
 
     fn bounds(&self) -> Bounds<Pixels> {
@@ -128,15 +165,11 @@ impl PlatformDisplay for IosDisplay {
     }
 }
 
-pub(crate) struct IosDispatcher {
-    main_thread: thread::ThreadId,
-}
+pub(crate) struct IosDispatcher;
 
 impl IosDispatcher {
     fn new() -> Self {
-        Self {
-            main_thread: thread::current().id(),
-        }
+        Self
     }
 
     fn run_runnable(runnable: crate::RunnableVariant) {
@@ -204,10 +237,18 @@ fn dispatch_get_main_queue_ptr() -> DispatchQueue {
     addr_of!(_dispatch_main_q) as *const _ as DispatchQueue
 }
 
-extern "C" fn deferred_closure_trampoline(context: *mut c_void) {
-    let closure: Box<Box<dyn FnOnce()>> =
-        unsafe { Box::from_raw(context as *mut Box<dyn FnOnce()>) };
-    closure();
+/// Query UIKit for the current system appearance (Light/Dark mode).
+fn detect_system_appearance() -> WindowAppearance {
+    unsafe {
+        let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
+        let traits: *mut Object = msg_send![screen, traitCollection];
+        let style: isize = msg_send![traits, userInterfaceStyle];
+        // UIUserInterfaceStyle: 0 = Unspecified, 1 = Light, 2 = Dark
+        match style {
+            2 => WindowAppearance::Dark,
+            _ => WindowAppearance::Light,
+        }
+    }
 }
 
 extern "C" fn dispatch_trampoline(context: *mut c_void) {
@@ -235,7 +276,10 @@ impl PlatformDispatcher for IosDispatcher {
     }
 
     fn is_main_thread(&self) -> bool {
-        thread::current().id() == self.main_thread
+        unsafe {
+            let result: objc::runtime::BOOL = msg_send![class!(NSThread), isMainThread];
+            result != objc::runtime::NO
+        }
     }
 
     fn dispatch(&self, runnable: crate::RunnableVariant, _priority: Priority) {
@@ -303,6 +347,7 @@ struct IosPlatformState {
 
 impl IosPlatform {
     pub(crate) fn new(_headless: bool) -> Self {
+        log::info!("iOS platform initialized");
         let dispatcher = Arc::new(IosDispatcher::new());
         let background_executor = BackgroundExecutor::new(dispatcher.clone());
         let foreground_executor = ForegroundExecutor::new(dispatcher);
@@ -382,7 +427,7 @@ impl Platform for IosPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        detect_system_appearance()
     }
 
     fn open_url(&self, _url: &str) {}
@@ -501,31 +546,6 @@ impl Platform for IosPlatform {
     }
 }
 
-struct NullAtlas;
-
-impl PlatformAtlas for NullAtlas {
-    fn get_or_insert_with<'a>(
-        &self,
-        _key: &AtlasKey,
-        build: &mut dyn FnMut() -> Result<Option<(crate::Size<crate::DevicePixels>, Cow<'a, [u8]>)>>,
-    ) -> Result<Option<AtlasTile>> {
-        let Some((size, _bytes)) = build()? else {
-            return Ok(None);
-        };
-        Ok(Some(AtlasTile {
-            texture_id: AtlasTextureId {
-                index: 1,
-                kind: AtlasTextureKind::Monochrome,
-            },
-            tile_id: crate::TileId(1),
-            padding: 0,
-            bounds: Bounds::new(crate::point(crate::DevicePixels(0), crate::DevicePixels(0)), size),
-        }))
-    }
-
-    fn remove(&self, _key: &AtlasKey) {}
-}
-
 struct IosWindowState {
     handle: AnyWindowHandle,
     bounds: Bounds<Pixels>,
@@ -534,7 +554,11 @@ struct IosWindowState {
     ui_window: *mut Object,
     ui_view_controller: *mut Object,
     ui_view: *mut Object,
-    sprite_atlas: Arc<dyn PlatformAtlas>,
+    renderer: MetalRenderer,
+    // CADisplayLink driving the frame loop
+    display_link: *mut Object,
+    display_link_target: *mut Object,
+    display_link_callback_ptr: *mut c_void,
     should_close: Option<Box<dyn FnMut() -> bool>>,
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     on_input: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
@@ -553,6 +577,7 @@ pub(crate) struct IosWindow(Rc<Mutex<IosWindowState>>);
 
 impl IosWindow {
     fn new(handle: AnyWindowHandle, options: WindowParams, display: Rc<dyn PlatformDisplay>) -> Self {
+        log::debug!("creating iOS window");
         let (ui_window, ui_view_controller, ui_view, bounds, scale_factor) = unsafe {
             let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
             let screen_bounds: CGRect = msg_send![screen, bounds];
@@ -564,15 +589,6 @@ impl IosWindow {
             let ui_view_controller: *mut Object = msg_send![class!(UIViewController), new];
             let ui_view: *mut Object = msg_send![class!(UIView), alloc];
             let ui_view: *mut Object = msg_send![ui_view, initWithFrame: screen_bounds];
-
-            let color: *mut Object = msg_send![
-                class!(UIColor),
-                colorWithRed: 0.07f64
-                green: 0.10f64
-                blue: 0.16f64
-                alpha: 1.0f64
-            ];
-            let _: () = msg_send![ui_view, setBackgroundColor: color];
 
             let _: () = msg_send![ui_view_controller, setView: ui_view];
             let _: () = msg_send![ui_window, setRootViewController: ui_view_controller];
@@ -588,6 +604,34 @@ impl IosWindow {
             (ui_window, ui_view_controller, ui_view, bounds, scale as f32)
         };
 
+        // Create the Metal renderer and attach its layer to the UIView.
+        let instance_buffer_pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
+        let mut renderer = MetalRenderer::new(instance_buffer_pool, false);
+
+        unsafe {
+            let view_layer: *mut Object = msg_send![ui_view, layer];
+            let metal_layer = renderer.layer_ptr() as *mut Object;
+            let _: () = msg_send![view_layer, addSublayer: metal_layer];
+
+            let view_bounds: CGRect = msg_send![ui_view, bounds];
+            let _: () = msg_send![metal_layer, setFrame: view_bounds];
+            let _: () = msg_send![metal_layer, setContentsScale: scale_factor as f64];
+        }
+
+        let device_width = bounds.size.width.0 * scale_factor;
+        let device_height = bounds.size.height.0 * scale_factor;
+        renderer.update_drawable_size(crate::size(
+            crate::DevicePixels(device_width as i32),
+            crate::DevicePixels(device_height as i32),
+        ));
+
+        log::info!(
+            "iOS window created ({}x{} @{}x)",
+            bounds.size.width.0,
+            bounds.size.height.0,
+            scale_factor,
+        );
+
         Self(Rc::new(Mutex::new(IosWindowState {
             handle,
             bounds: if options.bounds.size.width.0 > 0.0 && options.bounds.size.height.0 > 0.0 {
@@ -600,7 +644,10 @@ impl IosWindow {
             ui_window,
             ui_view_controller,
             ui_view,
-            sprite_atlas: Arc::new(NullAtlas),
+            renderer,
+            display_link: std::ptr::null_mut(),
+            display_link_target: std::ptr::null_mut(),
+            display_link_callback_ptr: std::ptr::null_mut(),
             should_close: None,
             request_frame: None,
             on_input: None,
@@ -619,9 +666,25 @@ impl IosWindow {
 
 impl Drop for IosWindow {
     fn drop(&mut self) {
-        // SAFETY: Objective-C object references are owned by this state.
+        log::info!("iOS window destroyed");
         unsafe {
             let mut state = self.0.lock();
+
+            // Invalidate the CADisplayLink (removes it from the run loop).
+            if !state.display_link.is_null() {
+                let _: () = msg_send![state.display_link, invalidate];
+                state.display_link = std::ptr::null_mut();
+            }
+            if !state.display_link_target.is_null() {
+                let _: () = msg_send![state.display_link_target, release];
+                state.display_link_target = std::ptr::null_mut();
+            }
+            // Free the leaked callback closure.
+            if !state.display_link_callback_ptr.is_null() {
+                let _ = Box::from_raw(state.display_link_callback_ptr as *mut Box<dyn Fn()>);
+                state.display_link_callback_ptr = std::ptr::null_mut();
+            }
+
             if !state.ui_view.is_null() {
                 let _: () = msg_send![state.ui_view, release];
                 state.ui_view = std::ptr::null_mut();
@@ -684,7 +747,7 @@ impl PlatformWindow for IosWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        detect_system_appearance()
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
@@ -759,27 +822,60 @@ impl PlatformWindow for IosWindow {
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.lock().request_frame = Some(callback);
 
-        // Defer the first frame to the next run-loop iteration. Firing
-        // synchronously here would re-enter `AppCell::borrow_mut()` because
-        // we are still inside `Application::run()`'s mutable borrow.
-        let state = self.0.clone();
-        let trigger: Box<dyn FnOnce()> = Box::new(move || {
-            if let Some(mut cb) = state.lock().request_frame.take() {
-                cb(RequestFrameOptions {
-                    require_presentation: true,
-                    force_render: true,
-                });
-                state.lock().request_frame = Some(cb);
+        log::info!("CADisplayLink started");
+
+        // Build a closure that the CADisplayLink target will invoke on every
+        // screen refresh (~60 Hz). This mirrors macOS's CVDisplayLink → step()
+        // pattern.
+        let window_state = self.0.clone();
+        // Force the first frame to render so the initial scene (built during
+        // open_window) gets presented to the Metal layer.
+        let first_frame_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first_frame_done_clone = first_frame_done.clone();
+
+        let step_fn: Box<dyn Fn()> = Box::new(move || {
+            let mut cb = match window_state.lock().request_frame.take() {
+                Some(cb) => cb,
+                None => return,
+            };
+
+            // On the first frame, force a render since the invalidator may not
+            // be dirty (open_window already called draw but never presented).
+            let mut opts = RequestFrameOptions::default();
+            if !first_frame_done_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::info!("first frame rendered");
+                opts.force_render = true;
             }
+
+            cb(opts);
+            window_state.lock().request_frame = Some(cb);
         });
-        let boxed: Box<Box<dyn FnOnce()>> = Box::new(trigger);
-        let context = Box::into_raw(boxed) as *mut c_void;
+
+        // Leak the closure so we get a stable raw pointer for the ObjC ivar.
+        let boxed_fn = Box::new(step_fn);
+        let fn_ptr = Box::into_raw(boxed_fn) as *mut c_void;
+
         unsafe {
-            dispatch_async_f(
-                dispatch_get_main_queue_ptr(),
-                context,
-                Some(deferred_closure_trampoline),
-            );
+            // Instantiate our GPUIDisplayLinkTarget and stash the closure ptr.
+            let target: *mut Object = msg_send![DISPLAY_LINK_TARGET_CLASS, new];
+            (*target).set_ivar::<*mut c_void>(CALLBACK_IVAR, fn_ptr);
+
+            // Create a CADisplayLink that calls [target step:] every frame.
+            let display_link: *mut Object = msg_send![
+                class!(CADisplayLink),
+                displayLinkWithTarget: target
+                selector: sel!(step:)
+            ];
+
+            // Add to the main run loop so it fires continuously.
+            let run_loop: *mut Object = msg_send![class!(NSRunLoop), mainRunLoop];
+            let _: () = msg_send![display_link, addToRunLoop: run_loop forMode: NSRunLoopCommonModes];
+
+            // Store everything in the window state for lifecycle management.
+            let mut state = self.0.lock();
+            state.display_link = display_link;
+            state.display_link_target = target;
+            state.display_link_callback_ptr = fn_ptr;
         }
     }
 
@@ -819,10 +915,12 @@ impl PlatformWindow for IosWindow {
         self.0.lock().on_appearance_change = Some(callback);
     }
 
-    fn draw(&self, _scene: &crate::Scene) {}
+    fn draw(&self, scene: &crate::Scene) {
+        self.0.lock().renderer.draw(scene);
+    }
 
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
-        self.0.lock().sprite_atlas.clone()
+        self.0.lock().renderer.sprite_atlas().clone()
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -831,6 +929,10 @@ impl PlatformWindow for IosWindow {
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
+    }
+
+    fn shared_render_resources(&self) -> Arc<SharedRenderResources> {
+        self.0.lock().renderer.shared().clone()
     }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
