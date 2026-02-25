@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-LIST_SCRIPT="${SCRIPT_DIR}/list-devices.sh"
 TEAM_ID="${DEVELOPMENT_TEAM:-DA7B5U47PT}"
 BUNDLE_ID="dev.glasshq.GPUIiOSHello"
 LOG_PORT="${GPUI_LOG_PORT:-9632}"
@@ -28,18 +27,57 @@ fi
 
 # ---------------------------------------------------------------------------
 # Device selection
+#
+# xcodebuild and devicectl use DIFFERENT identifiers for the same device:
+#   - xcodebuild -destination "id=..." expects the legacy UDID
+#     (e.g., 00008110-001461262E09A01E)
+#   - devicectl --device expects the CoreDevice UUID
+#     (e.g., 1B4A45C4-F142-569D-B798-3FBBE81CD0F0)
+#
+# We query devicectl JSON to get both, then use each where appropriate.
 # ---------------------------------------------------------------------------
-DEVICE_ID="${1:-}"
-if [[ -z "$DEVICE_ID" ]]; then
-  DEVICE_ID="$("$LIST_SCRIPT" | awk 'NR==2 {print $1}')"
+TMPJSON="$(mktemp /tmp/gpui-devices.XXXXXX.json)"
+xcrun devicectl list devices --json-output "$TMPJSON" >/dev/null 2>&1 || true
+
+# Auto-select: prefer devices with active tunnel, then recently-connected,
+# then any known physical iOS device.
+read -r COREDEVICE_ID LEGACY_UDID < <(python3 -c "
+import json
+data = json.load(open('$TMPJSON'))
+devices = data.get('result', {}).get('devices', [])
+active = []
+recent = []
+offline = []
+for d in devices:
+    hw = d.get('hardwareProperties', {})
+    if hw.get('reality') == 'physical' and hw.get('platform') == 'iOS':
+        pair = (d.get('identifier', ''), hw.get('udid', ''))
+        tunnel = d.get('connectionProperties', {}).get('tunnelState', 'unavailable')
+        if tunnel not in ('unavailable', 'disconnected'):
+            active.append(pair)
+        elif tunnel == 'disconnected':
+            recent.append(pair)
+        else:
+            offline.append(pair)
+pick = active or recent or offline
+if pick:
+    print(pick[0][0], pick[0][1])
+" 2>/dev/null || echo "")
+rm -f "$TMPJSON"
+
+# Allow explicit override via $1 (tries as UDID for xcodebuild).
+if [[ -n "${1:-}" ]]; then
+  COREDEVICE_ID="${1}"
+  LEGACY_UDID="${1}"
 fi
 
-if [[ -z "$DEVICE_ID" ]]; then
-  echo "No physical iOS device found." >&2
+if [[ -z "$COREDEVICE_ID" || -z "$LEGACY_UDID" ]]; then
+  echo "No physical iOS device found. Pair a device first:" >&2
+  echo "  Settings → General → VPN & Device Management, or plug in via USB." >&2
   exit 1
 fi
 
-echo "Using device: $DEVICE_ID"
+echo "Using device: ${LEGACY_UDID} (CoreDevice: ${COREDEVICE_ID})"
 echo "Using development team: $TEAM_ID"
 
 # ---------------------------------------------------------------------------
@@ -71,7 +109,7 @@ fi
 echo "Log listener started on port $LOG_PORT (PID $LOG_LISTENER_PID)"
 
 # ---------------------------------------------------------------------------
-# Build
+# Build — xcodebuild needs the legacy UDID
 # ---------------------------------------------------------------------------
 cd "$PROJECT_ROOT"
 xcodegen generate --spec project.yml
@@ -80,7 +118,7 @@ xcodebuild \
   -project GPUIiOSHello.xcodeproj \
   -scheme GPUIiOSHello \
   -configuration Debug \
-  -destination "id=$DEVICE_ID" \
+  -destination "id=$LEGACY_UDID" \
   -derivedDataPath "$PROJECT_ROOT/build/device" \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="$TEAM_ID" \
@@ -94,15 +132,15 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Install & Launch
+# Install & Launch — devicectl needs the CoreDevice UUID
 # ---------------------------------------------------------------------------
 echo "Installing app..."
-xcrun devicectl device install app --device "$DEVICE_ID" "$APP_PATH"
+xcrun devicectl device install app --device "$COREDEVICE_ID" "$APP_PATH"
 
 echo ""
 echo "Launching app..."
 set +e
-launch_output="$(xcrun devicectl device process launch --terminate-existing --device "$DEVICE_ID" "$BUNDLE_ID" 2>&1)"
+launch_output="$(xcrun devicectl device process launch --terminate-existing --device "$COREDEVICE_ID" "$BUNDLE_ID" 2>&1)"
 launch_status=$?
 set -e
 
