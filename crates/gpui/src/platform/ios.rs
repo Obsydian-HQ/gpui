@@ -24,7 +24,7 @@ use std::{
     borrow::Cow,
     ffi::c_void,
     path::{Path, PathBuf},
-    ptr::NonNull,
+    ptr::{NonNull, addr_of},
     rc::Rc,
     sync::Arc,
     thread,
@@ -32,6 +32,31 @@ use std::{
 };
 
 pub(crate) type PlatformScreenCaptureFrame = ();
+
+type DispatchQueue = *mut c_void;
+type DispatchTime = u64;
+
+const DISPATCH_TIME_NOW: DispatchTime = 0;
+const DISPATCH_QUEUE_PRIORITY_HIGH: isize = 2;
+const DISPATCH_QUEUE_PRIORITY_DEFAULT: isize = 0;
+const DISPATCH_QUEUE_PRIORITY_LOW: isize = -2;
+
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_get_global_queue(identifier: isize, flags: usize) -> DispatchQueue;
+    fn dispatch_async_f(
+        queue: DispatchQueue,
+        context: *mut c_void,
+        work: Option<unsafe extern "C" fn(*mut c_void)>,
+    );
+    fn dispatch_after_f(
+        when: DispatchTime,
+        queue: DispatchQueue,
+        context: *mut c_void,
+        work: Option<unsafe extern "C" fn(*mut c_void)>,
+    );
+    fn dispatch_time(when: DispatchTime, delta: i64) -> DispatchTime;
+}
 
 #[derive(Clone)]
 pub(crate) struct IosKeyboardLayout;
@@ -149,6 +174,47 @@ impl IosDispatcher {
             }
         });
     }
+
+    fn dispatch_get_main_queue() -> DispatchQueue {
+        dispatch_get_main_queue_ptr()
+    }
+
+    fn queue_priority(priority: Priority) -> isize {
+        match priority {
+            Priority::RealtimeAudio => {
+                panic!("RealtimeAudio priority should use spawn_realtime, not dispatch")
+            }
+            Priority::High => DISPATCH_QUEUE_PRIORITY_HIGH,
+            Priority::Medium => DISPATCH_QUEUE_PRIORITY_DEFAULT,
+            Priority::Low => DISPATCH_QUEUE_PRIORITY_LOW,
+        }
+    }
+
+    fn duration_to_dispatch_delta(duration: Duration) -> i64 {
+        let nanos = duration.as_nanos();
+        if nanos > i64::MAX as u128 {
+            i64::MAX
+        } else {
+            nanos as i64
+        }
+    }
+}
+
+fn dispatch_get_main_queue_ptr() -> DispatchQueue {
+    addr_of!(_dispatch_main_q) as *const _ as DispatchQueue
+}
+
+extern "C" fn deferred_closure_trampoline(context: *mut c_void) {
+    let closure: Box<Box<dyn FnOnce()>> =
+        unsafe { Box::from_raw(context as *mut Box<dyn FnOnce()>) };
+    closure();
+}
+
+extern "C" fn dispatch_trampoline(context: *mut c_void) {
+    let runnable = unsafe {
+        crate::RunnableVariant::from_raw(NonNull::new_unchecked(context.cast::<()>()))
+    };
+    IosDispatcher::run_runnable(runnable);
 }
 
 impl PlatformDispatcher for IosDispatcher {
@@ -173,16 +239,40 @@ impl PlatformDispatcher for IosDispatcher {
     }
 
     fn dispatch(&self, runnable: crate::RunnableVariant, _priority: Priority) {
-        Self::run_runnable(runnable);
+        let context = runnable.into_raw().as_ptr() as *mut c_void;
+        let queue_priority = Self::queue_priority(_priority);
+        unsafe {
+            dispatch_async_f(
+                dispatch_get_global_queue(queue_priority, 0),
+                context,
+                Some(dispatch_trampoline),
+            );
+        }
     }
 
     fn dispatch_on_main_thread(&self, runnable: crate::RunnableVariant, _priority: Priority) {
-        Self::run_runnable(runnable);
+        let context = runnable.into_raw().as_ptr() as *mut c_void;
+        unsafe {
+            dispatch_async_f(
+                Self::dispatch_get_main_queue(),
+                context,
+                Some(dispatch_trampoline),
+            );
+        }
     }
 
     fn dispatch_after(&self, duration: Duration, runnable: crate::RunnableVariant) {
-        thread::sleep(duration);
-        Self::run_runnable(runnable);
+        let context = runnable.into_raw().as_ptr() as *mut c_void;
+        let delta = Self::duration_to_dispatch_delta(duration);
+        unsafe {
+            let when = dispatch_time(DISPATCH_TIME_NOW, delta);
+            dispatch_after_f(
+                when,
+                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                context,
+                Some(dispatch_trampoline),
+            );
+        }
     }
 
     fn spawn_realtime(&self, f: Box<dyn FnOnce() + Send>) {
@@ -667,15 +757,29 @@ impl PlatformWindow for IosWindow {
     }
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
-        let mut lock = self.0.lock();
-        lock.request_frame = Some(callback);
-        if let Some(mut cb) = lock.request_frame.take() {
-            drop(lock);
-            cb(RequestFrameOptions {
-                require_presentation: true,
-                force_render: true,
-            });
-            self.0.lock().request_frame = Some(cb);
+        self.0.lock().request_frame = Some(callback);
+
+        // Defer the first frame to the next run-loop iteration. Firing
+        // synchronously here would re-enter `AppCell::borrow_mut()` because
+        // we are still inside `Application::run()`'s mutable borrow.
+        let state = self.0.clone();
+        let trigger: Box<dyn FnOnce()> = Box::new(move || {
+            if let Some(mut cb) = state.lock().request_frame.take() {
+                cb(RequestFrameOptions {
+                    require_presentation: true,
+                    force_render: true,
+                });
+                state.lock().request_frame = Some(cb);
+            }
+        });
+        let boxed: Box<Box<dyn FnOnce()>> = Box::new(trigger);
+        let context = Box::into_raw(boxed) as *mut c_void;
+        unsafe {
+            dispatch_async_f(
+                dispatch_get_main_queue_ptr(),
+                context,
+                Some(deferred_closure_trampoline),
+            );
         }
     }
 
