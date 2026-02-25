@@ -2771,9 +2771,50 @@ fn is_native_field_editor_active(view: &Object) -> bool {
 
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
     if is_native_field_editor_active(this) {
+        // When a native field editor (e.g. NSSearchField) is focused, standard text
+        // editing shortcuts (Cmd+C/V/X/A/Z) must reach the field editor so copy/paste
+        // work inside the text field.  All other Cmd-based shortcuts (Cmd+T, Cmd+W,
+        // Cmd+L, …) are dispatched through GPUI's action system so they still work
+        // while the user is typing.
+        let window_state = unsafe { get_window_state(this) };
+        let event = unsafe {
+            PlatformInput::from_native(native_event, None, Some(this as *const _ as id))
+        };
+
+        if let Some(PlatformInput::KeyDown(key_down_event)) = event {
+            let ks = &key_down_event.keystroke;
+            if ks.modifiers.platform && !is_field_editor_shortcut(ks) {
+                let mut callback = window_state.as_ref().lock().event_callback.take();
+                let handled: BOOL = if let Some(callback) = callback.as_mut() {
+                    !callback(PlatformInput::KeyDown(key_down_event)).propagate as BOOL
+                } else {
+                    NO
+                };
+                window_state.as_ref().lock().event_callback = callback;
+                if handled == YES {
+                    return YES;
+                }
+            }
+        }
+
         return NO;
     }
     handle_key_event(this, native_event, true)
+}
+
+/// Returns true for shortcuts that NSTextView field editors handle natively
+/// (copy, paste, cut, select-all, undo, redo).  These must NOT be intercepted
+/// by GPUI when a native search field is focused.
+fn is_field_editor_shortcut(ks: &crate::Keystroke) -> bool {
+    if !ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt || ks.modifiers.function
+    {
+        return false;
+    }
+    match ks.key.as_str() {
+        "c" | "v" | "x" | "a" => !ks.modifiers.shift,
+        "z" => true, // Cmd+Z (undo) and Cmd+Shift+Z (redo)
+        _ => false,
+    }
 }
 
 extern "C" fn handle_key_down(this: &Object, _: Sel, native_event: id) {
