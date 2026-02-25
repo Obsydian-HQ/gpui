@@ -1,0 +1,12 @@
+[package]
+name = "gpui_ios_app"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+gpui.workspace = true

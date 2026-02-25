@@ -65,6 +65,7 @@ pub(super) fn schedule_native_focus_callback(
 ///
 /// # Safety
 /// Both pointers must be valid ObjC objects (or null for target_ptr).
+#[cfg(target_os = "macos")]
 pub(super) unsafe fn cleanup_native_control(
     control_ptr: *mut c_void,
     target_ptr: *mut c_void,
@@ -77,5 +78,22 @@ pub(super) unsafe fn cleanup_native_control(
         );
         release_target_fn(target_ptr);
         release_control_fn(control_ptr as cocoa::base::id);
+    }
+}
+
+/// iOS/native-unsupported fallback.
+///
+/// # Safety
+/// The release callbacks must accept null pointers.
+#[cfg(not(target_os = "macos"))]
+pub(super) unsafe fn cleanup_native_control(
+    control_ptr: *mut c_void,
+    target_ptr: *mut c_void,
+    release_target_fn: unsafe fn(*mut c_void),
+    _release_control_fn: unsafe fn(*mut c_void),
+) {
+    unsafe {
+        release_target_fn(target_ptr);
+        let _ = control_ptr;
     }
 }

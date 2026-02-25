@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/collections",
     "crates/gpui",
+    "crates/gpui_ios_app",
     "crates/gpui_platform",
     "crates/gpui_macros",
     "crates/gpui_tokio",
