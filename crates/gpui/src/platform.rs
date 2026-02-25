@@ -11,6 +11,9 @@ mod ios;
 #[cfg(target_os = "macos")]
 mod mac;
 
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) mod metal;
+
 #[cfg(all(
     any(target_os = "linux", target_os = "freebsd"),
     any(feature = "wayland", feature = "x11")
@@ -937,11 +940,11 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
 
     /// Returns shared GPU render resources for creating secondary rendering surfaces.
-    /// Only available on macOS with Metal rendering.
-    #[cfg(target_os = "macos")]
+    /// Only available on Apple platforms with Metal rendering.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     fn shared_render_resources(
         &self,
-    ) -> std::sync::Arc<crate::platform::mac::metal_renderer::SharedRenderResources> {
+    ) -> std::sync::Arc<crate::platform::metal::renderer::SharedRenderResources> {
         unimplemented!("shared_render_resources not available on this platform window")
     }
 

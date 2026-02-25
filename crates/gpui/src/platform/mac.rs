@@ -10,12 +10,10 @@ mod pasteboard;
 #[cfg(feature = "screen-capture")]
 mod screen_capture;
 
-mod metal_atlas;
-pub mod metal_renderer;
 pub(crate) mod gpui_surface;
 
 use core_video::image_buffer::CVImageBuffer;
-use metal_renderer as renderer;
+use super::metal::renderer;
 
 #[cfg(feature = "font-kit")]
 mod open_type;

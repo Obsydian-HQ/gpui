@@ -10,3 +10,5 @@ path = "src/lib.rs"
 
 [dependencies]
 gpui.workspace = true
+log.workspace = true
+oslog = "0.2"

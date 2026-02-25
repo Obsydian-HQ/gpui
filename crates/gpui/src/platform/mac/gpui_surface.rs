@@ -1,4 +1,4 @@
-use super::metal_renderer::{SharedRenderResources, SurfaceRenderer};
+use crate::platform::metal::renderer::{SharedRenderResources, SurfaceRenderer};
 use super::window::MacWindowState;
 use crate::{
     DevicePixels, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, Pixels,

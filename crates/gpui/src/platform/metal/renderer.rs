@@ -1,4 +1,4 @@
-use super::metal_atlas::MetalAtlas;
+use super::atlas::MetalAtlas;
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
@@ -6,15 +6,11 @@ use crate::{
 };
 use anyhow::Result;
 use block::ConcreteBlock;
-use cocoa::{
-    base::{NO, YES},
-    foundation::{NSSize, NSUInteger},
-    quartzcore::AutoresizingMask,
-};
 #[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
 
 use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
 use core_video::{
     metal_texture::CVMetalTextureGetTexture,
     metal_texture_cache::CVMetalTextureCache,
@@ -29,6 +25,19 @@ use objc::{self, msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
 use std::{cell::Cell, ffi::c_void, mem, ptr, sync::Arc};
+
+// Cross-platform type aliases replacing cocoa-specific imports.
+// `CGSize` has the same layout as `NSSize` — both are `{ width: f64, height: f64 }`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct CGSize {
+    width: f64,
+    height: f64,
+}
+
+type NSUInteger = u64;
+const YES: objc::runtime::BOOL = true;
+const NO: objc::runtime::BOOL = false;
 
 // Exported to metal
 pub(crate) type PointF = crate::Point<f32>;
@@ -55,7 +64,7 @@ pub unsafe fn new_renderer(
 }
 
 pub(crate) struct InstanceBufferPool {
-    buffer_size: usize,
+    pub(crate) buffer_size: usize,
     buffers: Vec<metal::Buffer>,
 }
 
@@ -125,6 +134,7 @@ pub(crate) struct SharedRenderResources {
     #[allow(clippy::arc_with_non_send_sync)]
     pub instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     pub sprite_atlas: Arc<MetalAtlas>,
+    #[cfg(target_os = "macos")]
     pub core_video_texture_cache: CVMetalTextureCache,
     pub path_sample_count: u32,
     pub is_apple_gpu: bool,
@@ -159,9 +169,11 @@ pub struct PathRasterizationVertex {
 
 impl MetalRenderer {
     pub fn new(instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>, transparent: bool) -> Self {
-        // Prefer low‐power integrated GPUs on Intel Mac. On Apple
+        // On macOS, prefer low‐power integrated GPUs on Intel Mac. On Apple
         // Silicon, there is only ever one GPU, so this is equivalent to
         // `metal::Device::system_default()`.
+        // On iOS, `MTLCopyAllDevices()` does not exist — use system_default() directly.
+        #[cfg(target_os = "macos")]
         let device = if let Some(d) = metal::Device::all()
             .into_iter()
             .min_by_key(|d| (d.is_removable(), !d.is_low_power()))
@@ -178,6 +190,17 @@ impl MetalRenderer {
                 std::process::exit(1);
             })
         };
+        #[cfg(target_os = "ios")]
+        let device = metal::Device::system_default().unwrap_or_else(|| {
+            log::error!("unable to access a compatible graphics device");
+            std::process::exit(1);
+        });
+
+        #[cfg(target_os = "ios")]
+        debug_assert!(
+            device.has_unified_memory(),
+            "iOS devices must have unified memory"
+        );
 
         let layer = metal::MetalLayer::new();
         layer.set_device(&device);
@@ -190,13 +213,25 @@ impl MetalRenderer {
         #[cfg(any(test, feature = "test-support"))]
         layer.set_framebuffer_only(false);
         unsafe {
+            // On macOS, disable drawable timeout to prevent frame drops during compositing.
+            // On iOS, MUST allow timeout — blocking nextDrawable on the main thread
+            // (where CADisplayLink fires) deadlocks the run loop.
+            #[cfg(target_os = "macos")]
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
+            #[cfg(target_os = "ios")]
+            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: YES];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
-            let _: () = msg_send![
-                &*layer,
-                setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                    | AutoresizingMask::HEIGHT_SIZABLE
-            ];
+            // AutoresizingMask is macOS-only (NSView auto-layout).
+            // On iOS the layer frame is set explicitly.
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa::quartzcore::AutoresizingMask;
+                let _: () = msg_send![
+                    &*layer,
+                    setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
+                        | AutoresizingMask::HEIGHT_SIZABLE
+                ];
+            }
         }
         #[cfg(feature = "runtime_shaders")]
         let library = device
@@ -206,7 +241,6 @@ impl MetalRenderer {
         let library = device
             .new_library_with_data(SHADERS_METALLIB)
             .expect("error building metal library");
-
         let is_unified_memory = device.has_unified_memory();
         let is_apple_gpu = device.supports_family(MTLGPUFamily::Apple1);
 
@@ -311,6 +345,7 @@ impl MetalRenderer {
 
         let command_queue = device.new_command_queue();
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), is_apple_gpu));
+        #[cfg(target_os = "macos")]
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 
@@ -329,6 +364,7 @@ impl MetalRenderer {
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
+            #[cfg(target_os = "macos")]
             core_video_texture_cache,
             path_sample_count: PATH_SAMPLE_COUNT,
             is_apple_gpu,
@@ -346,6 +382,17 @@ impl MetalRenderer {
 
     pub fn shared(&self) -> &Arc<SharedRenderResources> {
         &self.shared
+    }
+
+    /// Replace the renderer's CAMetalLayer with an external one (e.g., a UIView's
+    /// backing layer on iOS). The new layer inherits device, pixel format, opacity,
+    /// and maximum drawable count from the old layer.
+    pub fn replace_layer(&mut self, layer: metal::MetalLayer) {
+        layer.set_device(&self.shared.device);
+        layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        layer.set_opaque(self.layer.is_opaque());
+        layer.set_maximum_drawable_count(3);
+        self.layer = layer;
     }
 
     pub fn layer(&self) -> &metal::MetalLayerRef {
@@ -367,19 +414,19 @@ impl MetalRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
-        let size = NSSize {
+        let cg_size = CGSize {
             width: size.width.0 as f64,
             height: size.height.0 as f64,
         };
         unsafe {
             let _: () = msg_send![
                 self.layer(),
-                setDrawableSize: size
+                setDrawableSize: cg_size
             ];
         }
         let device_pixels_size = Size {
-            width: DevicePixels(size.width as i32),
-            height: DevicePixels(size.height as i32),
+            width: DevicePixels(cg_size.width as i32),
+            height: DevicePixels(cg_size.height as i32),
         };
         update_path_intermediate_textures(
             &self.shared.device,
@@ -523,13 +570,23 @@ impl SurfaceRenderer {
         layer.set_opaque(!transparent);
         layer.set_maximum_drawable_count(3);
         unsafe {
+            // On macOS, disable drawable timeout to prevent frame drops during compositing.
+            // On iOS, MUST allow timeout — blocking nextDrawable on the main thread
+            // (where CADisplayLink fires) deadlocks the run loop.
+            #[cfg(target_os = "macos")]
             let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
+            #[cfg(target_os = "ios")]
+            let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: YES];
             let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
-            let _: () = msg_send![
-                &*layer,
-                setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                    | AutoresizingMask::HEIGHT_SIZABLE
-            ];
+            #[cfg(target_os = "macos")]
+            {
+                use cocoa::quartzcore::AutoresizingMask;
+                let _: () = msg_send![
+                    &*layer,
+                    setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
+                        | AutoresizingMask::HEIGHT_SIZABLE
+                ];
+            }
         }
 
         Self {
@@ -549,14 +606,14 @@ impl SurfaceRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
-        let ns_size = NSSize {
+        let cg_size = CGSize {
             width: size.width.0 as f64,
             height: size.height.0 as f64,
         };
         unsafe {
             let _: () = msg_send![
                 self.layer(),
-                setDrawableSize: ns_size
+                setDrawableSize: cg_size
             ];
         }
         update_path_intermediate_textures(
@@ -821,14 +878,24 @@ fn draw_primitives(
                 viewport_size,
                 command_encoder,
             ),
-            PrimitiveBatch::Surfaces(range) => draw_surfaces_batch(
-                shared,
-                &scene.surfaces[range],
-                instance_buffer,
-                &mut instance_offset,
-                viewport_size,
-                command_encoder,
-            ),
+            PrimitiveBatch::Surfaces(range) => {
+                #[cfg(target_os = "macos")]
+                {
+                    draw_surfaces_batch(
+                        shared,
+                        &scene.surfaces[range],
+                        instance_buffer,
+                        &mut instance_offset,
+                        viewport_size,
+                        command_encoder,
+                    )
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = range;
+                    true // No surface rendering on non-macOS platforms yet
+                }
+            }
             PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
         };
         if !ok {
@@ -1369,6 +1436,7 @@ fn draw_polychrome_sprites(
     true
 }
 
+#[cfg(target_os = "macos")]
 fn draw_surfaces_batch(
     shared: &SharedRenderResources,
     surfaces: &[PaintSurface],

@@ -10,7 +10,12 @@ fn main() {
     match target.as_deref() {
         Ok("macos") => {
             #[cfg(target_os = "macos")]
-            macos::build();
+            apple::build_macos();
+        }
+        Ok("ios") => {
+            // build.rs runs on macOS host when cross-compiling to iOS
+            #[cfg(target_os = "macos")]
+            apple::build_ios();
         }
         Ok("windows") => {
             #[cfg(target_os = "windows")]
@@ -20,7 +25,7 @@ fn main() {
     };
 }
 #[cfg(target_os = "macos")]
-mod macos {
+mod apple {
     use std::{
         env,
         path::{Path, PathBuf},
@@ -28,7 +33,7 @@ mod macos {
 
     use cbindgen::Config;
 
-    pub(super) fn build() {
+    pub(super) fn build_macos() {
         generate_dispatch_bindings();
 
         let header_path = generate_shader_bindings();
@@ -36,7 +41,17 @@ mod macos {
         #[cfg(feature = "runtime_shaders")]
         emit_stitched_shaders(&header_path);
         #[cfg(not(feature = "runtime_shaders"))]
-        compile_metal_shaders(&header_path);
+        compile_metal_shaders(&header_path, "macosx", "-mmacosx-version-min=10.15.7");
+    }
+
+    pub(super) fn build_ios() {
+        // Note: we intentionally skip `generate_dispatch_bindings()` here.
+        // Those bindings are for macOS-specific GCD/NSNotification FFI
+        // (dispatch_source, etc.). iOS uses the same GCD primitives but
+        // declares them manually in `platform/ios.rs` and uses UIKit
+        // notifications instead of NSNotification for app lifecycle.
+        let header_path = generate_shader_bindings();
+        compile_metal_shaders(&header_path, "iphoneos", "-mios-version-min=16.0");
     }
 
     fn generate_dispatch_bindings() {
@@ -121,7 +136,7 @@ mod macos {
             crate_dir.join("src/color.rs"),
             crate_dir.join("src/window.rs"),
             crate_dir.join("src/platform.rs"),
-            crate_dir.join("src/platform/mac/metal_renderer.rs"),
+            crate_dir.join("src/platform/metal/renderer.rs"),
         ];
         for src_path in src_paths {
             println!("cargo:rerun-if-changed={}", src_path.display());
@@ -157,8 +172,7 @@ mod macos {
         println!("cargo:rerun-if-changed={}", &shader_source_path);
     }
 
-    #[cfg(not(feature = "runtime_shaders"))]
-    fn compile_metal_shaders(header_path: &Path) {
+    fn compile_metal_shaders(header_path: &Path, sdk: &str, version_flag: &str) {
         use std::process::{self, Command};
         let shader_path = "./src/platform/mac/shaders.metal";
         let air_output_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.air");
@@ -169,10 +183,10 @@ mod macos {
         let output = Command::new("xcrun")
             .args([
                 "-sdk",
-                "macosx",
+                sdk,
                 "metal",
                 "-gline-tables-only",
-                "-mmacosx-version-min=10.15.7",
+                version_flag,
                 "-MO",
                 "-c",
                 shader_path,
@@ -193,7 +207,7 @@ mod macos {
         }
 
         let output = Command::new("xcrun")
-            .args(["-sdk", "macosx", "metallib"])
+            .args(["-sdk", sdk, "metallib"])
             .arg(air_output_path)
             .arg("-o")
             .arg(metallib_output_path)

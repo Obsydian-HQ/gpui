@@ -2599,7 +2599,7 @@ impl PlatformWindow for MacWindow {
 
     fn shared_render_resources(
         &self,
-    ) -> std::sync::Arc<super::metal_renderer::SharedRenderResources> {
+    ) -> std::sync::Arc<crate::platform::metal::renderer::SharedRenderResources> {
         self.0.lock().renderer.shared().clone()
     }
 
