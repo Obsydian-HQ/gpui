@@ -127,6 +127,7 @@ impl Drop for AppRefMut<'_> {
 
 /// A reference to a GPUI application, typically constructed in the `main` function of your app.
 /// You won't interact with this type much outside of initial configuration and startup.
+#[derive(Clone)]
 pub struct Application(Rc<AppCell>);
 
 /// Represents an application before it is fully launched. Once your app is
