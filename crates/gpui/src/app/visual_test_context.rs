@@ -244,6 +244,7 @@ impl VisualTestAppContext {
                 modifiers: Modifiers::default(),
                 key: key.clone(),
                 key_char: Some(key),
+                native_key_code: None,
             };
             self.dispatch_keystroke(window, keystroke);
         }

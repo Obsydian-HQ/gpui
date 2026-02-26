@@ -1380,6 +1380,7 @@ fn parse_normal_key(
             modifiers,
             key,
             key_char,
+            native_key_code: None,
         },
         prefer_character_input,
     ))
