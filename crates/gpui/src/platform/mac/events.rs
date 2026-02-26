@@ -509,6 +509,7 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
             },
             key,
             key_char,
+            native_key_code: Some(native_event.keyCode() as u16),
         }
     }
 }
