@@ -49,7 +49,9 @@ pub enum ImageSource {
 }
 
 fn is_uri(uri: &str) -> bool {
-    http_client::Uri::from_str(uri).is_ok()
+    http_client::Uri::from_str(uri)
+        .map(|u| u.scheme().is_some())
+        .unwrap_or(false)
 }
 
 impl From<SharedUri> for ImageSource {

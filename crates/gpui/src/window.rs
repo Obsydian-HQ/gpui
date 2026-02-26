@@ -3509,18 +3509,29 @@ impl Window {
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
+            let invalidator = invalidator.clone();
             move |_, _| {
-                handle
+                if handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                    .is_err()
+                {
+                    // Window is already borrowed (e.g. native controls triggering
+                    // macOS layout during paint). Mark dirty so the next frame
+                    // picks up the bounds change.
+                    invalidator.set_dirty(true);
+                }
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
+            let invalidator = invalidator.clone();
             move || {
-                handle
+                if handle
                     .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                    .is_err()
+                {
+                    invalidator.set_dirty(true);
+                }
             }
         }));
         platform_window.on_appearance_changed(Box::new({
