@@ -3747,13 +3747,18 @@ pub(crate) struct DispatchEventResult {
 }
 
 /// Indicates which region of the window is visible. Content falling outside of this mask will not be
-/// rendered. Currently, only rectangular content masks are supported, but we give the mask its own type
-/// to leave room to support more complex shapes in the future.
+/// rendered. Supports both rectangular and rounded-rectangle clip shapes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct ContentMask<P: Clone + Debug + Default + PartialEq> {
-    /// The bounds
+    /// The bounds used for hardware (rectangular) clipping.
     pub bounds: Bounds<P>,
+    /// Corner radii for rounded-rectangle clipping. All zeros means rectangular clipping.
+    pub corner_radii: Corners<P>,
+    /// The original bounds of the element that introduced the rounded clip shape.
+    /// Used as the reference rectangle for the SDF so that child elements are always
+    /// clipped against the card's outline, not their own (potentially smaller) bounds.
+    pub corner_radii_bounds: Bounds<P>,
 }
 
 impl ContentMask<Pixels> {
@@ -3761,13 +3766,25 @@ impl ContentMask<Pixels> {
     pub fn scale(&self, factor: f32) -> ContentMask<ScaledPixels> {
         ContentMask {
             bounds: self.bounds.scale(factor),
+            corner_radii: self.corner_radii.scale(factor),
+            corner_radii_bounds: self.corner_radii_bounds.scale(factor),
         }
     }
 
     /// Intersect the content mask with the given content mask.
+    ///
+    /// Only one set of corner radii can be active at a time because the GPU
+    /// shader evaluates a single SDF per fragment. When both masks are rounded
+    /// the outer mask wins — this is intentional: child elements (text, icons)
+    /// should clip against their parent card's outline, not their own bounds.
     pub fn intersect(&self, other: &Self) -> Self {
         let bounds = self.bounds.intersect(&other.bounds);
-        ContentMask { bounds }
+        let (corner_radii, corner_radii_bounds) = if self.corner_radii != Corners::default() {
+            (self.corner_radii.clone(), self.corner_radii_bounds)
+        } else {
+            (other.corner_radii.clone(), other.corner_radii_bounds)
+        };
+        ContentMask { bounds, corner_radii, corner_radii_bounds }
     }
 }
 
@@ -5454,6 +5471,8 @@ impl Window {
                     origin: Point::default(),
                     size: self.viewport_size,
                 },
+                corner_radii: Corners::default(),
+                corner_radii_bounds: Bounds::default(),
             })
     }
 

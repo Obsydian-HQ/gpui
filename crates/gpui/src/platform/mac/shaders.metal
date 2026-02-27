@@ -20,6 +20,7 @@ float4 distance_from_clip_rect(float2 unit_vertex, Bounds_ScaledPixels bounds,
                                Bounds_ScaledPixels clip_bounds);
 float4 distance_from_clip_rect_transformed(float2 unit_vertex, Bounds_ScaledPixels bounds,
                                Bounds_ScaledPixels clip_bounds, TransformationMatrix transformation);
+float content_mask_clip(float2 position, ContentMask_ScaledPixels mask);
 float corner_dash_velocity(float dv1, float dv2);
 float dash_alpha(float t, float period, float length, float dash_velocity,
                  float antialias_threshold);
@@ -115,7 +116,8 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       quad.border_widths.right == 0.0 &&
       quad.border_widths.bottom == 0.0 &&
       unrounded) {
-    return background_color;
+    float mask_alpha = content_mask_clip(input.position.xy, quad.content_mask);
+    return background_color * mask_alpha;
   }
 
   float2 size = float2(quad.bounds.size.width, quad.bounds.size.height);
@@ -393,7 +395,8 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                 saturate(antialias_threshold - inner_sdf));
   }
 
-  return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf));
+  float mask_alpha = content_mask_clip(input.position.xy, quad.content_mask);
+  return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf)) * mask_alpha;
 }
 
 // Returns the dash velocity of a corner given the dash velocity of the two
@@ -538,7 +541,8 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
     }
   }
 
-  return input.color * float4(1., 1., 1., alpha);
+  float mask_alpha = content_mask_clip(input.position.xy, shadow.content_mask);
+  return input.color * float4(1., 1., 1., alpha * mask_alpha);
 }
 
 struct UnderlineVertexOutput {
@@ -599,9 +603,11 @@ fragment float4 underline_fragment(UnderlineFragmentInput input [[stage_in]],
     float distance_from_bottom_border = distance_in_pixels + half_thickness;
     float alpha = saturate(
         0.5 - max(-distance_from_bottom_border, distance_from_top_border));
-    return input.color * float4(1., 1., 1., alpha);
+    float mask_alpha = content_mask_clip(input.position.xy, underline.content_mask);
+    return input.color * float4(1., 1., 1., alpha * mask_alpha);
   } else {
-    return input.color;
+    float mask_alpha = content_mask_clip(input.position.xy, underline.content_mask);
+    return input.color * float4(1., 1., 1., mask_alpha);
   }
 }
 
@@ -609,14 +615,15 @@ struct MonochromeSpriteVertexOutput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
-  float4 clip_distance;
+  uint sprite_id [[flat]];
+  float clip_distance [[clip_distance]][4];
 };
 
 struct MonochromeSpriteFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   float4 color [[flat]];
-  float4 clip_distance;
+  uint sprite_id [[flat]];
 };
 
 vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
@@ -639,6 +646,7 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
       device_position,
       tile_position,
       color,
+      sprite_id,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
@@ -646,16 +654,14 @@ fragment float4 monochrome_sprite_fragment(
     MonochromeSpriteFragmentInput input [[stage_in]],
     constant MonochromeSprite *sprites [[buffer(SpriteInputIndex_Sprites)]],
     texture2d<float> atlas_texture [[texture(SpriteInputIndex_AtlasTexture)]]) {
-  if (any(input.clip_distance < float4(0.0))) {
-    return float4(0.0);
-  }
-
+  MonochromeSprite sprite = sprites[input.sprite_id];
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
   float4 color = input.color;
-  color.a *= sample.a;
+  float mask_alpha = content_mask_clip(input.position.xy, sprite.content_mask);
+  color.a *= sample.a * mask_alpha;
   return color;
 }
 
@@ -714,7 +720,8 @@ fragment float4 polychrome_sprite_fragment(
     color.g = grayscale;
     color.b = grayscale;
   }
-  color.a *= sprite.opacity * saturate(0.5 - distance);
+  float mask_alpha = content_mask_clip(input.position.xy, sprite.content_mask);
+  color.a *= sprite.opacity * saturate(0.5 - distance) * mask_alpha;
   return color;
 }
 
@@ -1136,6 +1143,24 @@ float4 distance_from_clip_rect_transformed(float2 unit_vertex, Bounds_ScaledPixe
                 clip_bounds.origin.x + clip_bounds.size.width - transformed_position.x,
                 transformed_position.y - clip_bounds.origin.y,
                 clip_bounds.origin.y + clip_bounds.size.height - transformed_position.y);
+}
+
+// Returns an alpha factor for clipping a fragment to a ContentMask.
+// When corner_radii are all zero this is a no-op (rectangular clipping is
+// already handled by [[clip_distance]] in the vertex stage). When the mask
+// has non-zero corner radii, it computes a rounded-rect SDF using
+// corner_radii_bounds (the original card bounds) so that child elements
+// are always clipped against the card's outline regardless of their own bounds.
+float content_mask_clip(float2 position, ContentMask_ScaledPixels mask) {
+  bool unrounded = mask.corner_radii.top_left == 0.0 &&
+      mask.corner_radii.top_right == 0.0 &&
+      mask.corner_radii.bottom_right == 0.0 &&
+      mask.corner_radii.bottom_left == 0.0;
+  if (unrounded) {
+    return 1.0;
+  }
+  float sdf = quad_sdf(position, mask.corner_radii_bounds, mask.corner_radii);
+  return saturate(0.5 - sdf);
 }
 
 float4 over(float4 below, float4 above) {

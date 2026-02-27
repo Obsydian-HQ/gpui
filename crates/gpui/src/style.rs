@@ -604,7 +604,13 @@ impl Style {
                     (false, false) => Bounds::from_corners(min, max),
                 };
 
-                Some(ContentMask { bounds })
+                let corner_radii = self
+                    .corner_radii
+                    .to_pixels(rem_size)
+                    .clamp_radii_for_quad_size(bounds.size);
+                // corner_radii_bounds stores the original card bounds so that child elements
+                // always clip their SDF against this card's outline, not their own smaller bounds.
+                Some(ContentMask { corner_radii_bounds: bounds, bounds, corner_radii })
             }
         }
     }
@@ -705,12 +711,14 @@ impl Style {
                 self.border_style,
             );
 
-            window.with_content_mask(Some(ContentMask { bounds: top_bounds }), |window| {
+            window.with_content_mask(Some(ContentMask { bounds: top_bounds, corner_radii: Default::default(), corner_radii_bounds: Default::default() }), |window| {
                 window.paint_quad(quad.clone());
             });
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: right_bounds,
+                    corner_radii: Default::default(),
+                    corner_radii_bounds: Default::default(),
                 }),
                 |window| {
                     window.paint_quad(quad.clone());
@@ -719,6 +727,8 @@ impl Style {
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: bottom_bounds,
+                    corner_radii: Default::default(),
+                    corner_radii_bounds: Default::default(),
                 }),
                 |window| {
                     window.paint_quad(quad.clone());
@@ -727,6 +737,8 @@ impl Style {
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: left_bounds,
+                    corner_radii: Default::default(),
+                    corner_radii_bounds: Default::default(),
                 }),
                 |window| {
                     window.paint_quad(quad);
