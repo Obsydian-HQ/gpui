@@ -1,12 +1,13 @@
 use gpui::{
-    App, Application, Context, MouseButton, Window, WindowAppearance, WindowOptions, div,
-    prelude::*, px, rgb,
+    App, Application, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, Window,
+    WindowAppearance, WindowOptions, div, prelude::*, px, rgb,
 };
 use log::LevelFilter;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -14,7 +15,18 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 // iOS Logger — os_log + stderr + TCP relay
 // ---------------------------------------------------------------------------
 
-static TCP_SINK: Mutex<Option<TcpStream>> = Mutex::new(None);
+struct TcpSinkState {
+    stream: Option<TcpStream>,
+    last_reconnect_attempt_ms: u64,
+}
+
+static TCP_SINK: Mutex<Option<TcpSinkState>> = Mutex::new(None);
+
+/// Relay address parsed once at init, reused for reconnection.
+static RELAY_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
+
+/// Cooldown between TCP reconnection attempts (5 seconds).
+const TCP_RECONNECT_COOLDOWN_MS: u64 = 5_000;
 
 struct IosLogger {
     subsystem: String,
@@ -46,6 +58,25 @@ impl IosLogger {
             log::Level::Trace => "TRACE",
         }
     }
+
+    fn timestamp() -> String {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let total_secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let hours = (total_secs / 3600) % 24;
+        let minutes = (total_secs / 60) % 60;
+        let seconds = total_secs % 60;
+        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    }
+
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
 }
 
 impl log::Log for IosLogger {
@@ -59,32 +90,42 @@ impl log::Log for IosLogger {
         }
 
         let message = format!("{}", record.args());
+        let ts = Self::timestamp();
 
         let os_log = oslog::OsLog::new(&self.subsystem, record.target());
         os_log.with_level(record.level().into(), &message);
 
         let color = Self::level_color(record.level());
         let reset = "\x1b[0m";
+        let tag = Self::level_tag(record.level());
         let mut stderr = std::io::stderr().lock();
         let _ = writeln!(
             stderr,
-            "{color}{}{reset} [{}] {}",
-            Self::level_tag(record.level()),
+            "{ts} {color}{tag}{reset} [{}] {}",
             record.target(),
             message,
         );
         let _ = stderr.flush();
 
         if let Ok(mut guard) = TCP_SINK.lock() {
-            if let Some(ref mut stream) = *guard {
+            if let Some(ref mut sink) = *guard {
                 let line = format!(
-                    "{color}{}{reset} [{}] {}\n",
-                    Self::level_tag(record.level()),
+                    "{ts} {color}{tag}{reset} [{}] {}\n",
                     record.target(),
                     message,
                 );
-                if stream.write_all(line.as_bytes()).is_err() {
-                    *guard = None;
+                if let Some(ref mut stream) = sink.stream {
+                    if stream.write_all(line.as_bytes()).is_err() {
+                        sink.stream = None;
+                        // Try reconnect if cooldown has passed
+                        try_reconnect_tcp(sink);
+                    }
+                } else {
+                    try_reconnect_tcp(sink);
+                    // Retry write after reconnect
+                    if let Some(ref mut stream) = sink.stream {
+                        let _ = stream.write_all(line.as_bytes());
+                    }
                 }
             }
         }
@@ -93,10 +134,33 @@ impl log::Log for IosLogger {
     fn flush(&self) {
         let _ = std::io::stderr().flush();
         if let Ok(mut guard) = TCP_SINK.lock() {
-            if let Some(ref mut stream) = *guard {
-                let _ = stream.flush();
+            if let Some(ref mut sink) = *guard {
+                if let Some(ref mut stream) = sink.stream {
+                    let _ = stream.flush();
+                }
             }
         }
+    }
+}
+
+fn try_reconnect_tcp(sink: &mut TcpSinkState) {
+    let now = IosLogger::now_ms();
+    if now.saturating_sub(sink.last_reconnect_attempt_ms) < TCP_RECONNECT_COOLDOWN_MS {
+        return;
+    }
+    sink.last_reconnect_attempt_ms = now;
+
+    let addr = match RELAY_ADDR.lock() {
+        Ok(guard) => match *guard {
+            Some(a) => a,
+            None => return,
+        },
+        Err(_) => return,
+    };
+
+    if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+        let _ = stream.set_nodelay(true);
+        sink.stream = Some(stream);
     }
 }
 
@@ -106,17 +170,30 @@ fn try_connect_log_relay() {
         _ => return,
     };
 
-    let sock_addr = match addr.parse::<std::net::SocketAddr>() {
+    let sock_addr = match addr.parse::<SocketAddr>() {
         Ok(a) => a,
         Err(_) => return,
     };
 
-    match TcpStream::connect_timeout(&sock_addr, std::time::Duration::from_secs(2)) {
+    // Store for reconnection
+    if let Ok(mut guard) = RELAY_ADDR.lock() {
+        *guard = Some(sock_addr);
+    }
+
+    match TcpStream::connect_timeout(&sock_addr, Duration::from_secs(2)) {
         Ok(stream) => {
             let _ = stream.set_nodelay(true);
-            *TCP_SINK.lock().unwrap() = Some(stream);
+            *TCP_SINK.lock().unwrap() = Some(TcpSinkState {
+                stream: Some(stream),
+                last_reconnect_attempt_ms: 0,
+            });
         }
-        Err(_) => {}
+        Err(_) => {
+            *TCP_SINK.lock().unwrap() = Some(TcpSinkState {
+                stream: None,
+                last_reconnect_attempt_ms: 0,
+            });
+        }
     }
 }
 
@@ -124,7 +201,16 @@ fn init_logging(subsystem: &str) {
     try_connect_log_relay();
     let logger = IosLogger::new(subsystem);
     log::set_boxed_logger(Box::new(logger)).expect("failed to set logger");
-    log::set_max_level(LevelFilter::Debug);
+
+    let level = match option_env!("GPUI_LOG_LEVEL") {
+        Some("trace") | Some("TRACE") => LevelFilter::Trace,
+        Some("debug") | Some("DEBUG") => LevelFilter::Debug,
+        Some("info") | Some("INFO") => LevelFilter::Info,
+        Some("warn") | Some("WARN") => LevelFilter::Warn,
+        Some("error") | Some("ERROR") => LevelFilter::Error,
+        _ => LevelFilter::Debug,
+    };
+    log::set_max_level(level);
 }
 
 fn run_ios_app<V: Render + 'static>(
@@ -558,5 +644,179 @@ pub extern "C" fn gpui_ios_run_combined_demo() {
     run_ios_app("dev.glasshq.GPUIiOSCombinedDemo", |_, _| IosCombinedDemo {
         tap_count: 0,
         last_tapped: None,
+    });
+}
+
+// ---------------------------------------------------------------------------
+// 6. Scroll Demo — two-finger pan scrollable list
+// ---------------------------------------------------------------------------
+
+struct IosScrollDemo;
+
+impl Render for IosScrollDemo {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = [
+            0xf38ba8u32, 0xa6e3a1, 0x89b4fa, 0xfab387, 0xcba6f7,
+            0xf9e2af, 0x94e2d5, 0xf2cdcd, 0x89dceb, 0xb4befe,
+        ];
+
+        let mut scroll_content = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(16.0));
+
+        for i in 0..50 {
+            let color = colors[i % colors.len()];
+            scroll_content = scroll_content.child(
+                div()
+                    .w_full()
+                    .h(px(60.0))
+                    .bg(rgb(color))
+                    .rounded(px(8.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(rgb(0x1e1e2e))
+                    .child(format!("Item {}", i + 1)),
+            );
+        }
+
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(60.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(0x313244))
+                    .child(
+                        div()
+                            .text_size(px(20.0))
+                            .child("Scroll Demo (2-finger pan)"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("scroll-container")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(scroll_content),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_scroll_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSScrollDemo", |_, _| IosScrollDemo);
+}
+
+// ---------------------------------------------------------------------------
+// 7. Text Input Demo — tap to focus, type text via software keyboard
+// ---------------------------------------------------------------------------
+
+struct IosTextInputDemo {
+    focus_handle: FocusHandle,
+    text: String,
+}
+
+impl Focusable for IosTextInputDemo {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for IosTextInputDemo {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = self.text.clone();
+        let focused = self.focus_handle.is_focused(_window);
+
+        let border_color = if focused { 0x89b4fau32 } else { 0x585b70 };
+        let display_text = if text.is_empty() && !focused {
+            "Tap here to type...".to_string()
+        } else if text.is_empty() {
+            "|".to_string()
+        } else {
+            format!("{}|", text)
+        };
+
+        div()
+            .id("text-input-root")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(20.0))
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .on_key_down(cx.listener(|this: &mut Self, event: &KeyDownEvent, _, cx| {
+                let key = &event.keystroke.key;
+                if key == "backspace" {
+                    this.text.pop();
+                    cx.notify();
+                } else if key == "enter" {
+                    log::info!("submitted: {:?}", this.text);
+                } else if let Some(ch) = &event.keystroke.key_char {
+                    this.text.push_str(ch);
+                    cx.notify();
+                }
+            }))
+            .child(
+                div()
+                    .text_size(px(24.0))
+                    .child("Text Input Demo"),
+            )
+            .child(
+                div()
+                    .id("text-field")
+                    .w(px(300.0))
+                    .h(px(44.0))
+                    .px(px(12.0))
+                    .bg(rgb(0x313244))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(rgb(border_color))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_size(px(16.0))
+                            .text_color(if self.text.is_empty() && !focused {
+                                rgb(0x6c7086)
+                            } else {
+                                rgb(0xcdd6f4)
+                            })
+                            .child(display_text),
+                    )
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {
+                        cx.focus_self(window);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .text_color(rgb(0x6c7086))
+                    .child("Tap the input field, then type"),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_text_input_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSTextInputDemo", |window, cx| {
+        let focus_handle = cx.focus_handle();
+        IosTextInputDemo {
+            focus_handle,
+            text: String::new(),
+        }
     });
 }

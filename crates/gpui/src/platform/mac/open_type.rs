@@ -128,7 +128,7 @@ fn append_system_fallbacks(fallback_array: CFMutableArrayRef, font_ref: CTFontRe
         default_fallbacks
             .iter()
             .filter(|desc| desc.font_path().is_some())
-            .map(|desc| {
+            .for_each(|desc| {
                 CFArrayAppendValue(fallback_array, desc.as_concrete_TypeRef() as _);
             });
     }

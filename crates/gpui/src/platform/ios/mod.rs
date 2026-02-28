@@ -10,11 +10,12 @@ use crate::{
     MouseUpEvent, NoopTextSystem, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformAtlas,
     PlatformDispatcher, PlatformDisplay, PlatformInput, PlatformInputHandler,
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point,
-    Priority, PromptButton, RequestFrameOptions, Task, TaskTiming, ThermalState, THREAD_TIMINGS,
-    ThreadTaskTimings, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowParams, point, px, size,
+    Priority, PromptButton, RequestFrameOptions, ScrollDelta, ScrollWheelEvent, Task, TaskTiming,
+    ThermalState, THREAD_TIMINGS, ThreadTaskTimings, TouchPhase, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
 };
 use crate::platform::metal::renderer::{InstanceBufferPool, MetalRenderer, SharedRenderResources};
+use foreign_types::ForeignType as _;
 use anyhow::{Result, anyhow};
 use ctor::ctor;
 use futures::channel::oneshot;
@@ -29,6 +30,7 @@ use raw_window_handle::{
     DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, UiKitWindowHandle, WindowHandle,
 };
 use std::{
+    cell::Cell,
     ffi::c_void,
     path::{Path, PathBuf},
     ptr::{NonNull, addr_of},
@@ -45,6 +47,24 @@ pub(crate) type PlatformScreenCaptureFrame = ();
 type DispatchQueue = *mut c_void;
 type DispatchTime = u64;
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct NSRange {
+    location: usize,
+    length: usize,
+}
+
+unsafe impl objc::Encode for NSRange {
+    fn encode() -> objc::Encoding {
+        let encoding = format!(
+            "{{NSRange={}{}}}",
+            usize::encode().as_str(),
+            usize::encode().as_str()
+        );
+        unsafe { objc::Encoding::from_str(&encoding) }
+    }
+}
+
 const DISPATCH_TIME_NOW: DispatchTime = 0;
 const DISPATCH_QUEUE_PRIORITY_HIGH: isize = 2;
 const DISPATCH_QUEUE_PRIORITY_DEFAULT: isize = 0;
@@ -52,6 +72,11 @@ const DISPATCH_QUEUE_PRIORITY_LOW: isize = -2;
 
 const CALLBACK_IVAR: &str = "gpui_callback";
 const WINDOW_STATE_IVAR: &str = "gpui_window_state";
+
+const UISCENE_DID_ACTIVATE: &[u8] = b"UISceneDidActivateNotification\0";
+const UISCENE_WILL_DEACTIVATE: &[u8] = b"UISceneWillDeactivateNotification\0";
+const UISCENE_DID_ENTER_BACKGROUND: &[u8] = b"UISceneDidEnterBackgroundNotification\0";
+const UISCENE_WILL_ENTER_FOREGROUND: &[u8] = b"UISceneWillEnterForegroundNotification\0";
 
 unsafe extern "C" {
     static _dispatch_main_q: c_void;
@@ -149,6 +174,23 @@ unsafe fn register_gpui_view_class() {
         handle_trait_collection_change as extern "C" fn(&Object, Sel, *mut Object),
     );
 
+    // Two-finger scroll pan gesture
+    decl.add_method(
+        sel!(handleScrollPan:),
+        handle_scroll_pan as extern "C" fn(&Object, Sel, *mut Object),
+    );
+
+    // UITextFieldDelegate — GPUIView acts as delegate for the hidden
+    // UITextField keyboard proxy to intercept typed text.
+    decl.add_method(
+        sel!(textField:shouldChangeCharactersInRange:replacementString:),
+        handle_text_field_change as extern "C" fn(&Object, Sel, *mut Object, NSRange, *mut Object) -> BOOL,
+    );
+    decl.add_method(
+        sel!(textFieldShouldReturn:),
+        handle_text_field_return as extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
+    );
+
     // Make CAMetalLayer the view's own backing layer
     decl.add_class_method(
         sel!(layerClass),
@@ -231,6 +273,11 @@ fn dispatch_input(state: &Mutex<IosWindowState>, input: PlatformInput) {
     }
 }
 
+unsafe extern "C" fn become_first_responder_trampoline(context: *mut c_void) {
+    let view = context as *mut Object;
+    let _: BOOL = msg_send![view, becomeFirstResponder];
+}
+
 extern "C" fn handle_touches_began(
     this: &Object,
     _sel: Sel,
@@ -255,6 +302,23 @@ extern "C" fn handle_touches_began(
             first_mouse: false,
         }),
     );
+
+    // Show the software keyboard by making the hidden UITextField proxy
+    // become first responder. Deferred to next run loop iteration because
+    // UIKit may not allow first responder changes during touch handling.
+    let proxy = state.lock().keyboard_proxy;
+    if !proxy.is_null() {
+        unsafe {
+            let is_first: BOOL = msg_send![proxy, isFirstResponder];
+            if is_first == NO {
+                dispatch_async_f(
+                    dispatch_get_main_queue_ptr(),
+                    proxy as *mut c_void,
+                    Some(become_first_responder_trampoline),
+                );
+            }
+        }
+    }
 }
 
 extern "C" fn handle_touches_moved(
@@ -372,11 +436,8 @@ extern "C" fn handle_layout_subviews(this: &Object, _sel: Sel) {
         lock.bounds.size = new_size;
         lock.scale_factor = scale_factor;
 
-        // Resize the renderer's Metal sublayer to match the new view bounds
-        let renderer_layer = lock.renderer.layer_ptr() as *mut Object;
-        let _: () = msg_send![renderer_layer, setFrame: bounds];
-        let _: () = msg_send![renderer_layer, setContentsScale: scale];
-
+        // The view's layer IS the Metal layer (via replace_layer), so UIKit
+        // auto-sizes it. Just update the drawable size for rendering.
         lock.renderer.update_drawable_size(crate::size(
             crate::DevicePixels(device_width as i32),
             crate::DevicePixels(device_height as i32),
@@ -430,6 +491,138 @@ extern "C" fn handle_trait_collection_change(
 }
 
 // ---------------------------------------------------------------------------
+// UITextFieldDelegate — intercept text from the hidden UITextField keyboard
+// proxy and forward to GPUI as key events.
+// ---------------------------------------------------------------------------
+
+extern "C" fn handle_text_field_change(
+    this: &Object,
+    _sel: Sel,
+    text_field: *mut Object,
+    _range: NSRange,
+    replacement: *mut Object,
+) -> BOOL {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return NO;
+    };
+    unsafe {
+        let utf8: *const std::os::raw::c_char = msg_send![replacement, UTF8String];
+        if utf8.is_null() {
+            return NO;
+        }
+        let text = std::ffi::CStr::from_ptr(utf8).to_string_lossy().into_owned();
+
+        if text.is_empty() {
+            // Empty replacement = backspace / delete
+            dispatch_input(
+                &state,
+                PlatformInput::KeyDown(crate::KeyDownEvent {
+                    keystroke: crate::Keystroke {
+                        modifiers: Modifiers::default(),
+                        key: "backspace".into(),
+                        key_char: None,
+                        native_key_code: None,
+                    },
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+            );
+            return NO;
+        }
+
+        // Try the input handler first (full text editing support)
+        {
+            let mut lock = state.lock();
+            if let Some(ref mut handler) = lock.input_handler {
+                handler.replace_text_in_range(None, &text);
+                return NO;
+            }
+        }
+
+        // No input handler — dispatch as KeyDown
+        dispatch_input(
+            &state,
+            PlatformInput::KeyDown(crate::KeyDownEvent {
+                keystroke: crate::Keystroke {
+                    modifiers: Modifiers::default(),
+                    key: text.clone(),
+                    key_char: Some(text),
+                    native_key_code: None,
+                },
+                is_held: false,
+                prefer_character_input: true,
+            }),
+        );
+    }
+    // Return NO so UITextField stays empty — all text is handled by GPUI
+    NO
+}
+
+extern "C" fn handle_text_field_return(
+    this: &Object,
+    _sel: Sel,
+    _text_field: *mut Object,
+) -> BOOL {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return NO;
+    };
+    dispatch_input(
+        &state,
+        PlatformInput::KeyDown(crate::KeyDownEvent {
+            keystroke: crate::Keystroke {
+                modifiers: Modifiers::default(),
+                key: "enter".into(),
+                key_char: Some("\n".into()),
+                native_key_code: None,
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }),
+    );
+    NO
+}
+
+extern "C" fn handle_scroll_pan(this: &Object, _sel: Sel, gesture: *mut Object) {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return;
+    };
+    unsafe {
+        let gesture_state: isize = msg_send![gesture, state];
+        // UIGestureRecognizerState: 1=Began, 2=Changed, 3=Ended, 4=Cancelled
+        let touch_phase = match gesture_state {
+            1 => TouchPhase::Started,
+            2 => TouchPhase::Moved,
+            3 | 4 => TouchPhase::Ended,
+            _ => return,
+        };
+
+        // Get translation (cumulative) and reset to zero for incremental deltas
+        let translation: CGPoint = msg_send![gesture, translationInView: this as *const Object as *mut Object];
+        let zero = CGPoint { x: 0.0, y: 0.0 };
+        let _: () = msg_send![gesture, setTranslation: zero inView: this as *const Object as *mut Object];
+
+        // Get position of the gesture centroid
+        let location: CGPoint = msg_send![gesture, locationInView: this as *const Object as *mut Object];
+        let position = point(px(location.x as f32), px(location.y as f32));
+
+        let delta = ScrollDelta::Pixels(point(
+            px(translation.x as f32),
+            px(translation.y as f32),
+        ));
+
+        dispatch_input(
+            &state,
+            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta,
+                modifiers: Modifiers::default(),
+                touch_phase,
+            }),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GPUISceneObserver — receives UIScene lifecycle notifications and forwards
 // them to the window state callbacks.
 // ---------------------------------------------------------------------------
@@ -472,6 +665,7 @@ extern "C" fn handle_scene_did_activate(this: &Object, _sel: Sel, _notification:
     };
     log::debug!("scene did activate");
     let mut lock = state.lock();
+    lock.is_active = true;
     if let Some(mut callback) = lock.on_active_change.take() {
         drop(lock);
         callback(true);
@@ -485,6 +679,7 @@ extern "C" fn handle_scene_will_deactivate(this: &Object, _sel: Sel, _notificati
     };
     log::debug!("scene will deactivate");
     let mut lock = state.lock();
+    lock.is_active = false;
     if let Some(mut callback) = lock.on_active_change.take() {
         drop(lock);
         callback(false);
@@ -757,7 +952,7 @@ impl PlatformDispatcher for IosDispatcher {
             let when = dispatch_time(DISPATCH_TIME_NOW, delta);
             dispatch_after_f(
                 when,
-                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0),
                 context,
                 Some(dispatch_trampoline),
             );
@@ -946,9 +1141,20 @@ impl Platform for IosPlatform {
     }
 
     fn thermal_state(&self) -> ThermalState {
-        ThermalState::Nominal
+        unsafe {
+            let process_info: *mut Object = msg_send![class!(NSProcessInfo), processInfo];
+            let state: isize = msg_send![process_info, thermalState];
+            // NSProcessInfoThermalState: 0=Nominal, 1=Fair, 2=Serious, 3=Critical
+            match state {
+                1 => ThermalState::Fair,
+                2 => ThermalState::Serious,
+                3 => ThermalState::Critical,
+                _ => ThermalState::Nominal,
+            }
+        }
     }
 
+    // TODO: Needs an ObjC observer class for NSProcessInfoThermalStateDidChangeNotification (low priority)
     fn on_thermal_state_change(&self, _callback: Box<dyn FnMut()>) {}
 
     fn app_path(&self) -> Result<PathBuf> {
@@ -1009,10 +1215,14 @@ struct IosWindowState {
     display_link: *mut Object,
     display_link_target: *mut Object,
     display_link_callback_ptr: *mut c_void,
+    // Hidden UITextField used as keyboard proxy (UIKeyInput on custom UIView
+    // doesn't reliably show the keyboard with the `objc` crate's add_protocol)
+    keyboard_proxy: *mut Object,
     // Touch tracking — primary finger only
     tracked_touch: Option<*mut Object>,
     last_touch_position: Option<Point<Pixels>>,
-    // Scene lifecycle observer
+    // Scene lifecycle
+    is_active: bool,
     scene_observer: *mut Object,
     // Callbacks
     should_close: Option<Box<dyn FnMut() -> bool>>,
@@ -1034,13 +1244,27 @@ pub(crate) struct IosWindow(Rc<Mutex<IosWindowState>>);
 impl IosWindow {
     fn new(handle: AnyWindowHandle, options: WindowParams, display: Rc<dyn PlatformDisplay>) -> Self {
         log::debug!("creating iOS window");
-        let (ui_window, ui_view_controller, ui_view, bounds, scale_factor) = unsafe {
+        let (ui_window, ui_view_controller, ui_view, keyboard_proxy, bounds, scale_factor) = unsafe {
             let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
             let screen_bounds: CGRect = msg_send![screen, bounds];
             let scale: f64 = msg_send![screen, scale];
 
-            let ui_window: *mut Object = msg_send![class!(UIWindow), alloc];
-            let ui_window: *mut Object = msg_send![ui_window, initWithFrame: screen_bounds];
+            // On iOS 13+, UIWindow must be associated with a UIWindowScene.
+            // Find the first connected UIWindowScene and use initWithWindowScene:.
+            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+            let scenes: *mut Object = msg_send![app, connectedScenes];
+            let all_scenes: *mut Object = msg_send![scenes, allObjects];
+            let scene_count: usize = msg_send![all_scenes, count];
+            let ui_window: *mut Object = if scene_count > 0 {
+                let scene: *mut Object = msg_send![all_scenes, objectAtIndex: 0usize];
+                log::info!("creating UIWindow with UIWindowScene");
+                let w: *mut Object = msg_send![class!(UIWindow), alloc];
+                msg_send![w, initWithWindowScene: scene]
+            } else {
+                log::warn!("no UIWindowScene found, falling back to initWithFrame:");
+                let w: *mut Object = msg_send![class!(UIWindow), alloc];
+                msg_send![w, initWithFrame: screen_bounds]
+            };
 
             let ui_view_controller: *mut Object = msg_send![class!(UIViewController), new];
 
@@ -1050,8 +1274,28 @@ impl IosWindow {
             let ui_view: *mut Object = msg_send![GPUI_VIEW_CLASS, alloc];
             let ui_view: *mut Object = msg_send![ui_view, initWithFrame: screen_bounds];
 
-            // Enable multi-touch (even though we track only one finger for now)
+            // Enable multi-touch for scroll gestures and future multi-finger input
             let _: () = msg_send![ui_view, setMultipleTouchEnabled: YES];
+
+            // Hidden UITextField as keyboard proxy — shows software keyboard
+            // when it becomes first responder. Must have non-zero size and
+            // non-zero alpha (hidden views can't become first responder).
+            let proxy_frame = CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: 1.0, height: 1.0 } };
+            let keyboard_proxy: *mut Object = msg_send![class!(UITextField), alloc];
+            let keyboard_proxy: *mut Object = msg_send![keyboard_proxy, initWithFrame: proxy_frame];
+            let _: () = msg_send![keyboard_proxy, setAlpha: 0.01f64];
+            // Disable autocorrection and autocapitalization
+            let _: () = msg_send![keyboard_proxy, setAutocorrectionType: 1isize]; // UITextAutocorrectionTypeNo
+            let _: () = msg_send![keyboard_proxy, setAutocapitalizationType: 0isize]; // UITextAutocapitalizationTypeNone
+            let _: () = msg_send![keyboard_proxy, setSpellCheckingType: 1isize]; // UITextSpellCheckingTypeNo
+            let _: () = msg_send![ui_view, addSubview: keyboard_proxy];
+
+            // Two-finger pan gesture for scroll
+            let pan: *mut Object = msg_send![class!(UIPanGestureRecognizer), alloc];
+            let pan: *mut Object = msg_send![pan, initWithTarget: ui_view action: sel!(handleScrollPan:)];
+            let _: () = msg_send![pan, setMinimumNumberOfTouches: 2usize];
+            let _: () = msg_send![pan, setMaximumNumberOfTouches: 2usize];
+            let _: () = msg_send![ui_view, addGestureRecognizer: pan];
 
             let _: () = msg_send![ui_view_controller, setView: ui_view];
             let _: () = msg_send![ui_window, setRootViewController: ui_view_controller];
@@ -1064,7 +1308,7 @@ impl IosWindow {
                     px(screen_bounds.size.height as f32),
                 ),
             );
-            (ui_window, ui_view_controller, ui_view, bounds, scale as f32)
+            (ui_window, ui_view_controller, ui_view, keyboard_proxy, bounds, scale as f32)
         };
 
         // Create the Metal renderer. The view's own layer is already a CAMetalLayer
@@ -1073,15 +1317,16 @@ impl IosWindow {
         let mut renderer = MetalRenderer::new(instance_buffer_pool, false);
 
         unsafe {
-            // The view's layer IS the Metal layer (via layerClass override).
-            // Attach the renderer's Metal layer content to the view's layer.
-            let metal_layer = renderer.layer_ptr() as *mut Object;
+            // The view's layer IS the CAMetalLayer (via layerClass override).
+            // Replace the renderer's internal layer with the view's own layer
+            // so drawing goes directly to it — no sublayer needed.
             let view_layer: *mut Object = msg_send![ui_view, layer];
-            let _: () = msg_send![view_layer, addSublayer: metal_layer];
-
-            let view_bounds: CGRect = msg_send![ui_view, bounds];
-            let _: () = msg_send![metal_layer, setFrame: view_bounds];
-            let _: () = msg_send![metal_layer, setContentsScale: scale_factor as f64];
+            let view_metal_layer =
+                metal::MetalLayer::from_ptr(view_layer as *mut metal::CAMetalLayer);
+            // from_ptr creates an owning wrapper; retain so the view keeps its layer alive
+            let _: () = msg_send![view_layer, retain];
+            renderer.replace_layer(view_metal_layer);
+            let _: () = msg_send![view_layer, setContentsScale: scale_factor as f64];
         }
 
         let device_width = bounds.size.width.0 * scale_factor;
@@ -1111,11 +1356,13 @@ impl IosWindow {
             ui_view_controller,
             ui_view,
             renderer,
+            keyboard_proxy,
             display_link: std::ptr::null_mut(),
             display_link_target: std::ptr::null_mut(),
             display_link_callback_ptr: std::ptr::null_mut(),
             tracked_touch: None,
             last_touch_position: None,
+            is_active: true,
             scene_observer: std::ptr::null_mut(),
             should_close: None,
             request_frame: None,
@@ -1136,6 +1383,11 @@ impl IosWindow {
         unsafe {
             let state_ptr = Rc::into_raw(window.0.clone()) as *mut c_void;
             (*ui_view).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, state_ptr);
+
+            // Set the GPUIView as the delegate for the keyboard proxy UITextField.
+            // When the user types, textField:shouldChangeCharactersInRange:replacementString:
+            // on the GPUIView intercepts the text and forwards it to GPUI.
+            let _: () = msg_send![keyboard_proxy, setDelegate: ui_view];
         }
 
         // Register for UIScene lifecycle notifications
@@ -1152,29 +1404,25 @@ impl IosWindow {
 
             let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
 
-            // UIScene.didActivateNotification
-            let did_activate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneDidActivateNotification\0".as_ptr()];
+            let did_activate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: UISCENE_DID_ACTIVATE.as_ptr()];
             let _: () = msg_send![center, addObserver: observer
                 selector: sel!(sceneDidActivate:)
                 name: did_activate
                 object: std::ptr::null::<Object>()];
 
-            // UIScene.willDeactivateNotification
-            let will_deactivate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneWillDeactivateNotification\0".as_ptr()];
+            let will_deactivate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: UISCENE_WILL_DEACTIVATE.as_ptr()];
             let _: () = msg_send![center, addObserver: observer
                 selector: sel!(sceneWillDeactivate:)
                 name: will_deactivate
                 object: std::ptr::null::<Object>()];
 
-            // UIScene.didEnterBackgroundNotification
-            let did_enter_bg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneDidEnterBackgroundNotification\0".as_ptr()];
+            let did_enter_bg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: UISCENE_DID_ENTER_BACKGROUND.as_ptr()];
             let _: () = msg_send![center, addObserver: observer
                 selector: sel!(sceneDidEnterBackground:)
                 name: did_enter_bg
                 object: std::ptr::null::<Object>()];
 
-            // UIScene.willEnterForegroundNotification
-            let will_enter_fg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneWillEnterForegroundNotification\0".as_ptr()];
+            let will_enter_fg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: UISCENE_WILL_ENTER_FOREGROUND.as_ptr()];
             let _: () = msg_send![center, addObserver: observer
                 selector: sel!(sceneWillEnterForeground:)
                 name: will_enter_fg
@@ -1284,6 +1532,9 @@ impl PlatformWindow for IosWindow {
     }
 
     fn resize(&mut self, size: crate::Size<Pixels>) {
+        // iOS manages view layout via UIKit; this just updates cached state
+        // as a fallback for callers that set size programmatically.
+        log::debug!("resize({:?}) — iOS manages layout via UIKit", size);
         self.0.lock().bounds.size = size;
     }
 
@@ -1315,11 +1566,29 @@ impl PlatformWindow for IosWindow {
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
-        self.0.lock().input_handler = Some(input_handler);
+        let mut lock = self.0.lock();
+        let proxy = lock.keyboard_proxy;
+        lock.input_handler = Some(input_handler);
+        drop(lock);
+        // Show the software keyboard by making the hidden UITextField first responder
+        if !proxy.is_null() {
+            unsafe {
+                let _: () = msg_send![proxy, becomeFirstResponder];
+            }
+        }
     }
 
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
-        self.0.lock().input_handler.take()
+        let mut lock = self.0.lock();
+        let handler = lock.input_handler.take();
+        let proxy = lock.keyboard_proxy;
+        drop(lock);
+        if handler.is_some() && !proxy.is_null() {
+            unsafe {
+                let _: () = msg_send![proxy, resignFirstResponder];
+            }
+        }
+        handler
     }
 
     fn prompt(
@@ -1340,7 +1609,7 @@ impl PlatformWindow for IosWindow {
     }
 
     fn is_active(&self) -> bool {
-        true
+        self.0.lock().is_active
     }
 
     fn is_hovered(&self) -> bool {
@@ -1373,8 +1642,8 @@ impl PlatformWindow for IosWindow {
         log::info!("CADisplayLink started");
 
         let window_state = self.0.clone();
-        let first_frame_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let first_frame_done_clone = first_frame_done.clone();
+        let first_frame_done = Rc::new(Cell::new(false));
+        let first_frame_clone = first_frame_done.clone();
 
         let step_fn: Box<dyn Fn()> = Box::new(move || {
             let mut cb = match window_state.lock().request_frame.take() {
@@ -1383,7 +1652,8 @@ impl PlatformWindow for IosWindow {
             };
 
             let mut opts = RequestFrameOptions::default();
-            if !first_frame_done_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if !first_frame_clone.get() {
+                first_frame_clone.set(true);
                 log::info!("first frame rendered");
                 opts.force_render = true;
             }
