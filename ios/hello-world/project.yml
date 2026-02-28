@@ -46,8 +46,7 @@ targets:
           - "-lgpui_ios_app"
     preBuildScripts:
       - name: Build Rust app bridge
+        basedOnDependencyAnalysis: false
         script: |
           set -eu
           "$SRCROOT/scripts/build-rust.sh"
-        outputFiles:
-          - "$(BUILT_PRODUCTS_DIR)/libgpui_ios_app.a"

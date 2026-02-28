@@ -21,7 +21,8 @@ use crate::{
     Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, IsZero, KeyContext,
     KeyDownEvent, KeyUpEvent, KeyboardButton, KeyboardClickEvent, LayoutId, ModifiersChangedEvent,
     MouseButton, MouseClickEvent, MouseDownEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent,
-    Overflow, ParentElement, Pixels, Point, Render, ScrollWheelEvent, SharedString, Size, Style,
+    Overflow, ParentElement, Pixels, PinchEvent, Point, Render, RotationEvent, ScrollWheelEvent,
+    SharedString, Size, Style,
     StyleRefinement, Styled, Task, TooltipId, Visibility, Window, WindowControlArea, point, px,
     size,
 };
@@ -348,6 +349,32 @@ impl Interactivity {
         self.scroll_wheel_listeners
             .push(Box::new(move |event, phase, hitbox, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
+                    (listener)(event, window, cx);
+                }
+            }));
+    }
+
+    /// Bind the given callback to pinch gesture events on this element.
+    pub fn on_pinch(
+        &mut self,
+        listener: impl Fn(&PinchEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.pinch_listeners
+            .push(Box::new(move |event, phase, hitbox, window, cx| {
+                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                    (listener)(event, window, cx);
+                }
+            }));
+    }
+
+    /// Bind the given callback to rotation gesture events on this element.
+    pub fn on_rotation(
+        &mut self,
+        listener: impl Fn(&RotationEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.rotation_listeners
+            .push(Box::new(move |event, phase, hitbox, window, cx| {
+                if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
                     (listener)(event, window, cx);
                 }
             }));
@@ -905,6 +932,24 @@ pub trait InteractiveElement: Sized {
         self
     }
 
+    /// Bind the given callback to pinch gesture events on this element.
+    fn on_pinch(
+        mut self,
+        listener: impl Fn(&PinchEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().on_pinch(listener);
+        self
+    }
+
+    /// Bind the given callback to rotation gesture events on this element.
+    fn on_rotation(
+        mut self,
+        listener: impl Fn(&RotationEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.interactivity().on_rotation(listener);
+        self
+    }
+
     /// Capture the given action, before normal action dispatch can fire.
     /// The fluent API equivalent to [`Interactivity::capture_action`].
     ///
@@ -1290,6 +1335,12 @@ pub(crate) type MouseMoveListener =
 pub(crate) type ScrollWheelListener =
     Box<dyn Fn(&ScrollWheelEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
 
+pub(crate) type PinchListener =
+    Box<dyn Fn(&PinchEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+
+pub(crate) type RotationListener =
+    Box<dyn Fn(&RotationEvent, DispatchPhase, &Hitbox, &mut Window, &mut App) + 'static>;
+
 pub(crate) type ClickListener = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App) + 'static>;
 
 pub(crate) type DragListener =
@@ -1644,6 +1695,8 @@ pub struct Interactivity {
     pub(crate) mouse_pressure_listeners: Vec<MousePressureListener>,
     pub(crate) mouse_move_listeners: Vec<MouseMoveListener>,
     pub(crate) scroll_wheel_listeners: Vec<ScrollWheelListener>,
+    pub(crate) pinch_listeners: Vec<PinchListener>,
+    pub(crate) rotation_listeners: Vec<RotationListener>,
     pub(crate) key_down_listeners: Vec<KeyDownListener>,
     pub(crate) key_up_listeners: Vec<KeyUpListener>,
     pub(crate) modifiers_changed_listeners: Vec<ModifiersChangedListener>,
@@ -1847,6 +1900,8 @@ impl Interactivity {
             || !self.click_listeners.is_empty()
             || !self.aux_click_listeners.is_empty()
             || !self.scroll_wheel_listeners.is_empty()
+            || !self.pinch_listeners.is_empty()
+            || !self.rotation_listeners.is_empty()
             || self.drag_listener.is_some()
             || !self.drop_listeners.is_empty()
             || self.tooltip_builder.is_some()
@@ -2209,6 +2264,20 @@ impl Interactivity {
         for listener in self.scroll_wheel_listeners.drain(..) {
             let hitbox = hitbox.clone();
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+                listener(event, phase, &hitbox, window, cx);
+            })
+        }
+
+        for listener in self.pinch_listeners.drain(..) {
+            let hitbox = hitbox.clone();
+            window.on_mouse_event(move |event: &PinchEvent, phase, window, cx| {
+                listener(event, phase, &hitbox, window, cx);
+            })
+        }
+
+        for listener in self.rotation_listeners.drain(..) {
+            let hitbox = hitbox.clone();
+            window.on_mouse_event(move |event: &RotationEvent, phase, window, cx| {
                 listener(event, phase, &hitbox, window, cx);
             })
         }

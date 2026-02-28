@@ -5,3 +5,8 @@ void gpui_ios_run_lifecycle_demo(void);
 void gpui_ios_run_combined_demo(void);
 void gpui_ios_run_scroll_demo(void);
 void gpui_ios_run_text_input_demo(void);
+void gpui_ios_run_vertical_scroll_demo(void);
+void gpui_ios_run_horizontal_scroll_demo(void);
+void gpui_ios_run_pinch_demo(void);
+void gpui_ios_run_rotation_demo(void);
+void gpui_ios_handle_open_url(const char *url);

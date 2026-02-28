@@ -68,18 +68,30 @@ case "${PLATFORM_NAME:-}" in
     ;;
   iphonesimulator)
     TARGET_ARM64="aarch64-apple-ios-sim"
-    TARGET_X64="x86_64-apple-ios"
     build_rust_target "$TARGET_ARM64"
-    build_rust_target "$TARGET_X64"
     ARM64_LIB="$(rust_lib_path "$TARGET_ARM64")"
-    X64_LIB="$(rust_lib_path "$TARGET_X64")"
-    if [[ ! -f "$ARM64_LIB" || ! -f "$X64_LIB" ]]; then
-      echo "Missing simulator Rust static libraries." >&2
-      echo "  arm64: $ARM64_LIB" >&2
-      echo "  x86_64: $X64_LIB" >&2
-      exit 1
+
+    HOST_ARCH="$(uname -m)"
+    if [[ "$HOST_ARCH" == "arm64" ]]; then
+      # Apple Silicon: arm64 simulator only (x86_64 has BOOL type mismatch)
+      if [[ ! -f "$ARM64_LIB" ]]; then
+        echo "Missing Rust static library: $ARM64_LIB" >&2
+        exit 1
+      fi
+      cp "$ARM64_LIB" "$BUILT_PRODUCTS_DIR/libgpui_ios_app.a"
+    else
+      # Intel: build both slices
+      TARGET_X64="x86_64-apple-ios"
+      build_rust_target "$TARGET_X64"
+      X64_LIB="$(rust_lib_path "$TARGET_X64")"
+      if [[ ! -f "$ARM64_LIB" || ! -f "$X64_LIB" ]]; then
+        echo "Missing simulator Rust static libraries." >&2
+        echo "  arm64: $ARM64_LIB" >&2
+        echo "  x86_64: $X64_LIB" >&2
+        exit 1
+      fi
+      lipo -create -output "$BUILT_PRODUCTS_DIR/libgpui_ios_app.a" "$ARM64_LIB" "$X64_LIB"
     fi
-    lipo -create -output "$BUILT_PRODUCTS_DIR/libgpui_ios_app.a" "$ARM64_LIB" "$X64_LIB"
     ;;
   *)
     echo "Unsupported PLATFORM_NAME=${PLATFORM_NAME:-unknown}" >&2
