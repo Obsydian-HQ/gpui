@@ -9,6 +9,6 @@ crate-type = ["staticlib"]
 path = "src/lib.rs"
 
 [dependencies]
-gpui.workspace = true
+gpui = { workspace = true, features = ["font-kit"] }
 log.workspace = true
 oslog = "0.2"

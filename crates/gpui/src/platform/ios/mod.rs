@@ -1,12 +1,18 @@
+#[cfg(feature = "font-kit")]
+mod open_type;
+#[cfg(feature = "font-kit")]
+mod text_system;
+
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
     DispatchEventResult, DisplayId, DummyKeyboardMapper, ForegroundExecutor, GLOBAL_THREAD_TIMINGS,
-    GpuSpecs, Keymap, Menu, MenuItem, Modifiers, NoopTextSystem, OwnedMenu, PathPromptOptions,
-    Pixels, Platform, PlatformAtlas, PlatformDispatcher, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
-    PlatformWindow, Point, Priority, PromptButton, RequestFrameOptions, Task, TaskTiming,
-    ThermalState, THREAD_TIMINGS, ThreadTaskTimings, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
+    GpuSpecs, Keymap, Menu, MenuItem, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, NoopTextSystem, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformAtlas,
+    PlatformDispatcher, PlatformDisplay, PlatformInput, PlatformInputHandler,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point,
+    Priority, PromptButton, RequestFrameOptions, Task, TaskTiming, ThermalState, THREAD_TIMINGS,
+    ThreadTaskTimings, WindowAppearance, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowParams, point, px, size,
 };
 use crate::platform::metal::renderer::{InstanceBufferPool, MetalRenderer, SharedRenderResources};
 use anyhow::{Result, anyhow};
@@ -15,7 +21,7 @@ use futures::channel::oneshot;
 use objc::{
     class, msg_send,
     declare::ClassDecl,
-    runtime::{Class, Object, Sel},
+    runtime::{Class, Object, Sel, BOOL, NO, YES},
     sel, sel_impl,
 };
 use parking_lot::Mutex;
@@ -31,6 +37,8 @@ use std::{
     thread,
     time::Duration,
 };
+#[cfg(feature = "font-kit")]
+use text_system::IosTextSystem;
 
 pub(crate) type PlatformScreenCaptureFrame = ();
 
@@ -43,6 +51,7 @@ const DISPATCH_QUEUE_PRIORITY_DEFAULT: isize = 0;
 const DISPATCH_QUEUE_PRIORITY_LOW: isize = -2;
 
 const CALLBACK_IVAR: &str = "gpui_callback";
+const WINDOW_STATE_IVAR: &str = "gpui_window_state";
 
 unsafe extern "C" {
     static _dispatch_main_q: c_void;
@@ -94,6 +103,444 @@ extern "C" fn display_link_step(this: &Object, _sel: Sel, _display_link: *mut Ob
     }
 }
 
+// ---------------------------------------------------------------------------
+// GPUIView — custom UIView subclass for touch input, Metal layer, and
+// lifecycle callbacks (resize, appearance change).
+// ---------------------------------------------------------------------------
+
+static mut GPUI_VIEW_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_gpui_view_class() {
+    let superclass = class!(UIView);
+    let mut decl = ClassDecl::new("GPUIView", superclass)
+        .expect("failed to declare GPUIView class");
+
+    // Ivar to hold a raw pointer to Rc<Mutex<IosWindowState>>
+    decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+
+    // Touch input
+    decl.add_method(
+        sel!(touchesBegan:withEvent:),
+        handle_touches_began as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(touchesMoved:withEvent:),
+        handle_touches_moved as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(touchesEnded:withEvent:),
+        handle_touches_ended as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(touchesCancelled:withEvent:),
+        handle_touches_cancelled as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+
+    // Layout (resize, rotation, split view)
+    decl.add_method(
+        sel!(layoutSubviews),
+        handle_layout_subviews as extern "C" fn(&Object, Sel),
+    );
+
+    // Appearance (dark/light mode change)
+    decl.add_method(
+        sel!(traitCollectionDidChange:),
+        handle_trait_collection_change as extern "C" fn(&Object, Sel, *mut Object),
+    );
+
+    // Make CAMetalLayer the view's own backing layer
+    decl.add_class_method(
+        sel!(layerClass),
+        gpui_view_layer_class as extern "C" fn(&Class, Sel) -> *const Class,
+    );
+
+    unsafe {
+        GPUI_VIEW_CLASS = decl.register();
+    }
+}
+
+extern "C" fn gpui_view_layer_class(_self: &Class, _sel: Sel) -> *const Class {
+    class!(CAMetalLayer)
+}
+
+/// Recover the `Rc<Mutex<IosWindowState>>` from the view's ivar without
+/// consuming the Rc (the ivar still holds its reference).
+unsafe fn get_window_state(view: &Object) -> Option<Rc<Mutex<IosWindowState>>> {
+    let ptr: *mut c_void = *view.get_ivar(WINDOW_STATE_IVAR);
+    if ptr.is_null() {
+        return None;
+    }
+    let rc = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+    let clone = rc.clone();
+    std::mem::forget(rc); // Don't drop — ivar still holds it
+    Some(clone)
+}
+
+/// Extract the primary touch position from a UITouch set relative to the view.
+/// Returns `(position, tap_count)`.
+unsafe fn primary_touch_info(
+    touches: *mut Object,
+    view: &Object,
+    state: &Mutex<IosWindowState>,
+) -> Option<(Point<Pixels>, usize)> {
+    let all_objects: *mut Object = msg_send![touches, allObjects];
+    let count: usize = msg_send![all_objects, count];
+    if count == 0 {
+        return None;
+    }
+
+    let mut lock = state.lock();
+
+    // Find the tracked touch, or pick the first one if we're not tracking yet
+    let touch = if let Some(tracked) = lock.tracked_touch {
+        let mut found: *mut Object = std::ptr::null_mut();
+        for i in 0..count {
+            let t: *mut Object = msg_send![all_objects, objectAtIndex: i];
+            if t == tracked {
+                found = t;
+                break;
+            }
+        }
+        if found.is_null() {
+            return None;
+        }
+        found
+    } else {
+        let touch: *mut Object = msg_send![all_objects, objectAtIndex: 0usize];
+        lock.tracked_touch = Some(touch);
+        touch
+    };
+
+    let location: CGPoint = msg_send![touch, locationInView: view as *const Object as *mut Object];
+    let tap_count: usize = msg_send![touch, tapCount];
+    let position = point(px(location.x as f32), px(location.y as f32));
+
+    // Update last known mouse position
+    lock.last_touch_position = Some(position);
+
+    Some((position, tap_count))
+}
+
+fn dispatch_input(state: &Mutex<IosWindowState>, input: PlatformInput) {
+    let mut lock = state.lock();
+    if let Some(mut callback) = lock.on_input.take() {
+        drop(lock);
+        callback(input);
+        state.lock().on_input = Some(callback);
+    }
+}
+
+extern "C" fn handle_touches_began(
+    this: &Object,
+    _sel: Sel,
+    touches: *mut Object,
+    _event: *mut Object,
+) {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return;
+    };
+    let Some((position, click_count)) = (unsafe { primary_touch_info(touches, this, &state) })
+    else {
+        return;
+    };
+
+    dispatch_input(
+        &state,
+        PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        }),
+    );
+}
+
+extern "C" fn handle_touches_moved(
+    this: &Object,
+    _sel: Sel,
+    touches: *mut Object,
+    _event: *mut Object,
+) {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return;
+    };
+    let Some((position, _)) = (unsafe { primary_touch_info(touches, this, &state) }) else {
+        return;
+    };
+
+    dispatch_input(
+        &state,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        }),
+    );
+}
+
+extern "C" fn handle_touches_ended(
+    this: &Object,
+    _sel: Sel,
+    touches: *mut Object,
+    _event: *mut Object,
+) {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return;
+    };
+    let Some((position, click_count)) = (unsafe { primary_touch_info(touches, this, &state) })
+    else {
+        return;
+    };
+
+    // Clear tracked touch
+    state.lock().tracked_touch = None;
+
+    dispatch_input(
+        &state,
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count,
+        }),
+    );
+}
+
+extern "C" fn handle_touches_cancelled(
+    this: &Object,
+    _sel: Sel,
+    touches: *mut Object,
+    _event: *mut Object,
+) {
+    let Some(state) = (unsafe { get_window_state(this) }) else {
+        return;
+    };
+
+    // Use last known position or zero
+    let position = state
+        .lock()
+        .last_touch_position
+        .unwrap_or_else(Point::default);
+
+    // Clear tracked touch
+    state.lock().tracked_touch = None;
+
+    dispatch_input(
+        &state,
+        PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        }),
+    );
+}
+
+extern "C" fn handle_layout_subviews(this: &Object, _sel: Sel) {
+    unsafe {
+        // Call [super layoutSubviews]
+        let superclass = class!(UIView);
+        let _: () = msg_send![super(this, superclass), layoutSubviews];
+
+        let Some(state) = get_window_state(this) else {
+            return;
+        };
+
+        let bounds: CGRect = msg_send![this, bounds];
+        let scale: f64 = msg_send![this, contentScaleFactor];
+
+        // The view's layer IS the Metal layer (via layerClass override)
+        let metal_layer: *mut Object = msg_send![this, layer];
+        let _: () = msg_send![metal_layer, setContentsScale: scale];
+
+        let new_size = crate::Size {
+            width: px(bounds.size.width as f32),
+            height: px(bounds.size.height as f32),
+        };
+        let scale_factor = scale as f32;
+        let device_width = new_size.width.0 * scale_factor;
+        let device_height = new_size.height.0 * scale_factor;
+
+        let mut lock = state.lock();
+        let size_changed = lock.bounds.size != new_size || lock.scale_factor != scale_factor;
+        if !size_changed {
+            return;
+        }
+
+        lock.bounds.size = new_size;
+        lock.scale_factor = scale_factor;
+
+        // Resize the renderer's Metal sublayer to match the new view bounds
+        let renderer_layer = lock.renderer.layer_ptr() as *mut Object;
+        let _: () = msg_send![renderer_layer, setFrame: bounds];
+        let _: () = msg_send![renderer_layer, setContentsScale: scale];
+
+        lock.renderer.update_drawable_size(crate::size(
+            crate::DevicePixels(device_width as i32),
+            crate::DevicePixels(device_height as i32),
+        ));
+
+        if let Some(mut callback) = lock.on_resize.take() {
+            drop(lock);
+            callback(new_size, scale_factor);
+            state.lock().on_resize = Some(callback);
+        }
+    }
+}
+
+extern "C" fn handle_trait_collection_change(
+    this: &Object,
+    _sel: Sel,
+    _previous_trait_collection: *mut Object,
+) {
+    unsafe {
+        let superclass = class!(UIView);
+        let _: () = msg_send![super(this, superclass), traitCollectionDidChange: _previous_trait_collection];
+
+        let Some(state) = get_window_state(this) else {
+            return;
+        };
+
+        // Check if the user interface style actually changed
+        let current_traits: *mut Object = msg_send![this, traitCollection];
+        let current_style: isize = msg_send![current_traits, userInterfaceStyle];
+
+        if !_previous_trait_collection.is_null() {
+            let previous_style: isize =
+                msg_send![_previous_trait_collection, userInterfaceStyle];
+            if current_style == previous_style {
+                return;
+            }
+        }
+
+        log::info!(
+            "appearance changed to {}",
+            if current_style == 2 { "dark" } else { "light" }
+        );
+
+        let mut lock = state.lock();
+        if let Some(mut callback) = lock.on_appearance_change.take() {
+            drop(lock);
+            callback();
+            state.lock().on_appearance_change = Some(callback);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GPUISceneObserver — receives UIScene lifecycle notifications and forwards
+// them to the window state callbacks.
+// ---------------------------------------------------------------------------
+
+static mut GPUI_SCENE_OBSERVER_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_scene_observer_class() {
+    let superclass = class!(NSObject);
+    let mut decl = ClassDecl::new("GPUISceneObserver", superclass)
+        .expect("failed to declare GPUISceneObserver class");
+
+    decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+
+    decl.add_method(
+        sel!(sceneDidActivate:),
+        handle_scene_did_activate as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(sceneWillDeactivate:),
+        handle_scene_will_deactivate as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(sceneDidEnterBackground:),
+        handle_scene_did_enter_background as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(sceneWillEnterForeground:),
+        handle_scene_will_enter_foreground as extern "C" fn(&Object, Sel, *mut Object),
+    );
+
+    unsafe {
+        GPUI_SCENE_OBSERVER_CLASS = decl.register();
+    }
+}
+
+extern "C" fn handle_scene_did_activate(this: &Object, _sel: Sel, _notification: *mut Object) {
+    let Some(state) = (unsafe { get_scene_observer_state(this) }) else {
+        return;
+    };
+    log::debug!("scene did activate");
+    let mut lock = state.lock();
+    if let Some(mut callback) = lock.on_active_change.take() {
+        drop(lock);
+        callback(true);
+        state.lock().on_active_change = Some(callback);
+    }
+}
+
+extern "C" fn handle_scene_will_deactivate(this: &Object, _sel: Sel, _notification: *mut Object) {
+    let Some(state) = (unsafe { get_scene_observer_state(this) }) else {
+        return;
+    };
+    log::debug!("scene will deactivate");
+    let mut lock = state.lock();
+    if let Some(mut callback) = lock.on_active_change.take() {
+        drop(lock);
+        callback(false);
+        state.lock().on_active_change = Some(callback);
+    }
+}
+
+extern "C" fn handle_scene_did_enter_background(
+    this: &Object,
+    _sel: Sel,
+    _notification: *mut Object,
+) {
+    let Some(state) = (unsafe { get_scene_observer_state(this) }) else {
+        return;
+    };
+    log::debug!("scene entered background — pausing display link");
+    let lock = state.lock();
+    if !lock.display_link.is_null() {
+        unsafe {
+            let _: () = msg_send![lock.display_link, setPaused: YES];
+        }
+    }
+}
+
+extern "C" fn handle_scene_will_enter_foreground(
+    this: &Object,
+    _sel: Sel,
+    _notification: *mut Object,
+) {
+    let Some(state) = (unsafe { get_scene_observer_state(this) }) else {
+        return;
+    };
+    log::debug!("scene will enter foreground — resuming display link");
+    let lock = state.lock();
+    if !lock.display_link.is_null() {
+        unsafe {
+            let _: () = msg_send![lock.display_link, setPaused: NO];
+        }
+    }
+}
+
+unsafe fn get_scene_observer_state(observer: &Object) -> Option<Rc<Mutex<IosWindowState>>> {
+    let ptr: *mut c_void = *observer.get_ivar(WINDOW_STATE_IVAR);
+    if ptr.is_null() {
+        return None;
+    }
+    let rc = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+    let clone = rc.clone();
+    std::mem::forget(rc);
+    Some(clone)
+}
+
+// ---------------------------------------------------------------------------
+// Platform types
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub(crate) struct IosKeyboardLayout;
 
@@ -136,7 +583,6 @@ pub(crate) struct IosDisplay {
 
 impl IosDisplay {
     fn primary() -> Self {
-        // SAFETY: UIKit class messaging on main thread.
         let (width, height) = unsafe {
             let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
             let bounds: CGRect = msg_send![screen, bounds];
@@ -156,7 +602,6 @@ impl PlatformDisplay for IosDisplay {
     }
 
     fn uuid(&self) -> Result<uuid::Uuid> {
-        // iOS has a single logical display; return a fixed deterministic UUID.
         Ok(uuid::Uuid::from_bytes([0x01; 16]))
     }
 
@@ -355,7 +800,12 @@ impl IosPlatform {
             state: Mutex::new(IosPlatformState {
                 background_executor,
                 foreground_executor,
-                text_system: Arc::new(NoopTextSystem::new()),
+                text_system: {
+                    #[cfg(feature = "font-kit")]
+                    { Arc::new(IosTextSystem::new()) }
+                    #[cfg(not(feature = "font-kit"))]
+                    { Arc::new(NoopTextSystem::new()) }
+                },
                 display: Rc::new(IosDisplay::primary()),
                 active_window: None,
                 open_urls: None,
@@ -559,6 +1009,12 @@ struct IosWindowState {
     display_link: *mut Object,
     display_link_target: *mut Object,
     display_link_callback_ptr: *mut c_void,
+    // Touch tracking — primary finger only
+    tracked_touch: Option<*mut Object>,
+    last_touch_position: Option<Point<Pixels>>,
+    // Scene lifecycle observer
+    scene_observer: *mut Object,
+    // Callbacks
     should_close: Option<Box<dyn FnMut() -> bool>>,
     request_frame: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     on_input: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
@@ -587,8 +1043,15 @@ impl IosWindow {
             let ui_window: *mut Object = msg_send![ui_window, initWithFrame: screen_bounds];
 
             let ui_view_controller: *mut Object = msg_send![class!(UIViewController), new];
-            let ui_view: *mut Object = msg_send![class!(UIView), alloc];
+
+            // Use our custom GPUIView instead of plain UIView.
+            // Its layerClass override returns CAMetalLayer, so [view layer]
+            // IS the Metal layer — no need to add a sublayer separately.
+            let ui_view: *mut Object = msg_send![GPUI_VIEW_CLASS, alloc];
             let ui_view: *mut Object = msg_send![ui_view, initWithFrame: screen_bounds];
+
+            // Enable multi-touch (even though we track only one finger for now)
+            let _: () = msg_send![ui_view, setMultipleTouchEnabled: YES];
 
             let _: () = msg_send![ui_view_controller, setView: ui_view];
             let _: () = msg_send![ui_window, setRootViewController: ui_view_controller];
@@ -604,13 +1067,16 @@ impl IosWindow {
             (ui_window, ui_view_controller, ui_view, bounds, scale as f32)
         };
 
-        // Create the Metal renderer and attach its layer to the UIView.
+        // Create the Metal renderer. The view's own layer is already a CAMetalLayer
+        // (via the layerClass override), so we attach the renderer to it directly.
         let instance_buffer_pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
         let mut renderer = MetalRenderer::new(instance_buffer_pool, false);
 
         unsafe {
-            let view_layer: *mut Object = msg_send![ui_view, layer];
+            // The view's layer IS the Metal layer (via layerClass override).
+            // Attach the renderer's Metal layer content to the view's layer.
             let metal_layer = renderer.layer_ptr() as *mut Object;
+            let view_layer: *mut Object = msg_send![ui_view, layer];
             let _: () = msg_send![view_layer, addSublayer: metal_layer];
 
             let view_bounds: CGRect = msg_send![ui_view, bounds];
@@ -632,7 +1098,7 @@ impl IosWindow {
             scale_factor,
         );
 
-        Self(Rc::new(Mutex::new(IosWindowState {
+        let window = Self(Rc::new(Mutex::new(IosWindowState {
             handle,
             bounds: if options.bounds.size.width.0 > 0.0 && options.bounds.size.height.0 > 0.0 {
                 options.bounds
@@ -648,6 +1114,9 @@ impl IosWindow {
             display_link: std::ptr::null_mut(),
             display_link_target: std::ptr::null_mut(),
             display_link_callback_ptr: std::ptr::null_mut(),
+            tracked_touch: None,
+            last_touch_position: None,
+            scene_observer: std::ptr::null_mut(),
             should_close: None,
             request_frame: None,
             on_input: None,
@@ -660,7 +1129,59 @@ impl IosWindow {
             on_appearance_change: None,
             input_handler: None,
             title: String::new(),
-        })))
+        })));
+
+        // Set the window state ivar on the GPUIView so touch handlers can
+        // access it.
+        unsafe {
+            let state_ptr = Rc::into_raw(window.0.clone()) as *mut c_void;
+            (*ui_view).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, state_ptr);
+        }
+
+        // Register for UIScene lifecycle notifications
+        window.register_scene_notifications();
+
+        window
+    }
+
+    fn register_scene_notifications(&self) {
+        unsafe {
+            let observer: *mut Object = msg_send![GPUI_SCENE_OBSERVER_CLASS, new];
+            let state_ptr = Rc::into_raw(self.0.clone()) as *mut c_void;
+            (*observer).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, state_ptr);
+
+            let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
+
+            // UIScene.didActivateNotification
+            let did_activate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneDidActivateNotification\0".as_ptr()];
+            let _: () = msg_send![center, addObserver: observer
+                selector: sel!(sceneDidActivate:)
+                name: did_activate
+                object: std::ptr::null::<Object>()];
+
+            // UIScene.willDeactivateNotification
+            let will_deactivate: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneWillDeactivateNotification\0".as_ptr()];
+            let _: () = msg_send![center, addObserver: observer
+                selector: sel!(sceneWillDeactivate:)
+                name: will_deactivate
+                object: std::ptr::null::<Object>()];
+
+            // UIScene.didEnterBackgroundNotification
+            let did_enter_bg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneDidEnterBackgroundNotification\0".as_ptr()];
+            let _: () = msg_send![center, addObserver: observer
+                selector: sel!(sceneDidEnterBackground:)
+                name: did_enter_bg
+                object: std::ptr::null::<Object>()];
+
+            // UIScene.willEnterForegroundNotification
+            let will_enter_fg: *mut Object = msg_send![class!(NSString), stringWithUTF8String: b"UISceneWillEnterForegroundNotification\0".as_ptr()];
+            let _: () = msg_send![center, addObserver: observer
+                selector: sel!(sceneWillEnterForeground:)
+                name: will_enter_fg
+                object: std::ptr::null::<Object>()];
+
+            self.0.lock().scene_observer = observer;
+        }
     }
 }
 
@@ -669,6 +1190,31 @@ impl Drop for IosWindow {
         log::info!("iOS window destroyed");
         unsafe {
             let mut state = self.0.lock();
+
+            // Remove scene notification observer
+            if !state.scene_observer.is_null() {
+                let center: *mut Object =
+                    msg_send![class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![center, removeObserver: state.scene_observer];
+
+                // Release the Rc held by the observer's ivar
+                let ptr: *mut c_void = *(*state.scene_observer).get_ivar(WINDOW_STATE_IVAR);
+                if !ptr.is_null() {
+                    let _ = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+                }
+                let _: () = msg_send![state.scene_observer, release];
+                state.scene_observer = std::ptr::null_mut();
+            }
+
+            // Release the Rc held by the GPUIView's ivar
+            if !state.ui_view.is_null() {
+                let ptr: *mut c_void = *(*state.ui_view).get_ivar(WINDOW_STATE_IVAR);
+                if !ptr.is_null() {
+                    let _ = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+                    (*state.ui_view)
+                        .set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, std::ptr::null_mut());
+                }
+            }
 
             // Invalidate the CADisplayLink (removes it from the run loop).
             if !state.display_link.is_null() {
@@ -710,7 +1256,6 @@ impl HasWindowHandle for IosWindow {
         let ui_view = NonNull::new(state.ui_view.cast::<c_void>()).ok_or(HandleError::Unavailable)?;
         let mut handle = UiKitWindowHandle::new(ui_view);
         handle.ui_view_controller = NonNull::new(state.ui_view_controller.cast::<c_void>());
-        // SAFETY: pointers are held by this window for at least the borrowed lifetime.
         unsafe { Ok(WindowHandle::borrow_raw(handle.into())) }
     }
 }
@@ -755,7 +1300,10 @@ impl PlatformWindow for IosWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        Point::default()
+        self.0
+            .lock()
+            .last_touch_position
+            .unwrap_or_else(Point::default)
     }
 
     fn modifiers(&self) -> Modifiers {
@@ -824,12 +1372,7 @@ impl PlatformWindow for IosWindow {
 
         log::info!("CADisplayLink started");
 
-        // Build a closure that the CADisplayLink target will invoke on every
-        // screen refresh (~60 Hz). This mirrors macOS's CVDisplayLink → step()
-        // pattern.
         let window_state = self.0.clone();
-        // Force the first frame to render so the initial scene (built during
-        // open_window) gets presented to the Metal layer.
         let first_frame_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let first_frame_done_clone = first_frame_done.clone();
 
@@ -839,8 +1382,6 @@ impl PlatformWindow for IosWindow {
                 None => return,
             };
 
-            // On the first frame, force a render since the invalidator may not
-            // be dirty (open_window already called draw but never presented).
             let mut opts = RequestFrameOptions::default();
             if !first_frame_done_clone.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 log::info!("first frame rendered");
@@ -851,27 +1392,22 @@ impl PlatformWindow for IosWindow {
             window_state.lock().request_frame = Some(cb);
         });
 
-        // Leak the closure so we get a stable raw pointer for the ObjC ivar.
         let boxed_fn = Box::new(step_fn);
         let fn_ptr = Box::into_raw(boxed_fn) as *mut c_void;
 
         unsafe {
-            // Instantiate our GPUIDisplayLinkTarget and stash the closure ptr.
             let target: *mut Object = msg_send![DISPLAY_LINK_TARGET_CLASS, new];
             (*target).set_ivar::<*mut c_void>(CALLBACK_IVAR, fn_ptr);
 
-            // Create a CADisplayLink that calls [target step:] every frame.
             let display_link: *mut Object = msg_send![
                 class!(CADisplayLink),
                 displayLinkWithTarget: target
                 selector: sel!(step:)
             ];
 
-            // Add to the main run loop so it fires continuously.
             let run_loop: *mut Object = msg_send![class!(NSRunLoop), mainRunLoop];
             let _: () = msg_send![display_link, addToRunLoop: run_loop forMode: NSRunLoopCommonModes];
 
-            // Store everything in the window state for lifecycle management.
             let mut state = self.0.lock();
             state.display_link = display_link;
             state.display_link_target = target;
