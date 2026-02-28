@@ -1,6 +1,8 @@
 use gpui::{
     App, Application, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, PinchEvent,
-    RotationEvent, Window, WindowAppearance, WindowOptions, div, prelude::*, px, rgb,
+    RotationEvent, Window, WindowAppearance, WindowOptions, div, native_button, native_checkbox,
+    native_image_view, native_progress_bar, native_slider, native_stepper, native_switch,
+    native_text_field, native_toggle_group, prelude::*, px, rgb, NativeImageSymbolWeight,
 };
 use log::LevelFilter;
 use std::io::Write;
@@ -1140,6 +1142,335 @@ pub extern "C" fn gpui_ios_run_rotation_demo() {
 }
 
 // ---------------------------------------------------------------------------
+// 12. Native Controls Demo — showcases platform-native UIKit controls on iOS
+// ---------------------------------------------------------------------------
+
+struct IosNativeControlsDemo {
+    button_tap_count: usize,
+    switch_on: bool,
+    checkbox_checked: bool,
+    slider_value: f64,
+    stepper_value: f64,
+    text_field_value: String,
+    progress_value: f64,
+    selected_segment: usize,
+}
+
+impl Render for IosNativeControlsDemo {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let button_tap_count = self.button_tap_count;
+        let switch_on = self.switch_on;
+        let checkbox_checked = self.checkbox_checked;
+        let slider_value = self.slider_value;
+        let stepper_value = self.stepper_value;
+        let text_field_value = self.text_field_value.clone();
+        let progress_value = self.progress_value;
+        let selected_segment = self.selected_segment;
+
+        // Row helper: label on the left, control on the right
+        fn row(label: &str, control: impl IntoElement) -> gpui::Div {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .w_full()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .text_size(px(15.0))
+                        .text_color(rgb(0xcdd6f4))
+                        .flex_shrink_0()
+                        .child(label.to_string()),
+                )
+                .child(control)
+        }
+
+        // Section header
+        let section = |title: &str| {
+            div()
+                .w_full()
+                .pt(px(16.0))
+                .pb(px(4.0))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0x6c7086))
+                        .child(title.to_string()),
+                )
+        };
+
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .p(px(20.0))
+            .w_full();
+
+        // --- Title ---
+        content = content.child(
+            div()
+                .text_size(px(24.0))
+                .text_color(rgb(0xcdd6f4))
+                .pb(px(8.0))
+                .child("Native Controls"),
+        );
+
+        // --- Button ---
+        content = content
+            .child(section("BUTTON"))
+            .child(
+                row(
+                    &format!("Taps: {}", button_tap_count),
+                    native_button("demo-btn", "Tap Me")
+                        .on_click(cx.listener(|this, _event, _window, cx| {
+                            this.button_tap_count += 1;
+                            log::info!("native button tapped: {}", this.button_tap_count);
+                            cx.notify();
+                        })),
+                ),
+            );
+
+        // --- Switch ---
+        content = content
+            .child(section("SWITCH"))
+            .child(
+                row(
+                    &format!("Switch: {}", if switch_on { "ON" } else { "OFF" }),
+                    native_switch("demo-switch")
+                        .checked(switch_on)
+                        .on_change(cx.listener(|this, event: &gpui::SwitchChangeEvent, _window, cx| {
+                            this.switch_on = event.checked;
+                            log::info!("switch changed: {}", this.switch_on);
+                            cx.notify();
+                        })),
+                ),
+            );
+
+        // --- Checkbox ---
+        content = content
+            .child(section("CHECKBOX"))
+            .child(
+                row(
+                    &format!("Checked: {}", checkbox_checked),
+                    native_checkbox("demo-checkbox", "Enable feature")
+                        .checked(checkbox_checked)
+                        .on_change(cx.listener(|this, event: &gpui::CheckboxChangeEvent, _window, cx| {
+                            this.checkbox_checked = event.checked;
+                            log::info!("checkbox changed: {}", this.checkbox_checked);
+                            cx.notify();
+                        })),
+                ),
+            );
+
+        // --- Slider ---
+        content = content
+            .child(section("SLIDER"))
+            .child(
+                row(
+                    &format!("Value: {:.0}%", slider_value * 100.0),
+                    native_slider("demo-slider")
+                        .range(0.0, 1.0)
+                        .value(slider_value)
+                        .on_change(cx.listener(|this, event: &gpui::SliderChangeEvent, _window, cx| {
+                            this.slider_value = event.value;
+                            // Drive the progress bar from the slider
+                            this.progress_value = event.value;
+                            cx.notify();
+                        })),
+                ),
+            );
+
+        // --- Stepper ---
+        content = content
+            .child(section("STEPPER"))
+            .child(
+                row(
+                    &format!("Count: {:.0}", stepper_value),
+                    native_stepper("demo-stepper")
+                        .range(0.0, 20.0)
+                        .value(stepper_value)
+                        .increment(1.0)
+                        .on_change(cx.listener(|this, event: &gpui::StepperChangeEvent, _window, cx| {
+                            this.stepper_value = event.value;
+                            log::info!("stepper changed: {}", this.stepper_value);
+                            cx.notify();
+                        })),
+                ),
+            );
+
+        // --- Text Field ---
+        content = content
+            .child(section("TEXT FIELD"))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        native_text_field("demo-textfield")
+                            .placeholder("Type something...")
+                            .value(gpui::SharedString::from(text_field_value.clone()))
+                            .on_change(cx.listener(|this, event: &gpui::TextChangeEvent, _window, cx| {
+                                this.text_field_value = event.text.clone();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x6c7086))
+                            .child(if text_field_value.is_empty() {
+                                "No text entered".to_string()
+                            } else {
+                                format!("Text: {}", text_field_value)
+                            }),
+                    ),
+            );
+
+        // --- Progress Bar ---
+        content = content
+            .child(section("PROGRESS BAR"))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        native_progress_bar("demo-progress")
+                            .range(0.0, 1.0)
+                            .value(progress_value),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x6c7086))
+                            .child(format!("{:.0}% (drag slider above)", progress_value * 100.0)),
+                    ),
+            );
+
+        // --- Toggle Group ---
+        content = content
+            .child(section("TOGGLE GROUP"))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.0))
+                    .child(
+                        native_toggle_group(
+                            "demo-toggle",
+                            &["One", "Two", "Three"],
+                        )
+                        .selected_index(selected_segment)
+                        .on_select(cx.listener(|this, event: &gpui::SegmentSelectEvent, _window, cx| {
+                            this.selected_segment = event.index;
+                            log::info!("segment selected: {}", this.selected_segment);
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0x6c7086))
+                            .child(format!(
+                                "Selected: {} ({})",
+                                ["One", "Two", "Three"][selected_segment],
+                                selected_segment,
+                            )),
+                    ),
+            );
+
+        // --- Image View (SF Symbol) ---
+        content = content
+            .child(section("IMAGE VIEW (SF Symbol)"))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(16.0))
+                    .child(
+                        native_image_view("demo-img-globe")
+                            .sf_symbol_config("globe", 32.0, NativeImageSymbolWeight::Medium)
+                            .tint_color(0.337, 0.706, 0.98, 1.0) // blue
+                            .w(px(40.0))
+                            .h(px(40.0)),
+                    )
+                    .child(
+                        native_image_view("demo-img-star")
+                            .sf_symbol_config("star.fill", 32.0, NativeImageSymbolWeight::Medium)
+                            .tint_color(0.949, 0.886, 0.686, 1.0) // yellow
+                            .w(px(40.0))
+                            .h(px(40.0)),
+                    )
+                    .child(
+                        native_image_view("demo-img-heart")
+                            .sf_symbol_config("heart.fill", 32.0, NativeImageSymbolWeight::Medium)
+                            .tint_color(0.953, 0.545, 0.659, 1.0) // pink
+                            .w(px(40.0))
+                            .h(px(40.0)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .text_color(rgb(0xa6adc8))
+                            .child("SF Symbols"),
+                    ),
+            );
+
+        // Scrollable wrapper
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(60.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgb(0x313244))
+                    .child(
+                        div()
+                            .text_size(px(20.0))
+                            .child("Native Controls Demo"),
+                    ),
+            )
+            .child(
+                div()
+                    .id("native-controls-scroll")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .child(content),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_native_controls_demo() {
+    run_ios_app(
+        "dev.glasshq.GPUIiOSNativeControlsDemo",
+        |_, _| IosNativeControlsDemo {
+            button_tap_count: 0,
+            switch_on: false,
+            checkbox_checked: false,
+            slider_value: 0.5,
+            stepper_value: 0.0,
+            text_field_value: String::new(),
+            progress_value: 0.5,
+            selected_segment: 0,
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Demo dispatcher — called from ObjC main.m with demo name as C string
 // ---------------------------------------------------------------------------
 
@@ -1155,6 +1486,7 @@ const AVAILABLE_DEMOS: &[&str] = &[
     "horizontal_scroll",
     "pinch",
     "rotation",
+    "native_controls",
 ];
 
 #[unsafe(no_mangle)]
@@ -1174,6 +1506,7 @@ pub extern "C" fn gpui_ios_run_demo(name: *const std::ffi::c_char) {
         "horizontal_scroll" => gpui_ios_run_horizontal_scroll_demo(),
         "pinch" => gpui_ios_run_pinch_demo(),
         "rotation" => gpui_ios_run_rotation_demo(),
+        "native_controls" => gpui_ios_run_native_controls_demo(),
         unknown => {
             // Init logging so the error is visible
             init_logging("dev.glasshq.GPUIiOS");
