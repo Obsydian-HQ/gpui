@@ -73,28 +73,7 @@ struct IosTextSystemState {
 
 impl IosTextSystem {
     pub(crate) fn new() -> Self {
-        log::info!("[IosTextSystem] initializing");
         let system_source = SystemSource::new();
-        log::info!("[IosTextSystem] SystemSource created");
-
-        // Probe: can we find any fonts at all?
-        match system_source.select_family_by_name("Helvetica") {
-            Ok(family) => log::info!(
-                "[IosTextSystem] probe: Helvetica found ({} fonts)",
-                family.fonts().len()
-            ),
-            Err(e) => log::warn!("[IosTextSystem] probe: Helvetica NOT found: {}", e),
-        }
-        match system_source.select_family_by_name(".AppleSystemUIFont") {
-            Ok(family) => log::info!(
-                "[IosTextSystem] probe: .AppleSystemUIFont found ({} fonts)",
-                family.fonts().len()
-            ),
-            Err(e) => log::warn!(
-                "[IosTextSystem] probe: .AppleSystemUIFont NOT found: {}",
-                e
-            ),
-        }
 
         Self(RwLock::new(IosTextSystemState {
             memory_source: MemSource::empty(),
@@ -147,7 +126,6 @@ impl PlatformTextSystem for IosTextSystem {
         if let Some(font_id) = lock.font_selections.get(font) {
             Ok(*font_id)
         } else {
-            log::debug!("[IosTextSystem] font_id lookup: family={:?}", font.family);
             let mut lock = RwLockUpgradableReadGuard::upgrade(lock);
             let font_key = FontKey {
                 font_family: font.family.clone(),
@@ -159,11 +137,6 @@ impl PlatformTextSystem for IosTextSystem {
             } else {
                 match lock.load_family(&font.family, &font.features, font.fallbacks.as_ref()) {
                     Ok(ids) => {
-                        log::info!(
-                            "[IosTextSystem] loaded family {:?}: {} candidates",
-                            font.family,
-                            ids.len()
-                        );
                         lock.font_ids_by_font_key.insert(font_key.clone(), ids);
                     }
                     Err(e) => {
