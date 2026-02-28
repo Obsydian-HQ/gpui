@@ -1140,9 +1140,66 @@ pub extern "C" fn gpui_ios_run_rotation_demo() {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Demo dispatcher — called from ObjC main.m with demo name as C string
 // ---------------------------------------------------------------------------
 
-// Note: gpui_ios_handle_open_url is exposed directly from the gpui crate
-// (crates/gpui/src/platform/ios/mod.rs) via #[unsafe(no_mangle)].
-// Swift can call it directly — no wrapper needed here.
+const AVAILABLE_DEMOS: &[&str] = &[
+    "hello_world",
+    "touch",
+    "text",
+    "lifecycle",
+    "combined",
+    "scroll",
+    "text_input",
+    "vertical_scroll",
+    "horizontal_scroll",
+    "pinch",
+    "rotation",
+];
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_demo(name: *const std::ffi::c_char) {
+    let name = unsafe { std::ffi::CStr::from_ptr(name) }
+        .to_str()
+        .unwrap_or("hello_world");
+    match name {
+        "hello_world" => gpui_ios_run_hello_world(),
+        "touch" => gpui_ios_run_touch_demo(),
+        "text" => gpui_ios_run_text_demo(),
+        "lifecycle" => gpui_ios_run_lifecycle_demo(),
+        "combined" => gpui_ios_run_combined_demo(),
+        "scroll" => gpui_ios_run_scroll_demo(),
+        "text_input" => gpui_ios_run_text_input_demo(),
+        "vertical_scroll" => gpui_ios_run_vertical_scroll_demo(),
+        "horizontal_scroll" => gpui_ios_run_horizontal_scroll_demo(),
+        "pinch" => gpui_ios_run_pinch_demo(),
+        "rotation" => gpui_ios_run_rotation_demo(),
+        unknown => {
+            // Init logging so the error is visible
+            init_logging("dev.glasshq.GPUIiOS");
+            log::error!(
+                "Unknown demo: '{}'. Available: {}",
+                unknown,
+                AVAILABLE_DEMOS.join(", ")
+            );
+            gpui_ios_run_hello_world();
+        }
+    }
+}
+
+/// Returns a newline-separated list of available demo names. Caller must free with `gpui_ios_free_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_list_demos() -> *mut std::ffi::c_char {
+    let list = AVAILABLE_DEMOS.join("\n");
+    std::ffi::CString::new(list)
+        .expect("demo names contain no NUL bytes")
+        .into_raw()
+}
+
+/// Free a string returned by `gpui_ios_list_demos`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpui_ios_free_string(s: *mut std::ffi::c_char) {
+    if !s.is_null() {
+        unsafe { drop(std::ffi::CString::from_raw(s)) };
+    }
+}

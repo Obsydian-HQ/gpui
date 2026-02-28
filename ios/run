@@ -1,0 +1,288 @@
+#!/usr/bin/env bash
+# ios/run — build, deploy, and run GPUI iOS demos
+#
+# Usage:
+#   ./ios/run <demo>                # build + run on physical device
+#   ./ios/run --sim <demo>          # build + run on iOS Simulator
+#   ./ios/run                       # list available demos
+#
+# Options:
+#   --sim                           target simulator instead of device
+#   --release                       release build (default: debug)
+#   --device <id>                   specific device UUID
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TEAM_ID="${DEVELOPMENT_TEAM:-DA7B5U47PT}"
+BUNDLE_ID="dev.glasshq.GPUIiOS"
+LOG_PORT="${GPUI_LOG_PORT:-9632}"
+PROJECT_NAME="GPUIiOS"
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+USE_SIM=false
+RELEASE=false
+DEVICE_OVERRIDE=""
+DEMO=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sim)       USE_SIM=true; shift ;;
+    --release)   RELEASE=true; shift ;;
+    --device)    DEVICE_OVERRIDE="$2"; shift 2 ;;
+    -h|--help)
+      # Print usage from the header comments
+      awk '/^# ios\/run/,/^set / { if (/^#/) { sub(/^# ?/, ""); print } }' "$0"
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      DEMO="$1"; shift ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# List demos if none specified
+# ---------------------------------------------------------------------------
+if [[ -z "$DEMO" ]]; then
+  echo "Available demos:"
+  echo ""
+  echo "  hello_world        Colored boxes"
+  echo "  touch              Tappable boxes with tap counter"
+  echo "  text               Text rendering at various sizes"
+  echo "  lifecycle          Window size, appearance, resize counting"
+  echo "  combined           Touch + text + lifecycle + dark/light mode"
+  echo "  scroll             Two-finger pan scrollable list (50 items)"
+  echo "  text_input         Software keyboard input with focus"
+  echo "  vertical_scroll    Single-finger vertical scroll (100 items)"
+  echo "  horizontal_scroll  Single-finger horizontal card strip"
+  echo "  pinch              Pinch gesture to scale (0.25x–5x)"
+  echo "  rotation           Two-finger rotation with color shift"
+  echo ""
+  echo "Usage:"
+  echo "  ./ios/run <demo>           build + run on physical device"
+  echo "  ./ios/run --sim <demo>     build + run on iOS Simulator"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "xcodegen is required. Install with: brew install xcodegen" >&2
+  exit 1
+fi
+
+CONFIGURATION="Debug"
+if $RELEASE; then
+  CONFIGURATION="Release"
+fi
+
+# ---------------------------------------------------------------------------
+# Generate Xcode project
+# ---------------------------------------------------------------------------
+cd "$SCRIPT_DIR"
+xcodegen generate --spec project.yml 2>&1 | grep -v "^$" || true
+
+if $USE_SIM; then
+  # =========================================================================
+  # SIMULATOR PATH
+  # =========================================================================
+
+  # Boot the default simulator if none is booted
+  BOOTED_UDID="$(xcrun simctl list devices booted -j 2>/dev/null \
+    | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for runtime, devs in data.get('devices', {}).items():
+    for d in devs:
+        if d.get('state') == 'Booted':
+            print(d['udid'])
+            sys.exit(0)
+" 2>/dev/null || echo "")"
+
+  if [[ -z "$BOOTED_UDID" ]]; then
+    echo "No simulator booted. Booting default iPhone..."
+    # Find a recent iPhone simulator
+    SIM_UDID="$(xcrun simctl list devices available -j 2>/dev/null \
+      | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+for runtime, devs in sorted(data.get('devices', {}).items(), reverse=True):
+    if 'iOS' not in runtime:
+        continue
+    for d in devs:
+        name = d.get('name', '')
+        if 'iPhone' in name and d.get('isAvailable', False):
+            print(d['udid'])
+            sys.exit(0)
+print('')
+" 2>/dev/null)"
+
+    if [[ -z "$SIM_UDID" ]]; then
+      echo "No iPhone simulator available. Create one in Xcode." >&2
+      exit 1
+    fi
+    xcrun simctl boot "$SIM_UDID"
+    BOOTED_UDID="$SIM_UDID"
+  fi
+
+  echo "Simulator: $BOOTED_UDID"
+  echo "Demo: $DEMO"
+  echo ""
+
+  # Build for simulator
+  xcodebuild \
+    -project "${PROJECT_NAME}.xcodeproj" \
+    -scheme "$PROJECT_NAME" \
+    -configuration "$CONFIGURATION" \
+    -destination "id=$BOOTED_UDID" \
+    -derivedDataPath "$SCRIPT_DIR/build/simulator" \
+    DEVELOPMENT_TEAM="$TEAM_ID" \
+    build 2>&1 | tail -5
+
+  PRODUCTS_DIR="$SCRIPT_DIR/build/simulator/Build/Products"
+  APP_PATH="$(find "$PRODUCTS_DIR" -name "${PROJECT_NAME}.app" -type d 2>/dev/null | head -1)"
+  if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
+    echo "Built app not found in $PRODUCTS_DIR" >&2
+    exit 1
+  fi
+
+  # Install and launch
+  xcrun simctl install "$BOOTED_UDID" "$APP_PATH"
+
+  # Terminate existing instance if running
+  xcrun simctl terminate "$BOOTED_UDID" "$BUNDLE_ID" 2>/dev/null || true
+
+  echo ""
+  echo "--- Launching $DEMO on simulator ---"
+  echo ""
+
+  # Launch with demo name as argument, stream stdout/stderr
+  xcrun simctl launch --console "$BOOTED_UDID" "$BUNDLE_ID" "$DEMO"
+
+else
+  # =========================================================================
+  # PHYSICAL DEVICE PATH
+  # =========================================================================
+
+  if ! xcrun devicectl --help >/dev/null 2>&1; then
+    echo "xcrun devicectl is required (Xcode 15+)." >&2
+    exit 1
+  fi
+
+  # --- Device selection ---
+  TMPJSON="$(mktemp /tmp/gpui-devices.XXXXXX.json)"
+  xcrun devicectl list devices --json-output "$TMPJSON" >/dev/null 2>&1 || true
+
+  read -r COREDEVICE_ID LEGACY_UDID < <(python3 -c "
+import json
+data = json.load(open('$TMPJSON'))
+devices = data.get('result', {}).get('devices', [])
+active, recent, offline = [], [], []
+for d in devices:
+    hw = d.get('hardwareProperties', {})
+    if hw.get('reality') == 'physical' and hw.get('platform') == 'iOS':
+        pair = (d.get('identifier', ''), hw.get('udid', ''))
+        tunnel = d.get('connectionProperties', {}).get('tunnelState', 'unavailable')
+        if tunnel not in ('unavailable', 'disconnected'):
+            active.append(pair)
+        elif tunnel == 'disconnected':
+            recent.append(pair)
+        else:
+            offline.append(pair)
+pick = active or recent or offline
+if pick:
+    print(pick[0][0], pick[0][1])
+" 2>/dev/null || echo "")
+  rm -f "$TMPJSON"
+
+  if [[ -n "$DEVICE_OVERRIDE" ]]; then
+    COREDEVICE_ID="$DEVICE_OVERRIDE"
+    LEGACY_UDID="$DEVICE_OVERRIDE"
+  fi
+
+  if [[ -z "$COREDEVICE_ID" || -z "$LEGACY_UDID" ]]; then
+    echo "No physical iOS device found." >&2
+    echo "Run ./ios/devices to check connected devices." >&2
+    exit 1
+  fi
+
+  echo "Device: $LEGACY_UDID (CoreDevice: $COREDEVICE_ID)"
+  echo "Demo: $DEMO"
+  echo ""
+
+  # --- Log listener ---
+  LOG_LISTENER_PID=""
+  cleanup() {
+    if [[ -n "$LOG_LISTENER_PID" ]]; then
+      kill "$LOG_LISTENER_PID" 2>/dev/null || true
+      wait "$LOG_LISTENER_PID" 2>/dev/null || true
+    fi
+  }
+  trap cleanup EXIT INT TERM
+
+  if command -v socat >/dev/null 2>&1; then
+    socat -u TCP-LISTEN:"$LOG_PORT",reuseaddr,fork STDOUT &
+    LOG_LISTENER_PID=$!
+  else
+    nc -l -k "$LOG_PORT" &
+    LOG_LISTENER_PID=$!
+  fi
+  echo "Log listener on port $LOG_PORT (PID $LOG_LISTENER_PID)"
+
+  # --- Build ---
+  xcodebuild \
+    -project "${PROJECT_NAME}.xcodeproj" \
+    -scheme "$PROJECT_NAME" \
+    -configuration "$CONFIGURATION" \
+    -destination "id=$LEGACY_UDID" \
+    -derivedDataPath "$SCRIPT_DIR/build/device" \
+    -allowProvisioningUpdates \
+    DEVELOPMENT_TEAM="$TEAM_ID" \
+    CODE_SIGN_STYLE=Automatic \
+    build 2>&1 | tail -5
+
+  APP_PATH="$SCRIPT_DIR/build/device/Build/Products/${CONFIGURATION}-iphoneos/${PROJECT_NAME}.app"
+  if [[ ! -d "$APP_PATH" ]]; then
+    echo "Built app not found: $APP_PATH" >&2
+    exit 1
+  fi
+
+  # --- Install & Launch ---
+  echo "Installing..."
+  xcrun devicectl device install app --device "$COREDEVICE_ID" "$APP_PATH"
+
+  echo ""
+  echo "Launching $DEMO..."
+  set +e
+  launch_output="$(xcrun devicectl device process launch \
+    --terminate-existing \
+    --device "$COREDEVICE_ID" \
+    "$BUNDLE_ID" \
+    "$DEMO" 2>&1)"
+  launch_status=$?
+  set -e
+
+  if [[ "$launch_status" -ne 0 ]]; then
+    echo "$launch_output"
+    if echo "$launch_output" | grep -qi "locked"; then
+      echo "" >&2
+      echo "Device is locked. Unlock your phone and try again." >&2
+    fi
+    exit "$launch_status"
+  fi
+
+  echo "$launch_output"
+  echo ""
+  echo "--- Streaming logs (Ctrl+C to stop) ---"
+  echo ""
+
+  wait "$LOG_LISTENER_PID" 2>/dev/null || true
+  LOG_LISTENER_PID=""
+fi

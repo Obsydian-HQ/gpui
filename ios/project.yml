@@ -1,4 +1,4 @@
-name: GPUIiOSHello
+name: GPUIiOS
 
 options:
   bundleIdPrefix: dev.glasshq
@@ -7,21 +7,20 @@ options:
 
 settings:
   base:
-    SWIFT_VERSION: 5.0
     CODE_SIGN_STYLE: Automatic
     DEVELOPMENT_TEAM: DA7B5U47PT
 
 targets:
-  GPUIiOSHello:
+  GPUIiOS:
     type: application
     platform: iOS
     deploymentTarget: "17.0"
     sources:
-      - path: GPUIiOSHello
+      - path: runner
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.glasshq.GPUIiOSHello
-        PRODUCT_NAME: GPUIiOSHello
+        PRODUCT_BUNDLE_IDENTIFIER: dev.glasshq.GPUIiOS
+        PRODUCT_NAME: GPUIiOS
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
@@ -37,7 +36,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ENABLE_USER_SCRIPT_SANDBOXING: NO
-        SWIFT_OBJC_BRIDGING_HEADER: GPUIiOSHello/GPUIiOSHello-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: Entitlements.plist
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "$(BUILT_PRODUCTS_DIR)"
@@ -45,8 +44,8 @@ targets:
           - "$(inherited)"
           - "-lgpui_ios_app"
     preBuildScripts:
-      - name: Build Rust app bridge
+      - name: Build Rust
         basedOnDependencyAnalysis: false
         script: |
           set -eu
-          "$SRCROOT/scripts/build-rust.sh"
+          "$SRCROOT/build-rust.sh"
