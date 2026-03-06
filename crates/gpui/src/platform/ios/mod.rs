@@ -5,27 +5,30 @@ mod open_type;
 #[cfg(feature = "font-kit")]
 mod text_system;
 
+use crate::asset_cache::hash;
 use crate::platform::metal::renderer::{InstanceBufferPool, MetalRenderer, SharedRenderResources};
 use crate::{
-    Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardItem, CursorStyle,
-    DispatchEventResult, DisplayId, DummyKeyboardMapper, Edges, ForegroundExecutor,
-    GLOBAL_THREAD_TIMINGS, GpuSpecs, KeyDownEvent, KeyUpEvent, Keymap, Keystroke, Menu, MenuItem,
-    Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    NoopTextSystem, OwnedMenu, PathPromptOptions, PinchEvent, Pixels, Platform, PlatformAtlas,
-    PlatformDispatcher, PlatformDisplay, PlatformInput, PlatformInputHandler,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point,
-    Priority, PromptButton, RequestFrameOptions, RotationEvent, ScrollDelta, ScrollWheelEvent,
-    THREAD_TIMINGS, Task, TaskTiming, ThermalState, ThreadTaskTimings, TouchPhase,
-    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams,
-    point, px, size,
+    Action, AnyWindowHandle, BackgroundExecutor, Bounds, ClipboardEntry, ClipboardItem,
+    CursorStyle, DispatchEventResult, DisplayId, Edges, ExternalPaths, FileDropEvent,
+    ForegroundExecutor, GLOBAL_THREAD_TIMINGS, GpuSpecs, Image, ImageFormat, KeyDownEvent,
+    KeyUpEvent, KeybindingKeystroke, Keymap, Keystroke, Menu, MenuItem, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, OwnedMenu,
+    PathPromptOptions, PinchEvent, Pixels, Platform, PlatformAtlas, PlatformDispatcher,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformKeyboardLayout,
+    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Point, Priority, PromptButton,
+    RequestFrameOptions, RotationEvent, ScrollDelta, ScrollWheelEvent, THREAD_TIMINGS, Task,
+    TaskTiming, ThermalState, ThreadTaskTimings, TouchPhase, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowParams, point, px, size,
 };
 use anyhow::{Result, anyhow};
+use block::ConcreteBlock;
+use collections::HashMap;
 use core_foundation::{
-    base::{CFType, CFTypeRef, OSStatus, TCFType},
+    base::{CFType, CFTypeRef, TCFType},
     boolean::CFBoolean,
     data::CFData,
-    dictionary::{CFDictionary, CFDictionaryRef, CFMutableDictionary},
-    string::{CFString, CFStringRef},
+    dictionary::{CFDictionary, CFMutableDictionary},
+    string::CFString,
 };
 use ctor::ctor;
 use foreign_types::ForeignType as _;
@@ -44,10 +47,11 @@ use raw_window_handle::{
 use std::{
     cell::Cell,
     ffi::c_void,
+    ops::Range,
     path::{Path, PathBuf},
     ptr::{self, NonNull, addr_of},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, atomic::Ordering},
     thread,
     time::{Duration, Instant},
 };
@@ -66,6 +70,36 @@ struct NSRange {
     length: usize,
 }
 
+impl NSRange {
+    fn invalid() -> Self {
+        Self {
+            location: usize::MAX,
+            length: 0,
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.location != usize::MAX
+    }
+
+    fn to_range(self) -> Option<Range<usize>> {
+        if self.is_valid() {
+            Some(self.location..self.location + self.length)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<Range<usize>> for NSRange {
+    fn from(range: Range<usize>) -> Self {
+        Self {
+            location: range.start,
+            length: range.end - range.start,
+        }
+    }
+}
+
 unsafe impl objc::Encode for NSRange {
     fn encode() -> objc::Encoding {
         let encoding = format!(
@@ -76,6 +110,8 @@ unsafe impl objc::Encode for NSRange {
         unsafe { objc::Encoding::from_str(&encoding) }
     }
 }
+
+const TEXT_POSITION_INDEX_IVAR: &str = "gpui_index";
 
 const DISPATCH_TIME_NOW: DispatchTime = 0;
 const DISPATCH_QUEUE_PRIORITY_HIGH: isize = 2;
@@ -106,6 +142,112 @@ unsafe extern "C" {
         work: Option<unsafe extern "C" fn(*mut c_void)>,
     );
     fn dispatch_time(when: DispatchTime, delta: i64) -> DispatchTime;
+}
+
+// ---------------------------------------------------------------------------
+// GPUITextPosition — UITextPosition subclass storing a UTF-16 character index.
+// Required by the UITextInput protocol for position arithmetic.
+// ---------------------------------------------------------------------------
+
+static mut GPUI_TEXT_POSITION_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_text_position_class() {
+    let superclass = class!(UITextPosition);
+    let mut decl = ClassDecl::new("GPUITextPosition", superclass)
+        .expect("failed to declare GPUITextPosition class");
+    decl.add_ivar::<usize>(TEXT_POSITION_INDEX_IVAR);
+    unsafe {
+        GPUI_TEXT_POSITION_CLASS = decl.register();
+    }
+}
+
+unsafe fn make_text_position(index: usize) -> *mut Object {
+    let obj: *mut Object = msg_send![GPUI_TEXT_POSITION_CLASS, alloc];
+    let obj: *mut Object = msg_send![obj, init];
+    (*obj).set_ivar::<usize>(TEXT_POSITION_INDEX_IVAR, index);
+    obj
+}
+
+unsafe fn text_position_index(position: *mut Object) -> usize {
+    if position.is_null() {
+        return 0;
+    }
+    *(*position).get_ivar::<usize>(TEXT_POSITION_INDEX_IVAR)
+}
+
+// ---------------------------------------------------------------------------
+// GPUITextRange — UITextRange subclass storing start/end UTF-16 indices.
+// Required by the UITextInput protocol for range operations.
+// ---------------------------------------------------------------------------
+
+static mut GPUI_TEXT_RANGE_CLASS: *const Class = std::ptr::null();
+const TEXT_RANGE_START_IVAR: &str = "gpui_start";
+const TEXT_RANGE_END_IVAR: &str = "gpui_end";
+
+#[ctor]
+unsafe fn register_text_range_class() {
+    let superclass = class!(UITextRange);
+    let mut decl = ClassDecl::new("GPUITextRange", superclass)
+        .expect("failed to declare GPUITextRange class");
+    decl.add_ivar::<usize>(TEXT_RANGE_START_IVAR);
+    decl.add_ivar::<usize>(TEXT_RANGE_END_IVAR);
+
+    decl.add_method(
+        sel!(isEmpty),
+        text_range_is_empty as extern "C" fn(&Object, Sel) -> BOOL,
+    );
+    decl.add_method(
+        sel!(start),
+        text_range_start as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(end),
+        text_range_end as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+
+    unsafe {
+        GPUI_TEXT_RANGE_CLASS = decl.register();
+    }
+}
+
+unsafe fn make_text_range(start: usize, end: usize) -> *mut Object {
+    let obj: *mut Object = msg_send![GPUI_TEXT_RANGE_CLASS, alloc];
+    let obj: *mut Object = msg_send![obj, init];
+    (*obj).set_ivar::<usize>(TEXT_RANGE_START_IVAR, start);
+    (*obj).set_ivar::<usize>(TEXT_RANGE_END_IVAR, end);
+    obj
+}
+
+unsafe fn text_range_to_rust(range: *mut Object) -> Option<Range<usize>> {
+    if range.is_null() {
+        return None;
+    }
+    let start = *(*range).get_ivar::<usize>(TEXT_RANGE_START_IVAR);
+    let end = *(*range).get_ivar::<usize>(TEXT_RANGE_END_IVAR);
+    Some(start..end)
+}
+
+extern "C" fn text_range_is_empty(this: &Object, _sel: Sel) -> BOOL {
+    unsafe {
+        let start = *this.get_ivar::<usize>(TEXT_RANGE_START_IVAR);
+        let end = *this.get_ivar::<usize>(TEXT_RANGE_END_IVAR);
+        if start == end { YES } else { NO }
+    }
+}
+
+extern "C" fn text_range_start(this: &Object, _sel: Sel) -> *mut Object {
+    unsafe {
+        let start = *this.get_ivar::<usize>(TEXT_RANGE_START_IVAR);
+        make_text_position(start)
+    }
+}
+
+extern "C" fn text_range_end(this: &Object, _sel: Sel) -> *mut Object {
+    unsafe {
+        let end = *this.get_ivar::<usize>(TEXT_RANGE_END_IVAR);
+        make_text_position(end)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -216,18 +358,7 @@ unsafe fn register_gpui_view_class() {
         handle_rotation as extern "C" fn(&Object, Sel, *mut Object),
     );
 
-    // UITextFieldDelegate — intercept text from the hidden UITextField keyboard proxy
-    decl.add_method(
-        sel!(textField:shouldChangeCharactersInRange:replacementString:),
-        handle_text_field_change
-            as extern "C" fn(&Object, Sel, *mut Object, NSRange, *mut Object) -> BOOL,
-    );
-    decl.add_method(
-        sel!(textFieldShouldReturn:),
-        handle_text_field_return as extern "C" fn(&Object, Sel, *mut Object) -> BOOL,
-    );
-
-    // UIKeyInput — GPUIView is the first responder for keyboard input
+    // UIKeyInput (base of UITextInput) — first responder + basic text ops
     decl.add_method(
         sel!(canBecomeFirstResponder),
         can_become_first_responder as extern "C" fn(&Object, Sel) -> BOOL,
@@ -261,6 +392,144 @@ unsafe fn register_gpui_view_class() {
     decl.add_method(
         sel!(spellCheckingType),
         spell_checking_type as extern "C" fn(&Object, Sel) -> isize,
+    );
+
+    // UITextInput — full text input protocol for IME composition, marked
+    // text, cursor positioning, and text selection.
+    decl.add_ivar::<*mut c_void>("gpui_input_delegate");
+    decl.add_ivar::<*mut c_void>("gpui_tokenizer");
+
+    decl.add_method(
+        sel!(textInRange:),
+        uitextinput_text_in_range as extern "C" fn(&Object, Sel, *mut Object) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(replaceRange:withText:),
+        uitextinput_replace_range as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(selectedTextRange),
+        uitextinput_selected_text_range as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(setSelectedTextRange:),
+        uitextinput_set_selected_text_range as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(markedTextRange),
+        uitextinput_marked_text_range as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(markedTextStyle),
+        uitextinput_marked_text_style as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(setMarkedTextStyle:),
+        uitextinput_set_marked_text_style as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(setMarkedText:selectedRange:),
+        uitextinput_set_marked_text
+            as extern "C" fn(&Object, Sel, *mut Object, NSRange),
+    );
+    decl.add_method(
+        sel!(unmarkText),
+        uitextinput_unmark_text as extern "C" fn(&Object, Sel),
+    );
+    decl.add_method(
+        sel!(beginningOfDocument),
+        uitextinput_beginning_of_document as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(endOfDocument),
+        uitextinput_end_of_document as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(textRangeFromPosition:toPosition:),
+        uitextinput_text_range_from_position
+            as extern "C" fn(&Object, Sel, *mut Object, *mut Object) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(positionFromPosition:offset:),
+        uitextinput_position_from_position_offset
+            as extern "C" fn(&Object, Sel, *mut Object, isize) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(positionFromPosition:inDirection:offset:),
+        uitextinput_position_from_position_direction
+            as extern "C" fn(&Object, Sel, *mut Object, isize, isize) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(comparePosition:toPosition:),
+        uitextinput_compare_position
+            as extern "C" fn(&Object, Sel, *mut Object, *mut Object) -> isize,
+    );
+    decl.add_method(
+        sel!(offsetFromPosition:toPosition:),
+        uitextinput_offset_from_position
+            as extern "C" fn(&Object, Sel, *mut Object, *mut Object) -> isize,
+    );
+    decl.add_method(
+        sel!(inputDelegate),
+        uitextinput_input_delegate as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(setInputDelegate:),
+        uitextinput_set_input_delegate as extern "C" fn(&Object, Sel, *mut Object),
+    );
+    decl.add_method(
+        sel!(tokenizer),
+        uitextinput_tokenizer as extern "C" fn(&Object, Sel) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(positionWithinRange:farthestInDirection:),
+        uitextinput_position_within_range
+            as extern "C" fn(&Object, Sel, *mut Object, isize) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(characterRangeByExtendingPosition:inDirection:),
+        uitextinput_character_range_by_extending
+            as extern "C" fn(&Object, Sel, *mut Object, isize) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(baseWritingDirectionForPosition:inDirection:),
+        uitextinput_base_writing_direction
+            as extern "C" fn(&Object, Sel, *mut Object, isize) -> isize,
+    );
+    decl.add_method(
+        sel!(setBaseWritingDirection:forRange:),
+        uitextinput_set_base_writing_direction
+            as extern "C" fn(&Object, Sel, isize, *mut Object),
+    );
+    decl.add_method(
+        sel!(firstRectForRange:),
+        uitextinput_first_rect_for_range
+            as extern "C" fn(&Object, Sel, *mut Object) -> CGRect,
+    );
+    decl.add_method(
+        sel!(caretRectForPosition:),
+        uitextinput_caret_rect_for_position
+            as extern "C" fn(&Object, Sel, *mut Object) -> CGRect,
+    );
+    decl.add_method(
+        sel!(selectionRectsForRange:),
+        uitextinput_selection_rects_for_range
+            as extern "C" fn(&Object, Sel, *mut Object) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(closestPositionToPoint:),
+        uitextinput_closest_position_to_point
+            as extern "C" fn(&Object, Sel, CGPoint) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(closestPositionToPoint:withinRange:),
+        uitextinput_closest_position_to_point_within_range
+            as extern "C" fn(&Object, Sel, CGPoint, *mut Object) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(characterRangeAtPoint:),
+        uitextinput_character_range_at_point
+            as extern "C" fn(&Object, Sel, CGPoint) -> *mut Object,
     );
 
     // iPadOS hover gesture (pointer support)
@@ -439,21 +708,19 @@ extern "C" fn handle_touches_began(
     // element (default_prevented means an input field consumed the event).
     let has_input_handler = state.lock().input_handler.is_some();
     if has_input_handler && result.default_prevented {
-        let proxy = state.lock().keyboard_proxy;
-        if !proxy.is_null() {
-            unsafe {
-                let is_first: BOOL = msg_send![proxy, isFirstResponder];
-                log::debug!(
-                    "[keyboard] requesting first responder (currently_first={})",
-                    is_first != NO
+        unsafe {
+            let view_ptr = this as *const Object as *mut Object;
+            let is_first: BOOL = msg_send![view_ptr, isFirstResponder];
+            log::debug!(
+                "[keyboard] requesting first responder (currently_first={})",
+                is_first != NO
+            );
+            if is_first == NO {
+                dispatch_async_f(
+                    dispatch_get_main_queue_ptr(),
+                    view_ptr as *mut c_void,
+                    Some(become_first_responder_trampoline),
                 );
-                if is_first == NO {
-                    dispatch_async_f(
-                        dispatch_get_main_queue_ptr(),
-                        proxy as *mut c_void,
-                        Some(become_first_responder_trampoline),
-                    );
-                }
             }
         }
     }
@@ -638,100 +905,6 @@ extern "C" fn handle_trait_collection_change(
 }
 
 // ---------------------------------------------------------------------------
-// UITextFieldDelegate — intercept text from the hidden UITextField keyboard
-// proxy and forward to GPUI as key events.
-// ---------------------------------------------------------------------------
-
-extern "C" fn handle_text_field_change(
-    this: &Object,
-    _sel: Sel,
-    _text_field: *mut Object,
-    _range: NSRange,
-    replacement: *mut Object,
-) -> BOOL {
-    let Some(state) = (unsafe { get_window_state(this) }) else {
-        return NO;
-    };
-
-    let text = unsafe {
-        if replacement.is_null() {
-            return NO;
-        }
-        let utf8: *const u8 = msg_send![replacement, UTF8String];
-        if utf8.is_null() {
-            return NO;
-        }
-        let c_str = std::ffi::CStr::from_ptr(utf8 as *const std::os::raw::c_char);
-        c_str.to_string_lossy().into_owned()
-    };
-
-    if text.is_empty() {
-        // Empty replacement = backspace / delete
-        dispatch_input(
-            &state,
-            PlatformInput::KeyDown(KeyDownEvent {
-                keystroke: Keystroke {
-                    modifiers: Modifiers::default(),
-                    key: "backspace".into(),
-                    key_char: None,
-
-                    native_key_code: None,
-                },
-                is_held: false,
-                prefer_character_input: false,
-            }),
-        );
-        return NO;
-    }
-
-    // Try the input handler first (full text editing support)
-    {
-        let mut lock = state.lock();
-        if let Some(ref mut handler) = lock.input_handler {
-            handler.replace_text_in_range(None, &text);
-            return NO;
-        }
-    }
-
-    // Fall back to dispatching as a KeyDown event
-    dispatch_input(
-        &state,
-        PlatformInput::KeyDown(KeyDownEvent {
-            keystroke: Keystroke {
-                modifiers: Modifiers::default(),
-                key: text.clone(),
-                key_char: Some(text),
-                native_key_code: None,
-            },
-            is_held: false,
-            prefer_character_input: false,
-        }),
-    );
-    // Return NO so UITextField stays empty — all text is handled by GPUI
-    NO
-}
-
-extern "C" fn handle_text_field_return(this: &Object, _sel: Sel, _text_field: *mut Object) -> BOOL {
-    let Some(state) = (unsafe { get_window_state(this) }) else {
-        return YES;
-    };
-    dispatch_input(
-        &state,
-        PlatformInput::KeyDown(KeyDownEvent {
-            keystroke: Keystroke {
-                modifiers: Modifiers::default(),
-                key: "enter".into(),
-                key_char: Some("\n".into()),
-                native_key_code: None,
-            },
-            is_held: false,
-            prefer_character_input: false,
-        }),
-    );
-    NO
-}
-
-// ---------------------------------------------------------------------------
 // UIKeyInput — GPUIView is the first responder for hardware keyboard input.
 // ---------------------------------------------------------------------------
 
@@ -744,12 +917,12 @@ extern "C" fn can_become_first_responder(_this: &Object, _sel: Sel) -> BOOL {
 
 extern "C" fn has_text(this: &Object, _sel: Sel) -> BOOL {
     let Some(state) = (unsafe { get_window_state(this) }) else {
-        return YES;
+        return NO;
     };
     if state.lock().input_handler.is_some() {
         YES
     } else {
-        YES
+        NO
     }
 }
 
@@ -778,13 +951,14 @@ extern "C" fn insert_text(this: &Object, _sel: Sel, text_obj: *mut Object) {
             }
         }
 
-        // Try the input handler first (full text editing support)
+        // Route through the input handler (UITextInput path) — this also
+        // commits any pending marked text (IME composition).
+        if with_input_handler(this, |handler| {
+            handler.replace_text_in_range(None, &text);
+        })
+        .is_some()
         {
-            let mut lock = state.lock();
-            if let Some(ref mut handler) = lock.input_handler {
-                handler.replace_text_in_range(None, &text);
-                return;
-            }
+            return;
         }
 
         // No input handler — dispatch as KeyDown
@@ -846,33 +1020,578 @@ extern "C" fn spell_checking_type(_this: &Object, _sel: Sel) -> isize {
 } // UITextSpellCheckingTypeNo
 
 // ---------------------------------------------------------------------------
+// UITextInput — full text input protocol implementation.
+// Mirrors the macOS NSTextInputClient pattern: each ObjC method delegates
+// to PlatformInputHandler through `with_input_handler`.
+// ---------------------------------------------------------------------------
+
+/// Takes the input handler out of the window state, calls the closure with it,
+/// then puts it back. This avoids holding the lock while the handler runs,
+/// which prevents deadlocks when the handler calls back into GPUI.
+fn with_input_handler<F, R>(view: &Object, f: F) -> Option<R>
+where
+    F: FnOnce(&mut PlatformInputHandler) -> R,
+{
+    let state = unsafe { get_window_state(view)? };
+    let mut lock = state.lock();
+    if let Some(mut input_handler) = lock.input_handler.take() {
+        drop(lock);
+        let result = f(&mut input_handler);
+        state.lock().input_handler = Some(input_handler);
+        Some(result)
+    } else {
+        None
+    }
+}
+
+/// Get the total document length in UTF-16 characters. Returns 0 if no
+/// input handler is active or the handler doesn't provide text.
+fn document_length_utf16(view: &Object) -> usize {
+    with_input_handler(view, |handler| {
+        // Query text_for_range with a large-but-bounded range. The handler
+        // will clamp to the actual document bounds and return the adjusted
+        // range, whose end gives us the document length.
+        let mut adjusted = None;
+        handler.text_for_range(0..1_000_000, &mut adjusted);
+        adjusted.map_or_else(
+            || {
+                // Fallback: use the selection end as a lower bound estimate
+                handler
+                    .selected_text_range(false)
+                    .map_or(0, |sel| sel.range.end)
+            },
+            |r| r.end,
+        )
+    })
+    .unwrap_or(0)
+}
+
+extern "C" fn uitextinput_text_in_range(
+    this: &Object,
+    _sel: Sel,
+    range: *mut Object,
+) -> *mut Object {
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return std::ptr::null_mut();
+    };
+    with_input_handler(this, |handler| {
+        let mut adjusted = None;
+        handler.text_for_range(rust_range, &mut adjusted)
+    })
+    .flatten()
+    .map(|text| unsafe { ns_string(&text) })
+    .unwrap_or(std::ptr::null_mut())
+}
+
+extern "C" fn uitextinput_replace_range(
+    this: &Object,
+    _sel: Sel,
+    range: *mut Object,
+    text: *mut Object,
+) {
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return;
+    };
+    let text_str = unsafe {
+        if text.is_null() {
+            return;
+        }
+        let utf8: *const u8 = msg_send![text, UTF8String];
+        if utf8.is_null() {
+            return;
+        }
+        std::ffi::CStr::from_ptr(utf8 as *const std::os::raw::c_char)
+            .to_string_lossy()
+            .into_owned()
+    };
+    with_input_handler(this, |handler| {
+        handler.replace_text_in_range(Some(rust_range), &text_str);
+    });
+}
+
+extern "C" fn uitextinput_selected_text_range(this: &Object, _sel: Sel) -> *mut Object {
+    with_input_handler(this, |handler| {
+        handler.selected_text_range(false).map(|sel| unsafe {
+            make_text_range(sel.range.start, sel.range.end)
+        })
+    })
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+extern "C" fn uitextinput_set_selected_text_range(
+    this: &Object,
+    _sel: Sel,
+    range: *mut Object,
+) {
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return;
+    };
+    // PlatformInputHandler doesn't expose a direct set_selected_range method.
+    // Use replace_text_in_range with an empty string at a zero-width range
+    // to position the cursor at the start of the desired selection.
+    // Full selection ranges are not supported through this path — GPUI handles
+    // selection via touch/mouse events instead.
+    with_input_handler(this, |handler| {
+        let cursor = rust_range.start;
+        handler.replace_text_in_range(Some(cursor..cursor), "");
+    });
+}
+
+extern "C" fn uitextinput_marked_text_range(this: &Object, _sel: Sel) -> *mut Object {
+    with_input_handler(this, |handler| {
+        handler.marked_text_range().map(|range| unsafe {
+            make_text_range(range.start, range.end)
+        })
+    })
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+extern "C" fn uitextinput_marked_text_style(_this: &Object, _sel: Sel) -> *mut Object {
+    // Return nil — let UIKit use default marked text styling (underline)
+    std::ptr::null_mut()
+}
+
+extern "C" fn uitextinput_set_marked_text_style(_this: &Object, _sel: Sel, _style: *mut Object) {
+    // No-op — we don't store custom marked text styles
+}
+
+extern "C" fn uitextinput_set_marked_text(
+    this: &Object,
+    _sel: Sel,
+    marked_text: *mut Object,
+    selected_range: NSRange,
+) {
+    let text = unsafe {
+        if marked_text.is_null() {
+            String::new()
+        } else {
+            // Check if it's an NSAttributedString
+            let is_attributed: BOOL =
+                msg_send![marked_text, isKindOfClass: class!(NSAttributedString)];
+            let ns_str: *mut Object = if is_attributed == YES {
+                msg_send![marked_text, string]
+            } else {
+                marked_text
+            };
+            let utf8: *const u8 = msg_send![ns_str, UTF8String];
+            if utf8.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(utf8 as *const std::os::raw::c_char)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        }
+    };
+
+    let selected = selected_range.to_range();
+
+    if text.is_empty() {
+        // Empty marked text = clear composition
+        with_input_handler(this, |handler| handler.unmark_text());
+    } else {
+        with_input_handler(this, |handler| {
+            // replacement_range = None means replace current marked text or selection
+            handler.replace_and_mark_text_in_range(None, &text, selected);
+        });
+    }
+}
+
+extern "C" fn uitextinput_unmark_text(this: &Object, _sel: Sel) {
+    with_input_handler(this, |handler| handler.unmark_text());
+}
+
+extern "C" fn uitextinput_beginning_of_document(_this: &Object, _sel: Sel) -> *mut Object {
+    unsafe { make_text_position(0) }
+}
+
+extern "C" fn uitextinput_end_of_document(this: &Object, _sel: Sel) -> *mut Object {
+    let len = document_length_utf16(this);
+    unsafe { make_text_position(len) }
+}
+
+extern "C" fn uitextinput_text_range_from_position(
+    _this: &Object,
+    _sel: Sel,
+    from: *mut Object,
+    to: *mut Object,
+) -> *mut Object {
+    if from.is_null() || to.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        let start = text_position_index(from);
+        let end = text_position_index(to);
+        make_text_range(start, end)
+    }
+}
+
+extern "C" fn uitextinput_position_from_position_offset(
+    this: &Object,
+    _sel: Sel,
+    position: *mut Object,
+    offset: isize,
+) -> *mut Object {
+    if position.is_null() {
+        return std::ptr::null_mut();
+    }
+    let index = unsafe { text_position_index(position) };
+    let new_index = index as isize + offset;
+    if new_index < 0 {
+        return std::ptr::null_mut();
+    }
+    let new_index = new_index as usize;
+    let doc_len = document_length_utf16(this);
+    if new_index > doc_len {
+        return std::ptr::null_mut();
+    }
+    unsafe { make_text_position(new_index) }
+}
+
+extern "C" fn uitextinput_position_from_position_direction(
+    this: &Object,
+    _sel: Sel,
+    position: *mut Object,
+    direction: isize,
+    offset: isize,
+) -> *mut Object {
+    // UITextLayoutDirection: 1=right, 2=left, 3=up, 4=down
+    // For a simple text model, right/down = forward, left/up = backward
+    let effective_offset = match direction {
+        1 | 4 => offset,       // right/down = forward
+        2 | 3 => -offset,      // left/up = backward
+        _ => offset,
+    };
+    uitextinput_position_from_position_offset(this, _sel, position, effective_offset)
+}
+
+extern "C" fn uitextinput_compare_position(
+    _this: &Object,
+    _sel: Sel,
+    a: *mut Object,
+    b: *mut Object,
+) -> isize {
+    let idx_a = unsafe { text_position_index(a) };
+    let idx_b = unsafe { text_position_index(b) };
+    match idx_a.cmp(&idx_b) {
+        std::cmp::Ordering::Less => -1,    // NSOrderedAscending
+        std::cmp::Ordering::Equal => 0,     // NSOrderedSame
+        std::cmp::Ordering::Greater => 1,   // NSOrderedDescending
+    }
+}
+
+extern "C" fn uitextinput_offset_from_position(
+    _this: &Object,
+    _sel: Sel,
+    from: *mut Object,
+    to: *mut Object,
+) -> isize {
+    let idx_from = unsafe { text_position_index(from) };
+    let idx_to = unsafe { text_position_index(to) };
+    idx_to as isize - idx_from as isize
+}
+
+extern "C" fn uitextinput_input_delegate(this: &Object, _sel: Sel) -> *mut Object {
+    unsafe {
+        let ptr: *mut c_void = *this.get_ivar("gpui_input_delegate");
+        ptr as *mut Object
+    }
+}
+
+extern "C" fn uitextinput_set_input_delegate(this: &Object, _sel: Sel, delegate: *mut Object) {
+    unsafe {
+        // The text input system sets this — we just store the reference.
+        // We do NOT retain/release since the system owns the lifecycle.
+        let this_mut = this as *const Object as *mut Object;
+        (*this_mut).set_ivar::<*mut c_void>("gpui_input_delegate", delegate as *mut c_void);
+    }
+}
+
+extern "C" fn uitextinput_tokenizer(this: &Object, _sel: Sel) -> *mut Object {
+    unsafe {
+        let ptr: *mut c_void = *this.get_ivar("gpui_tokenizer");
+        if !ptr.is_null() {
+            return ptr as *mut Object;
+        }
+        // Lazily create a UITextInputStringTokenizer for this view
+        let this_id = this as *const Object as *mut Object;
+        let tokenizer: *mut Object = msg_send![class!(UITextInputStringTokenizer), alloc];
+        let tokenizer: *mut Object = msg_send![tokenizer, initWithTextInput: this_id];
+        let this_mut = this as *const Object as *mut Object;
+        (*this_mut).set_ivar::<*mut c_void>("gpui_tokenizer", tokenizer as *mut c_void);
+        tokenizer
+    }
+}
+
+extern "C" fn uitextinput_position_within_range(
+    _this: &Object,
+    _sel: Sel,
+    range: *mut Object,
+    direction: isize,
+) -> *mut Object {
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return std::ptr::null_mut();
+    };
+    // UITextLayoutDirection: 1=right, 2=left, 3=up, 4=down
+    let index = match direction {
+        1 | 4 => rust_range.end,   // farthest right/down = end
+        2 | 3 => rust_range.start, // farthest left/up = start
+        _ => rust_range.end,
+    };
+    unsafe { make_text_position(index) }
+}
+
+extern "C" fn uitextinput_character_range_by_extending(
+    this: &Object,
+    _sel: Sel,
+    position: *mut Object,
+    direction: isize,
+) -> *mut Object {
+    if position.is_null() {
+        return std::ptr::null_mut();
+    }
+    let index = unsafe { text_position_index(position) };
+    let doc_len = document_length_utf16(this);
+    // Extend one character in the given direction
+    let (start, end) = match direction {
+        1 | 4 => (index, (index + 1).min(doc_len)),  // right/down
+        2 | 3 => (index.saturating_sub(1), index),     // left/up
+        _ => (index, (index + 1).min(doc_len)),
+    };
+    unsafe { make_text_range(start, end) }
+}
+
+extern "C" fn uitextinput_base_writing_direction(
+    _this: &Object,
+    _sel: Sel,
+    _position: *mut Object,
+    _direction: isize,
+) -> isize {
+    0 // NSWritingDirectionNatural
+}
+
+extern "C" fn uitextinput_set_base_writing_direction(
+    _this: &Object,
+    _sel: Sel,
+    _direction: isize,
+    _range: *mut Object,
+) {
+    // No-op — GPUI doesn't support per-range writing direction changes
+}
+
+extern "C" fn uitextinput_first_rect_for_range(
+    this: &Object,
+    _sel: Sel,
+    range: *mut Object,
+) -> CGRect {
+    let zero_rect = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width: 0.0, height: 0.0 },
+    };
+
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return zero_rect;
+    };
+
+    with_input_handler(this, |handler| {
+        handler.bounds_for_range(rust_range).map(|bounds| {
+            // Convert GPUI coordinates to UIKit screen coordinates.
+            // On iOS, UIKit uses top-left origin — same as GPUI, no y-flip needed.
+            CGRect {
+                origin: CGPoint {
+                    x: bounds.origin.x.0 as f64,
+                    y: bounds.origin.y.0 as f64,
+                },
+                size: CGSize {
+                    width: bounds.size.width.0 as f64,
+                    height: bounds.size.height.0 as f64,
+                },
+            }
+        })
+    })
+    .flatten()
+    .unwrap_or(zero_rect)
+}
+
+extern "C" fn uitextinput_caret_rect_for_position(
+    this: &Object,
+    _sel: Sel,
+    position: *mut Object,
+) -> CGRect {
+    if position.is_null() {
+        return CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize { width: 0.0, height: 0.0 },
+        };
+    }
+    let index = unsafe { text_position_index(position) };
+    // Query bounds for a zero-width range at this position (caret)
+    with_input_handler(this, |handler| {
+        handler.bounds_for_range(index..index).map(|bounds| {
+            CGRect {
+                origin: CGPoint {
+                    x: bounds.origin.x.0 as f64,
+                    y: bounds.origin.y.0 as f64,
+                },
+                size: CGSize {
+                    width: 2.0, // Standard caret width
+                    height: bounds.size.height.0 as f64,
+                },
+            }
+        })
+    })
+    .flatten()
+    .unwrap_or(CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width: 2.0, height: 20.0 },
+    })
+}
+
+extern "C" fn uitextinput_selection_rects_for_range(
+    _this: &Object,
+    _sel: Sel,
+    _range: *mut Object,
+) -> *mut Object {
+    // Return empty array — UIKit will fall back to firstRectForRange
+    unsafe { msg_send![class!(NSArray), array] }
+}
+
+extern "C" fn uitextinput_closest_position_to_point(
+    this: &Object,
+    _sel: Sel,
+    point: CGPoint,
+) -> *mut Object {
+    let gpui_point = crate::point(px(point.x as f32), px(point.y as f32));
+    with_input_handler(this, |handler| {
+        handler.character_index_for_point(gpui_point).map(|index| unsafe {
+            make_text_position(index)
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| unsafe { make_text_position(0) })
+}
+
+extern "C" fn uitextinput_closest_position_to_point_within_range(
+    this: &Object,
+    _sel: Sel,
+    point: CGPoint,
+    range: *mut Object,
+) -> *mut Object {
+    let Some(rust_range) = (unsafe { text_range_to_rust(range) }) else {
+        return uitextinput_closest_position_to_point(this, _sel, point);
+    };
+    let gpui_point = crate::point(px(point.x as f32), px(point.y as f32));
+    with_input_handler(this, |handler| {
+        handler.character_index_for_point(gpui_point).map(|index| {
+            let clamped = index.clamp(rust_range.start, rust_range.end);
+            unsafe { make_text_position(clamped) }
+        })
+    })
+    .flatten()
+    .unwrap_or_else(|| unsafe { make_text_position(rust_range.start) })
+}
+
+extern "C" fn uitextinput_character_range_at_point(
+    this: &Object,
+    _sel: Sel,
+    point: CGPoint,
+) -> *mut Object {
+    let gpui_point = crate::point(px(point.x as f32), px(point.y as f32));
+    with_input_handler(this, |handler| {
+        handler.character_index_for_point(gpui_point).map(|index| unsafe {
+            make_text_range(index, index + 1)
+        })
+    })
+    .flatten()
+    .unwrap_or(std::ptr::null_mut())
+}
+
+// ---------------------------------------------------------------------------
 // Hardware keyboard via UIPresses (iOS 13.4+)
 // ---------------------------------------------------------------------------
 
 /// Map a UIKeyboardHIDUsage keyCode to a GPUI key name.
 fn keycode_to_key_name(keycode: isize) -> Option<&'static str> {
     match keycode {
-        40 => Some("enter"),
-        41 => Some("escape"),
-        42 => Some("backspace"),
-        43 => Some("tab"),
-        44 => Some("space"),
-        58..=69 => {
-            // F1 (58) through F12 (69)
-            static F_KEYS: [&str; 12] = [
-                "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-            ];
-            Some(F_KEYS[(keycode - 58) as usize])
-        }
-        74 => Some("home"),
-        75 => Some("pageup"),
-        76 => Some("delete"),
-        77 => Some("end"),
-        78 => Some("pagedown"),
-        79 => Some("right"),
-        80 => Some("left"),
-        81 => Some("down"),
-        82 => Some("up"),
+        0x28 => Some("enter"),
+        0x29 => Some("escape"),
+        0x2A => Some("backspace"),
+        0x2B => Some("tab"),
+        0x2C => Some("space"),
+        0x39 => Some("capslock"),
+
+        0x3A => Some("f1"),
+        0x3B => Some("f2"),
+        0x3C => Some("f3"),
+        0x3D => Some("f4"),
+        0x3E => Some("f5"),
+        0x3F => Some("f6"),
+        0x40 => Some("f7"),
+        0x41 => Some("f8"),
+        0x42 => Some("f9"),
+        0x43 => Some("f10"),
+        0x44 => Some("f11"),
+        0x45 => Some("f12"),
+        0x46 => Some("printscreen"),
+        0x47 => Some("scrolllock"),
+        0x48 => Some("pause"),
+        0x49 => Some("insert"),
+        0x4A => Some("home"),
+        0x4B => Some("pageup"),
+        0x4C => Some("delete"),
+        0x4D => Some("end"),
+        0x4E => Some("pagedown"),
+        0x4F => Some("right"),
+        0x50 => Some("left"),
+        0x51 => Some("down"),
+        0x52 => Some("up"),
+
+        0x53 => Some("numlock"),
+        0x54 => Some("numpad-divide"),
+        0x55 => Some("numpad-multiply"),
+        0x56 => Some("numpad-subtract"),
+        0x57 => Some("numpad-add"),
+        0x58 => Some("numpad-enter"),
+        0x59 => Some("numpad-1"),
+        0x5A => Some("numpad-2"),
+        0x5B => Some("numpad-3"),
+        0x5C => Some("numpad-4"),
+        0x5D => Some("numpad-5"),
+        0x5E => Some("numpad-6"),
+        0x5F => Some("numpad-7"),
+        0x60 => Some("numpad-8"),
+        0x61 => Some("numpad-9"),
+        0x62 => Some("numpad-0"),
+        0x63 => Some("numpad-decimal"),
+        0x67 => Some("numpad-equal"),
+        0x68 => Some("f13"),
+        0x69 => Some("f14"),
+        0x6A => Some("f15"),
+        0x6B => Some("f16"),
+        0x6C => Some("f17"),
+        0x6D => Some("f18"),
+        0x6E => Some("f19"),
+        0x6F => Some("f20"),
+        0x70 => Some("f21"),
+        0x71 => Some("f22"),
+        0x72 => Some("f23"),
+        0x73 => Some("f24"),
+
+        0x76 => Some("menu"),
+        0x7F => Some("mute"),
+        0x80 => Some("volumeup"),
+        0x81 => Some("volumedown"),
+
+        0xE0 => Some("leftctrl"),
+        0xE1 => Some("leftshift"),
+        0xE2 => Some("leftalt"),
+        0xE3 => Some("leftmeta"),
+        0xE4 => Some("rightctrl"),
+        0xE5 => Some("rightshift"),
+        0xE6 => Some("rightalt"),
+        0xE7 => Some("rightmeta"),
         _ => None,
     }
 }
@@ -1571,6 +2290,359 @@ unsafe fn get_scene_observer_state(observer: &Object) -> Option<Rc<Mutex<IosWind
 }
 
 // ---------------------------------------------------------------------------
+// GPUIDropDelegate — handles external file drag/drop with UIDropInteraction.
+// ---------------------------------------------------------------------------
+
+static mut GPUI_DROP_DELEGATE_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_drop_delegate_class() {
+    let superclass = class!(NSObject);
+    let mut decl =
+        ClassDecl::new("GPUIDropDelegate", superclass).expect("failed to declare GPUIDropDelegate");
+
+    decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
+
+    decl.add_method(
+        sel!(dropInteraction:canHandleSession:),
+        drop_can_handle_session as extern "C" fn(&Object, Sel, *mut Object, *mut Object) -> BOOL,
+    );
+    decl.add_method(
+        sel!(dropInteraction:sessionDidEnter:),
+        drop_session_did_enter as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(dropInteraction:sessionDidUpdate:),
+        drop_session_did_update
+            as extern "C" fn(&Object, Sel, *mut Object, *mut Object) -> *mut Object,
+    );
+    decl.add_method(
+        sel!(dropInteraction:sessionDidExit:),
+        drop_session_did_exit as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(dropInteraction:performDrop:),
+        drop_perform_drop as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+
+    unsafe {
+        GPUI_DROP_DELEGATE_CLASS = decl.register();
+    }
+}
+
+unsafe fn drop_delegate_state(delegate: &Object) -> Option<Rc<Mutex<IosWindowState>>> {
+    let ptr: *mut c_void = *delegate.get_ivar(WINDOW_STATE_IVAR);
+    if ptr.is_null() {
+        return None;
+    }
+    let rc = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+    let clone = rc.clone();
+    std::mem::forget(rc);
+    Some(clone)
+}
+
+fn drop_location(state: &Mutex<IosWindowState>, session: *mut Object) -> Point<Pixels> {
+    unsafe {
+        let ui_view = state.lock().ui_view;
+        let location: CGPoint = msg_send![session, locationInView: ui_view];
+        point(px(location.x as f32), px(location.y as f32))
+    }
+}
+
+extern "C" fn drop_can_handle_session(
+    _this: &Object,
+    _sel: Sel,
+    _interaction: *mut Object,
+    session: *mut Object,
+) -> BOOL {
+    unsafe {
+        let types: *mut Object = msg_send![class!(NSMutableArray), array];
+        let _: () = msg_send![types, addObject: ns_string("public.file-url")];
+        let _: () = msg_send![types, addObject: ns_string("public.url")];
+        let has_types: BOOL = msg_send![session, hasItemsConformingToTypeIdentifiers: types];
+        let can_load_urls: BOOL = msg_send![session, canLoadObjectsOfClass: class!(NSURL)];
+        if has_types == YES || can_load_urls == YES {
+            YES
+        } else {
+            NO
+        }
+    }
+}
+
+extern "C" fn drop_session_did_enter(
+    this: &Object,
+    _sel: Sel,
+    _interaction: *mut Object,
+    session: *mut Object,
+) {
+    let Some(state) = (unsafe { drop_delegate_state(this) }) else {
+        return;
+    };
+    let position = drop_location(&state, session);
+    dispatch_input(
+        &state,
+        PlatformInput::FileDrop(FileDropEvent::Pending { position }),
+    );
+}
+
+extern "C" fn drop_session_did_update(
+    this: &Object,
+    _sel: Sel,
+    _interaction: *mut Object,
+    session: *mut Object,
+) -> *mut Object {
+    let Some(state) = (unsafe { drop_delegate_state(this) }) else {
+        return std::ptr::null_mut();
+    };
+    let position = drop_location(&state, session);
+    dispatch_input(
+        &state,
+        PlatformInput::FileDrop(FileDropEvent::Pending { position }),
+    );
+
+    unsafe {
+        let proposal: *mut Object = msg_send![class!(UIDropProposal), alloc];
+        msg_send![proposal, initWithDropOperation: 2usize] // UIDropOperationCopy
+    }
+}
+
+extern "C" fn drop_session_did_exit(
+    this: &Object,
+    _sel: Sel,
+    _interaction: *mut Object,
+    _session: *mut Object,
+) {
+    let Some(state) = (unsafe { drop_delegate_state(this) }) else {
+        return;
+    };
+    dispatch_input(&state, PlatformInput::FileDrop(FileDropEvent::Exited));
+}
+
+extern "C" fn drop_perform_drop(
+    this: &Object,
+    _sel: Sel,
+    _interaction: *mut Object,
+    session: *mut Object,
+) {
+    let Some(state) = (unsafe { drop_delegate_state(this) }) else {
+        return;
+    };
+    let position = drop_location(&state, session);
+
+    // Use a Mutex<Option<…>> wrapper so the Rc is always reclaimed when the
+    // block is dropped, even if UIKit never invokes the completion handler.
+    let state_holder = Arc::new(std::sync::Mutex::new(Some(state.clone())));
+
+    let block = ConcreteBlock::new(move |objects: *mut Object| {
+        let Some(state) = state_holder.lock().unwrap().take() else {
+            return;
+        };
+
+        let mut paths = Vec::<PathBuf>::new();
+
+        unsafe {
+            if !objects.is_null() {
+                let count: usize = msg_send![objects, count];
+                for index in 0..count {
+                    let url: *mut Object = msg_send![objects, objectAtIndex: index];
+                    if url.is_null() {
+                        continue;
+                    }
+
+                    let is_file: BOOL = msg_send![url, isFileURL];
+                    if is_file != YES {
+                        continue;
+                    }
+
+                    let started: BOOL = msg_send![url, startAccessingSecurityScopedResource];
+                    let path_string: *mut Object = msg_send![url, path];
+                    if !path_string.is_null() {
+                        let utf8: *const std::os::raw::c_char = msg_send![path_string, UTF8String];
+                        if !utf8.is_null() {
+                            let path = std::ffi::CStr::from_ptr(utf8)
+                                .to_string_lossy()
+                                .into_owned();
+                            if !path.is_empty() {
+                                paths.push(PathBuf::from(path));
+                            }
+                        }
+                    }
+                    if started == YES {
+                        let _: () = msg_send![url, stopAccessingSecurityScopedResource];
+                    }
+                }
+            }
+
+            if !paths.is_empty() {
+                let external_paths = ExternalPaths(paths.into_iter().collect());
+                dispatch_input(
+                    &state,
+                    PlatformInput::FileDrop(FileDropEvent::Entered {
+                        position,
+                        paths: external_paths,
+                    }),
+                );
+                dispatch_input(
+                    &state,
+                    PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+                );
+            }
+            dispatch_input(&state, PlatformInput::FileDrop(FileDropEvent::Exited));
+        }
+    });
+    let block = block.copy();
+
+    unsafe {
+        let _: *mut Object =
+            msg_send![session, loadObjectsOfClass: class!(NSURL) completion: block];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GPUIDocumentPickerDelegate — bridges UIDocumentPicker callbacks to Rust
+// oneshot channels used by prompt_for_paths/prompt_for_new_path.
+// ---------------------------------------------------------------------------
+
+enum PickerResultSender {
+    Multiple(oneshot::Sender<Result<Option<Vec<PathBuf>>>>),
+    Single(oneshot::Sender<Result<Option<PathBuf>>>),
+}
+
+struct DocumentPickerCallbackContext {
+    sender: PickerResultSender,
+    temp_paths: Vec<PathBuf>,
+}
+
+static mut GPUI_DOCUMENT_PICKER_DELEGATE_CLASS: *const Class = std::ptr::null();
+
+#[ctor]
+unsafe fn register_document_picker_delegate_class() {
+    let superclass = class!(NSObject);
+    let mut decl = ClassDecl::new("GPUIDocumentPickerDelegate", superclass)
+        .expect("failed to declare GPUIDocumentPickerDelegate");
+
+    decl.add_ivar::<*mut c_void>(CALLBACK_IVAR);
+    decl.add_method(
+        sel!(documentPicker:didPickDocumentsAtURLs:),
+        document_picker_did_pick as extern "C" fn(&Object, Sel, *mut Object, *mut Object),
+    );
+    decl.add_method(
+        sel!(documentPickerWasCancelled:),
+        document_picker_was_cancelled as extern "C" fn(&Object, Sel, *mut Object),
+    );
+
+    unsafe {
+        GPUI_DOCUMENT_PICKER_DELEGATE_CLASS = decl.register();
+    }
+}
+
+unsafe fn take_document_picker_context(
+    delegate: *mut Object,
+) -> Option<Box<DocumentPickerCallbackContext>> {
+    let ptr: *mut c_void = *(*delegate).get_ivar(CALLBACK_IVAR);
+    if ptr.is_null() {
+        return None;
+    }
+    (*delegate).set_ivar::<*mut c_void>(CALLBACK_IVAR, std::ptr::null_mut());
+    Some(Box::from_raw(ptr as *mut DocumentPickerCallbackContext))
+}
+
+unsafe fn release_document_picker_delegate(delegate: *mut Object) {
+    let platform_ptr = IOS_PLATFORM_STATE_PTR.load(Ordering::Acquire);
+    if !platform_ptr.is_null() {
+        let platform_state = &*(platform_ptr as *const Mutex<IosPlatformState>);
+        let mut lock = platform_state.lock();
+        if let Some(index) = lock
+            .document_picker_delegates
+            .iter()
+            .position(|candidate| *candidate == delegate)
+        {
+            lock.document_picker_delegates.swap_remove(index);
+        }
+    }
+    let _: () = msg_send![delegate, release];
+}
+
+fn urls_to_paths(urls: *mut Object) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    unsafe {
+        if urls.is_null() {
+            return result;
+        }
+        let count: usize = msg_send![urls, count];
+        for index in 0..count {
+            let url: *mut Object = msg_send![urls, objectAtIndex: index];
+            if url.is_null() {
+                continue;
+            }
+
+            let is_file: BOOL = msg_send![url, isFileURL];
+            if is_file != YES {
+                continue;
+            }
+
+            let started: BOOL = msg_send![url, startAccessingSecurityScopedResource];
+            let path_obj: *mut Object = msg_send![url, path];
+            if !path_obj.is_null() {
+                let utf8: *const std::os::raw::c_char = msg_send![path_obj, UTF8String];
+                if !utf8.is_null() {
+                    let path = std::ffi::CStr::from_ptr(utf8)
+                        .to_string_lossy()
+                        .into_owned();
+                    if !path.is_empty() {
+                        result.push(PathBuf::from(path));
+                    }
+                }
+            }
+            if started == YES {
+                let _: () = msg_send![url, stopAccessingSecurityScopedResource];
+            }
+        }
+    }
+    result
+}
+
+fn finish_document_picker(delegate: &Object, result: Result<Option<Vec<PathBuf>>>) {
+    unsafe {
+        let delegate_ptr = delegate as *const Object as *mut Object;
+        let Some(mut context) = take_document_picker_context(delegate_ptr) else {
+            release_document_picker_delegate(delegate_ptr);
+            return;
+        };
+
+        for temp_path in context.temp_paths.drain(..) {
+            let _ = std::fs::remove_file(temp_path);
+        }
+
+        match context.sender {
+            PickerResultSender::Multiple(sender) => {
+                let _ = sender.send(result);
+            }
+            PickerResultSender::Single(sender) => {
+                let mapped = result.map(|paths| paths.and_then(|p| p.into_iter().next()));
+                let _ = sender.send(mapped);
+            }
+        }
+
+        release_document_picker_delegate(delegate_ptr);
+    }
+}
+
+extern "C" fn document_picker_did_pick(
+    this: &Object,
+    _sel: Sel,
+    _controller: *mut Object,
+    urls: *mut Object,
+) {
+    let paths = urls_to_paths(urls);
+    finish_document_picker(this, Ok(Some(paths)));
+}
+
+extern "C" fn document_picker_was_cancelled(this: &Object, _sel: Sel, _controller: *mut Object) {
+    finish_document_picker(this, Ok(None));
+}
+
+// ---------------------------------------------------------------------------
 // Platform types
 // ---------------------------------------------------------------------------
 
@@ -1628,6 +2700,71 @@ impl PlatformKeyboardLayout for IosKeyboardLayout {
     }
 }
 
+pub(crate) struct IosKeyboardMapper {
+    key_equivalents: Option<HashMap<char, char>>,
+}
+
+impl IosKeyboardMapper {
+    fn new(layout_id: &str) -> Self {
+        // Map non-QWERTY physical key positions to their QWERTY equivalents
+        // so that keyboard shortcuts (Cmd+Z, Cmd+C, etc.) work on non-QWERTY
+        // hardware keyboard layouts attached to iPad/iPhone.
+        let mappings: Option<&[(char, char)]> = if layout_id.starts_with("fr") {
+            // AZERTY (France)
+            Some(&[
+                ('a', 'q'), ('q', 'a'), ('z', 'w'), ('w', 'z'),
+                ('m', ';'),
+            ])
+        } else if layout_id.starts_with("de") || layout_id.starts_with("at") {
+            // QWERTZ (German/Austrian)
+            Some(&[('y', 'z'), ('z', 'y')])
+        } else if layout_id.starts_with("cs") || layout_id.starts_with("sk")
+            || layout_id.starts_with("hu")
+        {
+            // QWERTZ (Czech/Slovak/Hungarian)
+            Some(&[('y', 'z'), ('z', 'y')])
+        } else if layout_id.starts_with("be") {
+            // AZERTY (Belgium)
+            Some(&[
+                ('a', 'q'), ('q', 'a'), ('z', 'w'), ('w', 'z'),
+                ('m', ';'),
+            ])
+        } else if layout_id.starts_with("tr") {
+            // Turkish F-layout
+            Some(&[
+                ('f', 'a'), ('g', 's'), ('j', 'h'), ('k', 'j'),
+            ])
+        } else {
+            // QWERTY (English, Spanish, Portuguese, Italian, etc.)
+            None
+        };
+
+        let key_equivalents = mappings.map(|pairs| pairs.iter().copied().collect());
+        Self { key_equivalents }
+    }
+}
+
+impl PlatformKeyboardMapper for IosKeyboardMapper {
+    fn map_key_equivalent(
+        &self,
+        mut keystroke: Keystroke,
+        use_key_equivalents: bool,
+    ) -> KeybindingKeystroke {
+        if use_key_equivalents
+            && let Some(map) = &self.key_equivalents
+            && keystroke.key.chars().count() == 1
+            && let Some(mapped) = map.get(&keystroke.key.chars().next().unwrap())
+        {
+            keystroke.key = mapped.to_string();
+        }
+        KeybindingKeystroke::from_keystroke(keystroke)
+    }
+
+    fn get_key_equivalents(&self) -> Option<&HashMap<char, char>> {
+        self.key_equivalents.as_ref()
+    }
+}
+
 /// Scroll momentum state for simulating iOS-like deceleration after a finger lift.
 struct ScrollMomentum {
     velocity: Point<f32>,
@@ -1664,11 +2801,33 @@ struct CGPoint {
     y: f64,
 }
 
+unsafe impl objc::Encode for CGPoint {
+    fn encode() -> objc::Encoding {
+        let encoding = format!(
+            "{{CGPoint={}{}}}",
+            f64::encode().as_str(),
+            f64::encode().as_str()
+        );
+        unsafe { objc::Encoding::from_str(&encoding) }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 struct CGSize {
     width: f64,
     height: f64,
+}
+
+unsafe impl objc::Encode for CGSize {
+    fn encode() -> objc::Encoding {
+        let encoding = format!(
+            "{{CGSize={}{}}}",
+            f64::encode().as_str(),
+            f64::encode().as_str()
+        );
+        unsafe { objc::Encoding::from_str(&encoding) }
+    }
 }
 
 #[repr(C)]
@@ -1678,23 +2837,32 @@ struct CGRect {
     size: CGSize,
 }
 
+unsafe impl objc::Encode for CGRect {
+    fn encode() -> objc::Encoding {
+        let encoding = format!(
+            "{{CGRect={}{}}}",
+            CGPoint::encode().as_str(),
+            CGSize::encode().as_str()
+        );
+        unsafe { objc::Encoding::from_str(&encoding) }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct IosDisplay {
     id: DisplayId,
-    bounds: Bounds<Pixels>,
 }
 
 impl IosDisplay {
     fn primary() -> Self {
-        let (width, height) = unsafe {
-            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
-            let bounds: CGRect = msg_send![screen, bounds];
-            (bounds.size.width as f32, bounds.size.height as f32)
-        };
+        Self { id: DisplayId(1) }
+    }
 
-        Self {
-            id: DisplayId(1),
-            bounds: Bounds::new(point(px(0.0), px(0.0)), size(px(width), px(height))),
+    fn scale_factor(&self) -> f32 {
+        unsafe {
+            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
+            let scale: f64 = msg_send![screen, scale];
+            scale as f32
         }
     }
 }
@@ -1705,11 +2873,37 @@ impl PlatformDisplay for IosDisplay {
     }
 
     fn uuid(&self) -> Result<uuid::Uuid> {
-        Ok(uuid::Uuid::from_bytes([0x01; 16]))
+        // Generate a stable UUID from the device's identifierForVendor
+        let bytes = unsafe {
+            let device: *mut Object = msg_send![class!(UIDevice), currentDevice];
+            let vendor_id: *mut Object = msg_send![device, identifierForVendor];
+            if !vendor_id.is_null() {
+                let uuid_string: *mut Object = msg_send![vendor_id, UUIDString];
+                if !uuid_string.is_null() {
+                    let utf8: *const std::os::raw::c_char = msg_send![uuid_string, UTF8String];
+                    if !utf8.is_null() {
+                        let s = std::ffi::CStr::from_ptr(utf8).to_string_lossy();
+                        if let Ok(parsed) = uuid::Uuid::parse_str(&s) {
+                            return Ok(parsed);
+                        }
+                    }
+                }
+            }
+            [0x01u8; 16]
+        };
+        Ok(uuid::Uuid::from_bytes(bytes))
     }
 
     fn bounds(&self) -> Bounds<Pixels> {
-        self.bounds
+        // Query current screen bounds dynamically (handles rotation)
+        unsafe {
+            let screen: *mut Object = msg_send![class!(UIScreen), mainScreen];
+            let bounds: CGRect = msg_send![screen, bounds];
+            Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(bounds.size.width as f32), px(bounds.size.height as f32)),
+            )
+        }
     }
 }
 
@@ -1783,6 +2977,11 @@ impl IosDispatcher {
 
 fn dispatch_get_main_queue_ptr() -> DispatchQueue {
     addr_of!(_dispatch_main_q) as *const _ as DispatchQueue
+}
+
+unsafe fn ns_string(value: &str) -> *mut Object {
+    let cstring = std::ffi::CString::new(value).unwrap_or_default();
+    msg_send![class!(NSString), stringWithUTF8String: cstring.as_ptr()]
 }
 
 /// Query UIKit for the current system appearance (Light/Dark mode).
@@ -1883,6 +3082,7 @@ struct IosPlatformState {
     text_system: Arc<dyn PlatformTextSystem>,
     display: Rc<IosDisplay>,
     active_window: Option<AnyWindowHandle>,
+    active_view_controller: *mut Object,
     open_urls: Option<Box<dyn FnMut(Vec<String>)>>,
     on_quit: Option<Box<dyn FnMut()>>,
     on_reopen: Option<Box<dyn FnMut()>>,
@@ -1893,6 +3093,7 @@ struct IosPlatformState {
     will_open_menu: Option<Box<dyn FnMut()>>,
     validate_app_menu: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     keyboard_layout_change: Option<Box<dyn FnMut()>>,
+    document_picker_delegates: Vec<*mut Object>,
 }
 
 impl IosPlatform {
@@ -1917,6 +3118,7 @@ impl IosPlatform {
                 },
                 display: Rc::new(IosDisplay::primary()),
                 active_window: None,
+                active_view_controller: std::ptr::null_mut(),
                 open_urls: None,
                 on_quit: None,
                 on_reopen: None,
@@ -1927,6 +3129,7 @@ impl IosPlatform {
                 will_open_menu: None,
                 validate_app_menu: None,
                 keyboard_layout_change: None,
+                document_picker_delegates: Vec::new(),
             }),
         };
 
@@ -1935,6 +3138,72 @@ impl IosPlatform {
         IOS_PLATFORM_STATE_PTR.store(state_ptr, std::sync::atomic::Ordering::Release);
 
         platform
+    }
+
+    fn active_presenting_controller(&self) -> Option<*mut Object> {
+        let controller = self.state.lock().active_view_controller;
+        if !controller.is_null() {
+            return Some(controller);
+        }
+
+        // Use the modern UIWindowScene API (iOS 13+) instead of the
+        // deprecated UIApplication.keyWindow property.
+        unsafe {
+            let app: *mut Object = msg_send![class!(UIApplication), sharedApplication];
+            if app.is_null() {
+                return None;
+            }
+            let scenes: *mut Object = msg_send![app, connectedScenes];
+            if scenes.is_null() {
+                return None;
+            }
+            let count: usize = msg_send![scenes, count];
+            for i in 0..count {
+                let scene: *mut Object = msg_send![scenes, objectAtIndex: i];
+                if scene.is_null() {
+                    continue;
+                }
+                // Check if this is a UIWindowScene (responds to `windows`)
+                let has_windows: BOOL = msg_send![scene, respondsToSelector: sel!(windows)];
+                if has_windows == NO {
+                    continue;
+                }
+                let windows: *mut Object = msg_send![scene, windows];
+                if windows.is_null() {
+                    continue;
+                }
+                let win_count: usize = msg_send![windows, count];
+                for j in 0..win_count {
+                    let window: *mut Object = msg_send![windows, objectAtIndex: j];
+                    if window.is_null() {
+                        continue;
+                    }
+                    let is_key: BOOL = msg_send![window, isKeyWindow];
+                    if is_key == YES {
+                        let root: *mut Object = msg_send![window, rootViewController];
+                        if !root.is_null() {
+                            return Some(root);
+                        }
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn create_document_picker_delegate(
+        &self,
+        sender: PickerResultSender,
+        temp_paths: Vec<PathBuf>,
+    ) -> *mut Object {
+        unsafe {
+            let delegate: *mut Object = msg_send![GPUI_DOCUMENT_PICKER_DELEGATE_CLASS, new];
+            let context = Box::new(DocumentPickerCallbackContext { sender, temp_paths });
+            (*delegate)
+                .set_ivar::<*mut c_void>(CALLBACK_IVAR, Box::into_raw(context) as *mut c_void);
+            self.state.lock().document_picker_delegates.push(delegate);
+            delegate
+        }
     }
 }
 
@@ -1990,7 +3259,9 @@ impl Platform for IosPlatform {
     ) -> Result<Box<dyn PlatformWindow>> {
         let display = self.state.lock().display.clone();
         let window = IosWindow::new(handle, options, display);
-        self.state.lock().active_window = Some(handle);
+        let mut platform_state = self.state.lock();
+        platform_state.active_window = Some(handle);
+        platform_state.active_view_controller = window.root_view_controller();
         Ok(Box::new(window))
     }
 
@@ -2020,35 +3291,215 @@ impl Platform for IosPlatform {
         self.state.lock().open_urls = Some(callback);
     }
 
-    fn register_url_scheme(&self, _url: &str) -> Task<Result<()>> {
-        Task::ready(Err(anyhow!(
-            "register_url_scheme is not yet implemented on iOS"
-        )))
+    fn register_url_scheme(&self, url: &str) -> Task<Result<()>> {
+        let scheme = url
+            .trim()
+            .trim_end_matches("://")
+            .split(':')
+            .next()
+            .unwrap_or(url)
+            .to_string();
+        Task::ready({
+            unsafe {
+                let bundle: *mut Object = msg_send![class!(NSBundle), mainBundle];
+                if bundle.is_null() {
+                    Err(anyhow!(
+                        "main bundle unavailable; cannot validate URL scheme"
+                    ))
+                } else {
+                    let info: *mut Object = msg_send![bundle, infoDictionary];
+                    if info.is_null() {
+                        Err(anyhow!("Info.plist missing; cannot validate URL scheme"))
+                    } else {
+                        let key = ns_string("CFBundleURLTypes");
+                        let url_types: *mut Object = msg_send![info, objectForKey: key];
+                        if url_types.is_null() {
+                            Err(anyhow!(
+                                "URL scheme '{}' is not declared in CFBundleURLTypes",
+                                scheme
+                            ))
+                        } else {
+                            let mut found = false;
+                            let type_count: usize = msg_send![url_types, count];
+                            for i in 0..type_count {
+                                let url_type: *mut Object = msg_send![url_types, objectAtIndex: i];
+                                if url_type.is_null() {
+                                    continue;
+                                }
+                                let schemes_key = ns_string("CFBundleURLSchemes");
+                                let schemes: *mut Object =
+                                    msg_send![url_type, objectForKey: schemes_key];
+                                if schemes.is_null() {
+                                    continue;
+                                }
+                                let scheme_count: usize = msg_send![schemes, count];
+                                for j in 0..scheme_count {
+                                    let item: *mut Object = msg_send![schemes, objectAtIndex: j];
+                                    if item.is_null() {
+                                        continue;
+                                    }
+                                    let utf8: *const std::os::raw::c_char =
+                                        msg_send![item, UTF8String];
+                                    if utf8.is_null() {
+                                        continue;
+                                    }
+                                    let declared = std::ffi::CStr::from_ptr(utf8)
+                                        .to_string_lossy()
+                                        .into_owned();
+                                    if declared.eq_ignore_ascii_case(&scheme) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if found {
+                                    break;
+                                }
+                            }
+
+                            if found {
+                                Ok(())
+                            } else {
+                                Err(anyhow!(
+                                    "URL scheme '{}' is not declared in CFBundleURLTypes",
+                                    scheme
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+        })
     }
 
     fn prompt_for_paths(
         &self,
-        _options: PathPromptOptions,
+        options: PathPromptOptions,
     ) -> oneshot::Receiver<Result<Option<Vec<PathBuf>>>> {
-        log::warn!("prompt_for_paths not yet implemented on iOS");
         let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Ok(None));
+
+        let Some(presenter) = self.active_presenting_controller() else {
+            let _ = tx.send(Err(anyhow!(
+                "no active view controller to present document picker"
+            )));
+            return rx;
+        };
+
+        if !options.files && !options.directories {
+            let _ = tx.send(Err(anyhow!(
+                "invalid path prompt options: at least one of files/directories must be true"
+            )));
+            return rx;
+        }
+
+        // Use the modern UTType-based API (iOS 14+) instead of the deprecated
+        // initWithDocumentTypes:inMode: initializer.
+        unsafe {
+            let content_types: *mut Object = msg_send![class!(NSMutableArray), array];
+            if options.files {
+                let data_type: *mut Object = msg_send![class!(UTType), typeWithIdentifier: ns_string("public.data")];
+                if !data_type.is_null() {
+                    let _: () = msg_send![content_types, addObject: data_type];
+                }
+            }
+            if options.directories {
+                let folder_type: *mut Object = msg_send![class!(UTType), typeWithIdentifier: ns_string("public.folder")];
+                if !folder_type.is_null() {
+                    let _: () = msg_send![content_types, addObject: folder_type];
+                }
+            }
+
+            let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
+            let picker: *mut Object =
+                msg_send![picker, initForOpeningContentTypes: content_types];
+            if picker.is_null() {
+                let _ = tx.send(Err(anyhow!(
+                    "failed to create UIDocumentPickerViewController"
+                )));
+                return rx;
+            }
+
+            let _: () = msg_send![picker, setAllowsMultipleSelection: if options.multiple { YES } else { NO }];
+            let delegate =
+                self.create_document_picker_delegate(PickerResultSender::Multiple(tx), Vec::new());
+            let _: () = msg_send![picker, setDelegate: delegate];
+            let _: () = msg_send![presenter,
+                presentViewController: picker
+                animated: YES
+                completion: std::ptr::null::<c_void>()
+            ];
+        }
         rx
     }
 
     fn prompt_for_new_path(
         &self,
         _directory: &Path,
-        _suggested_name: Option<&str>,
+        suggested_name: Option<&str>,
     ) -> oneshot::Receiver<Result<Option<PathBuf>>> {
-        log::warn!("prompt_for_new_path not yet implemented on iOS");
         let (tx, rx) = oneshot::channel();
-        let _ = tx.send(Ok(None));
+
+        let Some(presenter) = self.active_presenting_controller() else {
+            let _ = tx.send(Err(anyhow!(
+                "no active view controller to present document picker"
+            )));
+            return rx;
+        };
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let suggested = suggested_name.unwrap_or("untitled.txt");
+        let source_path = std::env::temp_dir().join(format!("gpui-export-{now_ms}-{suggested}"));
+
+        if let Err(error) = std::fs::write(&source_path, []) {
+            let _ = tx.send(Err(anyhow!(
+                "failed to create temporary export file '{}': {error}",
+                source_path.display()
+            )));
+            return rx;
+        }
+
+        unsafe {
+            let path_string = ns_string(source_path.to_string_lossy().as_ref());
+            let source_url: *mut Object =
+                msg_send![class!(NSURL), fileURLWithPath: path_string isDirectory: NO];
+            if source_url.is_null() {
+                let _ = std::fs::remove_file(&source_path);
+                let _ = tx.send(Err(anyhow!(
+                    "failed to create file URL for '{}'",
+                    source_path.display()
+                )));
+                return rx;
+            }
+
+            // Use the modern initForExportingURLs: API (iOS 14+) instead of
+            // the deprecated initWithURL:inMode: initializer.
+            let urls: *mut Object = msg_send![class!(NSArray), arrayWithObject: source_url];
+            let picker: *mut Object = msg_send![class!(UIDocumentPickerViewController), alloc];
+            let picker: *mut Object = msg_send![picker, initForExportingURLs: urls];
+            if picker.is_null() {
+                let _ = std::fs::remove_file(&source_path);
+                let _ = tx.send(Err(anyhow!(
+                    "failed to create UIDocumentPickerViewController for export"
+                )));
+                return rx;
+            }
+
+            let delegate = self
+                .create_document_picker_delegate(PickerResultSender::Single(tx), vec![source_path]);
+            let _: () = msg_send![picker, setDelegate: delegate];
+            let _: () = msg_send![presenter,
+                presentViewController: picker
+                animated: YES
+                completion: std::ptr::null::<c_void>()
+            ];
+        }
         rx
     }
 
     fn can_select_mixed_files_and_dirs(&self) -> bool {
-        false
+        true
     }
 
     fn reveal_path(&self, _path: &Path) {}
@@ -2099,13 +3550,39 @@ impl Platform for IosPlatform {
 
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>) {
         let mut platform_state = self.state.lock();
+
+        // Remove previous observer if any
+        unsafe {
+            if !platform_state.thermal_observer.is_null() {
+                let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![center, removeObserver: platform_state.thermal_observer];
+                // Free the old callback stored in the ivar
+                let old_ptr: *mut c_void =
+                    *(*platform_state.thermal_observer).get_ivar(CALLBACK_IVAR);
+                if !old_ptr.is_null() {
+                    let _ = Box::from_raw(old_ptr as *mut Box<dyn FnMut()>);
+                }
+                let _: () = msg_send![platform_state.thermal_observer, release];
+                platform_state.thermal_observer = std::ptr::null_mut();
+            }
+        }
+
         platform_state.on_thermal_state_change = Some(callback);
 
-        // Register for NSProcessInfoThermalStateDidChangeNotification
+        // Heap-allocate the callback pointer so it has a stable address
+        // independent of the mutex lock. This avoids a dangling pointer
+        // when the lock is dropped.
+        let callback_box: Box<Box<dyn FnMut()>> =
+            Box::new(platform_state.on_thermal_state_change.take().unwrap());
+        let callback_ptr = Box::into_raw(callback_box) as *mut c_void;
+
+        // Store a reference back so we can call it from GPUI too
+        // (the Box is now owned by the ivar, we reconstruct a reference)
         unsafe {
+            let callback_ref = &mut *(callback_ptr as *mut Box<dyn FnMut()>);
+            // We don't put it back in platform_state — the observer owns it now
+
             let observer: *mut Object = msg_send![GPUI_THERMAL_OBSERVER_CLASS, new];
-            let callback_ptr = &mut *platform_state.on_thermal_state_change.as_mut().unwrap()
-                as *mut Box<dyn FnMut()> as *mut c_void;
             (*observer).set_ivar::<*mut c_void>(CALLBACK_IVAR, callback_ptr);
 
             let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
@@ -2121,6 +3598,7 @@ impl Platform for IosPlatform {
             ];
 
             platform_state.thermal_observer = observer;
+            let _ = callback_ref; // suppress unused warning
         }
     }
 
@@ -2143,6 +3621,8 @@ impl Platform for IosPlatform {
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         unsafe {
             let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
+            let metadata_type = ns_string("dev.gpui.clipboard-metadata");
+
             let has_strings: BOOL = msg_send![pasteboard, hasStrings];
             if has_strings == YES {
                 let ns_string: *mut Object = msg_send![pasteboard, string];
@@ -2152,13 +3632,9 @@ impl Platform for IosPlatform {
                         let text = std::ffi::CStr::from_ptr(utf8)
                             .to_string_lossy()
                             .into_owned();
-                        // Check for metadata in custom pasteboard type
-                        let meta_type_str =
-                            std::ffi::CString::new("dev.gpui.clipboard-metadata").unwrap();
-                        let meta_type: *mut Object = msg_send![class!(NSString),
-                            stringWithUTF8String: meta_type_str.as_ptr()];
+
                         let meta_data: *mut Object =
-                            msg_send![pasteboard, dataForPasteboardType: meta_type];
+                            msg_send![pasteboard, dataForPasteboardType: metadata_type];
                         if !meta_data.is_null() {
                             let meta_string: *mut Object = msg_send![class!(NSString), alloc];
                             let encoding: usize = 4; // NSUTF8StringEncoding
@@ -2183,6 +3659,28 @@ impl Platform for IosPlatform {
                     }
                 }
             }
+
+            let has_images: BOOL = msg_send![pasteboard, hasImages];
+            if has_images == YES {
+                let image_obj: *mut Object = msg_send![pasteboard, image];
+                if !image_obj.is_null() {
+                    let image_data: *mut Object = msg_send![image_obj, pngData];
+                    if !image_data.is_null() {
+                        let length: usize = msg_send![image_data, length];
+                        let bytes: *const u8 = msg_send![image_data, bytes];
+                        if !bytes.is_null() && length > 0 {
+                            let bytes = std::slice::from_raw_parts(bytes, length).to_vec();
+                            let image = Image {
+                                format: ImageFormat::Png,
+                                id: hash(&bytes),
+                                bytes,
+                            };
+                            return Some(ClipboardItem::new_image(&image));
+                        }
+                    }
+                }
+            }
+
             None
         }
     }
@@ -2190,26 +3688,36 @@ impl Platform for IosPlatform {
     fn write_to_clipboard(&self, item: ClipboardItem) {
         unsafe {
             let pasteboard: *mut Object = msg_send![class!(UIPasteboard), generalPasteboard];
-            if let Some(text) = item.text() {
-                let ns_string: *mut Object = msg_send![class!(NSString),
-                    stringWithUTF8String: std::ffi::CString::new(text).unwrap_or_default().as_ptr()
+            if let [ClipboardEntry::Image(image)] = item.entries() {
+                let ns_data: *mut Object = msg_send![class!(NSData),
+                    dataWithBytes: image.bytes().as_ptr()
+                    length: image.bytes().len() as u64
                 ];
-                let _: () = msg_send![pasteboard, setString: ns_string];
+                if !ns_data.is_null() {
+                    let ui_image: *mut Object = msg_send![class!(UIImage), imageWithData: ns_data];
+                    if !ui_image.is_null() {
+                        let _: () = msg_send![pasteboard, setImage: ui_image];
+                        return;
+                    }
+                }
+            }
 
-                // Write metadata if present
+            if let Some(text) = item.text() {
+                let ns_text = ns_string(&text);
+                let _: () = msg_send![pasteboard, setString: ns_text];
+
                 if let Some(metadata) = item.metadata() {
-                    let meta_type_str =
-                        std::ffi::CString::new("dev.gpui.clipboard-metadata").unwrap();
-                    let meta_type: *mut Object = msg_send![class!(NSString),
-                        stringWithUTF8String: meta_type_str.as_ptr()
-                    ];
-                    let meta_ns: *mut Object = msg_send![class!(NSString),
-                        stringWithUTF8String: std::ffi::CString::new(metadata.as_str()).unwrap_or_default().as_ptr()
-                    ];
+                    let metadata_type = ns_string("dev.gpui.clipboard-metadata");
+                    let metadata_ns = ns_string(metadata.as_str());
                     let encoding: usize = 4; // NSUTF8StringEncoding
-                    let meta_data: *mut Object = msg_send![meta_ns, dataUsingEncoding: encoding];
-                    let _: () =
-                        msg_send![pasteboard, setData: meta_data forPasteboardType: meta_type];
+                    let metadata_data: *mut Object =
+                        msg_send![metadata_ns, dataUsingEncoding: encoding];
+                    if !metadata_data.is_null() {
+                        let _: () = msg_send![pasteboard,
+                            setData: metadata_data
+                            forPasteboardType: metadata_type
+                        ];
+                    }
                 }
             }
         }
@@ -2322,18 +3830,36 @@ impl Platform for IosPlatform {
     }
 
     fn keyboard_mapper(&self) -> Rc<dyn PlatformKeyboardMapper> {
-        Rc::new(DummyKeyboardMapper)
+        let layout = IosKeyboardLayout::current();
+        Rc::new(IosKeyboardMapper::new(layout.id()))
     }
 
     fn on_keyboard_layout_change(&self, callback: Box<dyn FnMut()>) {
         let mut platform_state = self.state.lock();
-        platform_state.keyboard_layout_change = Some(callback);
+
+        // Remove previous observer if any
+        unsafe {
+            if !platform_state.input_mode_observer.is_null() {
+                let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
+                let _: () =
+                    msg_send![center, removeObserver: platform_state.input_mode_observer];
+                let old_ptr: *mut c_void =
+                    *(*platform_state.input_mode_observer).get_ivar(CALLBACK_IVAR);
+                if !old_ptr.is_null() {
+                    let _ = Box::from_raw(old_ptr as *mut Box<dyn FnMut()>);
+                }
+                let _: () = msg_send![platform_state.input_mode_observer, release];
+                platform_state.input_mode_observer = std::ptr::null_mut();
+            }
+        }
+
+        // Heap-allocate callback so the pointer is stable
+        let callback_box: Box<Box<dyn FnMut()>> = Box::new(callback);
+        let callback_ptr = Box::into_raw(callback_box) as *mut c_void;
 
         // Register for UITextInputCurrentInputModeDidChangeNotification
         unsafe {
             let observer: *mut Object = msg_send![GPUI_INPUT_MODE_OBSERVER_CLASS, new];
-            let callback_ptr = &mut *platform_state.keyboard_layout_change.as_mut().unwrap()
-                as *mut Box<dyn FnMut()> as *mut c_void;
             (*observer).set_ivar::<*mut c_void>(CALLBACK_IVAR, callback_ptr);
 
             let center: *mut Object = msg_send![class!(NSNotificationCenter), defaultCenter];
@@ -2360,9 +3886,9 @@ struct IosWindowState {
     ui_window: *mut Object,
     ui_view_controller: *mut Object,
     ui_view: *mut Object,
-    // Hidden UITextField — shows the software keyboard when it becomes
-    // first responder. GPUIView is its delegate, intercepting typed text.
-    keyboard_proxy: *mut Object,
+    // Drag-and-drop integration for external file drops.
+    drop_interaction: *mut Object,
+    drop_delegate: *mut Object,
     renderer: MetalRenderer,
     // CADisplayLink driving the frame loop
     display_link: *mut Object,
@@ -2406,6 +3932,10 @@ struct IosWindowState {
 pub(crate) struct IosWindow(Rc<Mutex<IosWindowState>>);
 
 impl IosWindow {
+    fn root_view_controller(&self) -> *mut Object {
+        self.0.lock().ui_view_controller
+    }
+
     fn new(
         handle: AnyWindowHandle,
         options: WindowParams,
@@ -2416,7 +3946,8 @@ impl IosWindow {
             ui_window,
             ui_view_controller,
             ui_view,
-            keyboard_proxy,
+            drop_interaction,
+            drop_delegate,
             gesture_delegate,
             bounds,
             scale_factor,
@@ -2448,25 +3979,6 @@ impl IosWindow {
 
             // Enable multi-touch for all gesture recognizers
             let _: () = msg_send![ui_view, setMultipleTouchEnabled: YES];
-
-            // Hidden UITextField as keyboard proxy — shows software keyboard
-            // when it becomes first responder. GPUIView is its delegate.
-            let proxy_frame = CGRect {
-                origin: CGPoint { x: 0.0, y: -100.0 },
-                size: CGSize {
-                    width: 1.0,
-                    height: 1.0,
-                },
-            };
-            let keyboard_proxy: *mut Object = msg_send![class!(UITextField), alloc];
-            let keyboard_proxy: *mut Object = msg_send![keyboard_proxy, initWithFrame: proxy_frame];
-            let _: () = msg_send![keyboard_proxy, setAlpha: 0.01f64];
-            let _: () = msg_send![keyboard_proxy, setAutocorrectionType: 1isize]; // UITextAutocorrectionTypeNo
-            let _: () = msg_send![keyboard_proxy, setAutocapitalizationType: 0isize]; // UITextAutocapitalizationTypeNone
-            let _: () = msg_send![keyboard_proxy, setSpellCheckingType: 1isize]; // UITextSpellCheckingTypeNo
-            let _: () = msg_send![ui_view, addSubview: keyboard_proxy];
-            // GPUIView is the delegate — intercepts typed text via textField:shouldChangeCharactersInRange:
-            let _: () = msg_send![keyboard_proxy, setDelegate: ui_view];
 
             // Create gesture delegate for simultaneous recognition
             let gesture_delegate: *mut Object = msg_send![GPUI_GESTURE_DELEGATE_CLASS, new];
@@ -2515,6 +4027,13 @@ impl IosWindow {
             let _: () = msg_send![long_press, setDelegate: gesture_delegate];
             let _: () = msg_send![ui_view, addGestureRecognizer: long_press];
 
+            // Native file drag/drop for external files (UIDropInteraction).
+            let drop_delegate: *mut Object = msg_send![GPUI_DROP_DELEGATE_CLASS, new];
+            let drop_interaction: *mut Object = msg_send![class!(UIDropInteraction), alloc];
+            let drop_interaction: *mut Object =
+                msg_send![drop_interaction, initWithDelegate: drop_delegate];
+            let _: () = msg_send![ui_view, addInteraction: drop_interaction];
+
             let _: () = msg_send![ui_view_controller, setView: ui_view];
             let _: () = msg_send![ui_window, setRootViewController: ui_view_controller];
             let _: () = msg_send![ui_window, makeKeyAndVisible];
@@ -2530,7 +4049,8 @@ impl IosWindow {
                 ui_window,
                 ui_view_controller,
                 ui_view,
-                keyboard_proxy,
+                drop_interaction,
+                drop_delegate,
                 gesture_delegate,
                 bounds,
                 scale as f32,
@@ -2581,7 +4101,8 @@ impl IosWindow {
             ui_window,
             ui_view_controller,
             ui_view,
-            keyboard_proxy,
+            drop_interaction,
+            drop_delegate,
             renderer,
             display_link: std::ptr::null_mut(),
             display_link_target: std::ptr::null_mut(),
@@ -2614,8 +4135,10 @@ impl IosWindow {
         // Set the window state ivar on the GPUIView so touch handlers can
         // access it.
         unsafe {
-            let state_ptr = Rc::into_raw(window.0.clone()) as *mut c_void;
-            (*ui_view).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, state_ptr);
+            let view_state_ptr = Rc::into_raw(window.0.clone()) as *mut c_void;
+            (*ui_view).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, view_state_ptr);
+            let drop_state_ptr = Rc::into_raw(window.0.clone()) as *mut c_void;
+            (*drop_delegate).set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, drop_state_ptr);
         }
 
         // Register for UIScene lifecycle notifications
@@ -2692,6 +4215,14 @@ impl Drop for IosWindow {
                         .set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, std::ptr::null_mut());
                 }
             }
+            if !state.drop_delegate.is_null() {
+                let ptr: *mut c_void = *(*state.drop_delegate).get_ivar(WINDOW_STATE_IVAR);
+                if !ptr.is_null() {
+                    let _ = Rc::from_raw(ptr as *const Mutex<IosWindowState>);
+                    (*state.drop_delegate)
+                        .set_ivar::<*mut c_void>(WINDOW_STATE_IVAR, std::ptr::null_mut());
+                }
+            }
 
             // Invalidate the CADisplayLink (removes it from the run loop).
             if !state.display_link.is_null() {
@@ -2715,10 +4246,30 @@ impl Drop for IosWindow {
                 state.blur_view = std::ptr::null_mut();
             }
 
+            if !state.drop_interaction.is_null() {
+                let _: () = msg_send![state.drop_interaction, release];
+                state.drop_interaction = std::ptr::null_mut();
+            }
+            if !state.drop_delegate.is_null() {
+                let _: () = msg_send![state.drop_delegate, release];
+                state.drop_delegate = std::ptr::null_mut();
+            }
+
             // Release gesture delegate
             if !state.gesture_delegate.is_null() {
                 let _: () = msg_send![state.gesture_delegate, release];
                 state.gesture_delegate = std::ptr::null_mut();
+            }
+
+            // Release the lazily-created UITextInputStringTokenizer
+            if !state.ui_view.is_null() {
+                let tokenizer_ptr: *mut c_void =
+                    *(*state.ui_view).get_ivar("gpui_tokenizer");
+                if !tokenizer_ptr.is_null() {
+                    let _: () = msg_send![tokenizer_ptr as *mut Object, release];
+                    (*state.ui_view)
+                        .set_ivar::<*mut c_void>("gpui_tokenizer", std::ptr::null_mut());
+                }
             }
 
             if !state.ui_view.is_null() {
@@ -2832,14 +4383,14 @@ impl PlatformWindow for IosWindow {
     fn take_input_handler(&mut self) -> Option<PlatformInputHandler> {
         let mut lock = self.0.lock();
         let handler = lock.input_handler.take();
-        let proxy = lock.keyboard_proxy;
+        let ui_view = lock.ui_view;
         drop(lock);
-        if handler.is_some() && !proxy.is_null() {
+        if handler.is_some() && !ui_view.is_null() {
             log::debug!(
                 "[keyboard] take_input_handler — resigning first responder (hiding keyboard)"
             );
             unsafe {
-                let _: () = msg_send![proxy, resignFirstResponder];
+                let _: () = msg_send![ui_view, resignFirstResponder];
             }
         }
         handler

@@ -29,6 +29,10 @@ pub(crate) unsafe fn create_native_combo_box(
             let _: () = msg_send![field, setUserInteractionEnabled: false as i8];
         }
 
+        // UIAccessibility
+        let _: () = msg_send![field, setAccessibilityLabel: ns_string("Combo Box")];
+        let _: () = msg_send![field, setAccessibilityHint: ns_string("Double tap to edit")];
+
         field
     }
 }

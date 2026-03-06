@@ -1,4 +1,4 @@
-use super::{id, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
+use super::{id, ns_string, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
 use ctor::ctor;
 use objc::{
     class,
@@ -44,6 +44,10 @@ pub(crate) unsafe fn create_native_stepper(min: f64, max: f64, value: f64, incre
         let _: () = msg_send![stepper, setMaximumValue: max];
         let _: () = msg_send![stepper, setValue: value];
         let _: () = msg_send![stepper, setStepValue: increment];
+
+        // UIAccessibility — UIStepper already has correct default traits
+        let _: () = msg_send![stepper, setAccessibilityLabel: ns_string("Stepper")];
+
         stepper
     }
 }
@@ -57,7 +61,11 @@ pub(crate) unsafe fn set_native_stepper_max(stepper: id, max: f64) {
 }
 
 pub(crate) unsafe fn set_native_stepper_value(stepper: id, value: f64) {
-    unsafe { let _: () = msg_send![stepper, setValue: value]; }
+    unsafe {
+        let _: () = msg_send![stepper, setValue: value];
+        let value_str = format!("{:.1}", value);
+        let _: () = msg_send![stepper, setAccessibilityValue: ns_string(&value_str)];
+    }
 }
 
 pub(crate) unsafe fn set_native_stepper_increment(stepper: id, increment: f64) {

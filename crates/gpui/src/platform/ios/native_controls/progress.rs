@@ -1,4 +1,4 @@
-use super::id;
+use super::{id, ns_string};
 use objc::{class, msg_send, sel, sel_impl};
 
 /// Creates a new UIProgressView (bar style).
@@ -7,6 +7,11 @@ pub(crate) unsafe fn create_native_progress_indicator() -> id {
         // UIProgressViewStyleDefault = 0
         let progress: id = msg_send![class!(UIProgressView), alloc];
         let progress: id = msg_send![progress, initWithProgressViewStyle: 0i64];
+
+        // UIAccessibility — UIProgressView already has correct default traits
+        let _: () = msg_send![progress, setAccessibilityLabel: ns_string("Progress")];
+        let _: () = msg_send![progress, setAccessibilityValue: ns_string("0%")];
+
         progress
     }
 }
@@ -29,6 +34,9 @@ pub(crate) unsafe fn set_native_progress_indeterminate(_indicator: id, _indeterm
 pub(crate) unsafe fn set_native_progress_value(indicator: id, value: f64) {
     unsafe {
         let _: () = msg_send![indicator, setProgress: value as f32 animated: true as i8];
+        let pct = (value * 100.0) as i32;
+        let pct_str = format!("{}%", pct);
+        let _: () = msg_send![indicator, setAccessibilityValue: ns_string(&pct_str)];
     }
 }
 

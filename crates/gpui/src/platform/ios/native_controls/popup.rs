@@ -47,12 +47,15 @@ pub(crate) unsafe fn create_native_popup_button(items: &[&str], selected_index: 
         let _: () = msg_send![button, retain];
 
         // Set initial title to the selected item
-        if let Some(title) = items.get(selected_index) {
-            let _: () = msg_send![button, setTitle: ns_string(title) forState: 0u64];
-        }
+        let initial_title = items.get(selected_index).copied().unwrap_or("Popup");
+        let _: () = msg_send![button, setTitle: ns_string(initial_title) forState: 0u64];
 
         // Show a dropdown indicator
         let _: () = msg_send![button, setShowsMenuAsPrimaryAction: true as i8];
+
+        // UIAccessibility — UIButton already has UIAccessibilityTraitButton by default
+        let _: () = msg_send![button, setAccessibilityLabel: ns_string(initial_title)];
+        let _: () = msg_send![button, setAccessibilityHint: ns_string("Double tap to show options")];
 
         button
     }
@@ -100,6 +103,7 @@ pub(crate) unsafe fn set_native_popup_selected(popup: id, index: usize) {
                 let action: id = msg_send![children, objectAtIndex: index];
                 let title: id = msg_send![action, title];
                 let _: () = msg_send![popup, setTitle: title forState: 0u64];
+                let _: () = msg_send![popup, setAccessibilityLabel: title];
             }
         }
     }

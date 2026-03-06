@@ -61,6 +61,9 @@ pub(crate) unsafe fn create_native_segmented_control(
             let _: () = msg_send![control, setSelectedSegmentIndex: idx as isize];
         }
 
+        // UIAccessibility — label each segment individually
+        let _: () = msg_send![control, setAccessibilityLabel: ns_string("Segmented Control")];
+
         control
     }
 }

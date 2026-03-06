@@ -75,6 +75,10 @@ pub(crate) unsafe fn create_native_button(title: &str) -> id {
         let button: id = msg_send![class!(UIButton), buttonWithType: 1i64];
         let _: () = msg_send![button, retain];
         let _: () = msg_send![button, setTitle: ns_string(title) forState: 0u64]; // UIControlStateNormal
+
+        // UIAccessibility — UIButton already has UIAccessibilityTraitButton by default
+        let _: () = msg_send![button, setAccessibilityLabel: ns_string(title)];
+
         button
     }
 }
@@ -90,6 +94,8 @@ pub(crate) unsafe fn set_native_button_title(button: id, title: &str) {
             let _: () = msg_send![configuration, setTitle: title];
             let _: () = msg_send![button, setConfiguration: configuration];
         }
+
+        let _: () = msg_send![button, setAccessibilityLabel: title];
     }
 }
 

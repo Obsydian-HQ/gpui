@@ -19,6 +19,9 @@ pub(crate) unsafe fn create_native_icon_button(symbol_name: &str) -> id {
         // No title — icon only
         let _: () = msg_send![button, setTitle: ns_string("") forState: 0u64];
 
+        // UIAccessibility — UIButton already has UIAccessibilityTraitButton by default
+        let _: () = msg_send![button, setAccessibilityLabel: ns_string(symbol_name)];
+
         button
     }
 }
@@ -37,6 +40,9 @@ pub(crate) unsafe fn set_native_icon_button_symbol(button: id, symbol_name: &str
                 }
             }
         }
+
+        // Update accessibility label to match new symbol
+        let _: () = msg_send![button, setAccessibilityLabel: ns_string(symbol_name)];
     }
 }
 

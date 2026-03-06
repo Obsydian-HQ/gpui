@@ -1,4 +1,4 @@
-use super::{id, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
+use super::{id, ns_string, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
 use ctor::ctor;
 use objc::{
     class,
@@ -43,6 +43,10 @@ pub(crate) unsafe fn create_native_slider(min: f64, max: f64, value: f64) -> id 
         let _: () = msg_send![slider, setMinimumValue: min as f32];
         let _: () = msg_send![slider, setMaximumValue: max as f32];
         let _: () = msg_send![slider, setValue: value as f32 animated: false as i8];
+
+        // UIAccessibility — UISlider already has UIAccessibilityTraitAdjustable by default
+        let _: () = msg_send![slider, setAccessibilityLabel: ns_string("Slider")];
+
         slider
     }
 }
@@ -51,6 +55,8 @@ pub(crate) unsafe fn create_native_slider(min: f64, max: f64, value: f64) -> id 
 pub(crate) unsafe fn set_native_slider_value(slider: id, value: f64) {
     unsafe {
         let _: () = msg_send![slider, setValue: value as f32 animated: false as i8];
+        let value_str = format!("{:.1}", value);
+        let _: () = msg_send![slider, setAccessibilityValue: ns_string(&value_str)];
     }
 }
 

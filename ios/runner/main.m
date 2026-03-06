@@ -34,6 +34,12 @@ extern void gpui_ios_run_demo(const char *name);
             @"rotation",
             @"controls",
             @"native_controls",
+            @"safe_area",
+            @"layout_showcase",
+            @"keyboard_ime",
+            @"file_picker",
+            @"clipboard",
+            @"file_drop",
         ]];
 
         for (NSInteger i = args.count - 1; i >= 1; i--) {

@@ -1,4 +1,4 @@
-use super::{id, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
+use super::{id, ns_string, CALLBACK_IVAR, UI_CONTROL_EVENT_VALUE_CHANGED};
 use ctor::ctor;
 use objc::{
     class,
@@ -40,6 +40,11 @@ pub(crate) unsafe fn create_native_switch() -> id {
     unsafe {
         let switch: id = msg_send![class!(UISwitch), alloc];
         let switch: id = msg_send![switch, init];
+
+        // UIAccessibility — UISwitch already has correct default traits
+        let _: () = msg_send![switch, setAccessibilityLabel: ns_string("Switch")];
+        let _: () = msg_send![switch, setAccessibilityValue: ns_string("off")];
+
         switch
     }
 }
@@ -48,6 +53,8 @@ pub(crate) unsafe fn create_native_switch() -> id {
 pub(crate) unsafe fn set_native_switch_state(switch: id, checked: bool) {
     unsafe {
         let _: () = msg_send![switch, setOn: checked as i8 animated: false as i8];
+        let value_str = if checked { "on" } else { "off" };
+        let _: () = msg_send![switch, setAccessibilityValue: ns_string(value_str)];
     }
 }
 

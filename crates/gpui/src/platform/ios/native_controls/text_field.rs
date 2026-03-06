@@ -115,6 +115,10 @@ pub(crate) unsafe fn create_native_text_field(placeholder: &str) -> id {
         let _: () = msg_send![field, setPlaceholder: ns_string(placeholder)];
         // Default border style: rounded rect
         let _: () = msg_send![field, setBorderStyle: 3i64]; // UITextBorderStyleRoundedRect
+
+        // UIAccessibility — use placeholder as hint so VoiceOver reads it
+        let _: () = msg_send![field, setAccessibilityHint: ns_string(placeholder)];
+
         field
     }
 }
@@ -155,6 +159,7 @@ pub(crate) unsafe fn get_native_text_field_string_value(field: id) -> String {
 pub(crate) unsafe fn set_native_text_field_placeholder(field: id, placeholder: &str) {
     unsafe {
         let _: () = msg_send![field, setPlaceholder: ns_string(placeholder)];
+        let _: () = msg_send![field, setAccessibilityHint: ns_string(placeholder)];
     }
 }
 

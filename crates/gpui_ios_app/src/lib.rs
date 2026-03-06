@@ -1,18 +1,27 @@
 use gpui::{
-    div, native_button, native_checkbox, native_image_view, native_progress_bar, native_slider,
+    App, Application, ClipboardEntry, ClipboardItem, Context, ExternalPaths, FocusHandle,
+    Focusable, Image, ImageFormat, KeyDownEvent, MouseButton, NativeImageSymbolWeight,
+    PathPromptOptions, PinchEvent, RotationEvent, Window, WindowAppearance, WindowOptions, div,
+    native_button, native_checkbox, native_image_view, native_progress_bar, native_slider,
     native_stepper, native_switch, native_text_field, native_toggle_group, prelude::*, px, rgb,
-    rgba, App, Application, Context, FocusHandle, Focusable, KeyDownEvent,
-    MouseButton, NativeImageSymbolWeight, PinchEvent, RotationEvent, Window, WindowAppearance,
-    WindowOptions,
+    rgba,
 };
 use log::LevelFilter;
 use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static STARTED: AtomicBool = AtomicBool::new(false);
+
+const IOS_CLIPBOARD_TEST_PNG: [u8; 68] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x04, 0x00, 0x00, 0x00, 0xb5, 0x1c, 0x0c,
+    0x02, 0x00, 0x00, 0x00, 0x0b, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xff, 0x1f, 0x00,
+    0x03, 0x03, 0x02, 0x00, 0xef, 0x97, 0xd9, 0x77, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+    0xae, 0x42, 0x60, 0x82,
+];
 
 // ---------------------------------------------------------------------------
 // iOS Logger — os_log + stderr + TCP relay
@@ -314,11 +323,7 @@ impl Render for IosTouchDemo {
         let tap_count = self.tap_count;
 
         let box_color = |index: usize, base: u32, active: u32| -> u32 {
-            if tapped == Some(index) {
-                active
-            } else {
-                base
-            }
+            if tapped == Some(index) { active } else { base }
         };
 
         div()
@@ -736,7 +741,12 @@ impl Render for IosScrollDemo {
             0xb4befe,
         ];
 
-        let mut scroll_content = div().flex().flex_col().gap(px(8.0)).p(px(16.0)).pb(safe.bottom);
+        let mut scroll_content = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(16.0))
+            .pb(safe.bottom);
 
         for i in 0..50 {
             let color = colors[i % colors.len()];
@@ -925,7 +935,12 @@ impl Render for IosVerticalScrollDemo {
             0xb4befe,
         ];
 
-        let mut list = div().flex().flex_col().gap(px(8.0)).p(px(16.0)).pb(safe.bottom);
+        let mut list = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .p(px(16.0))
+            .pb(safe.bottom);
 
         for i in 0..100 {
             let color = colors[i % colors.len()];
@@ -1060,19 +1075,14 @@ impl Render for IosHorizontalScrollDemo {
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .pb(safe.bottom)
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .id("hscroll")
-                            .w_full()
-                            .h(px(220.0))
-                            .overflow_x_scroll()
-                            .child(strip),
-                    ),
+                div().flex_1().pb(safe.bottom).flex().items_center().child(
+                    div()
+                        .id("hscroll")
+                        .w_full()
+                        .h(px(220.0))
+                        .overflow_x_scroll()
+                        .child(strip),
+                ),
             )
     }
 }
@@ -2051,9 +2061,8 @@ impl Render for IosSafeAreaDemo {
         let show_raw = self.show_raw;
 
         // Visual: show a colored band along each safe area edge
-        let inset_label = |label: &str, px_val: f32| -> String {
-            format!("{}: {:.0}px", label, px_val)
-        };
+        let inset_label =
+            |label: &str, px_val: f32| -> String { format!("{}: {:.0}px", label, px_val) };
 
         // The outer div fills the full screen — background visible behind notch/home indicator
         div()
@@ -2323,9 +2332,27 @@ impl Render for IosLayoutShowcase {
                         .flex_row()
                         .justify_between()
                         .items_center()
-                        .child(div().w(px(60.0)).h(px(40.0)).bg(rgb(0xf38ba8)).rounded(px(6.0)))
-                        .child(div().w(px(60.0)).h(px(40.0)).bg(rgb(0xa6e3a1)).rounded(px(6.0)))
-                        .child(div().w(px(60.0)).h(px(40.0)).bg(rgb(0x89b4fa)).rounded(px(6.0))),
+                        .child(
+                            div()
+                                .w(px(60.0))
+                                .h(px(40.0))
+                                .bg(rgb(0xf38ba8))
+                                .rounded(px(6.0)),
+                        )
+                        .child(
+                            div()
+                                .w(px(60.0))
+                                .h(px(40.0))
+                                .bg(rgb(0xa6e3a1))
+                                .rounded(px(6.0)),
+                        )
+                        .child(
+                            div()
+                                .w(px(60.0))
+                                .h(px(40.0))
+                                .bg(rgb(0x89b4fa))
+                                .rounded(px(6.0)),
+                        ),
                 )
                 // Row: flex_row + justify_center + gap
                 .child(section_label("flex_row + justify_center + gap"))
@@ -2337,9 +2364,27 @@ impl Render for IosLayoutShowcase {
                         .justify_center()
                         .items_center()
                         .gap(px(8.0))
-                        .child(div().w(px(50.0)).h(px(50.0)).bg(rgb(0xfab387)).rounded(px(8.0)))
-                        .child(div().w(px(50.0)).h(px(50.0)).bg(rgb(0xcba6f7)).rounded(px(8.0)))
-                        .child(div().w(px(50.0)).h(px(50.0)).bg(rgb(0xf9e2af)).rounded(px(8.0))),
+                        .child(
+                            div()
+                                .w(px(50.0))
+                                .h(px(50.0))
+                                .bg(rgb(0xfab387))
+                                .rounded(px(8.0)),
+                        )
+                        .child(
+                            div()
+                                .w(px(50.0))
+                                .h(px(50.0))
+                                .bg(rgb(0xcba6f7))
+                                .rounded(px(8.0)),
+                        )
+                        .child(
+                            div()
+                                .w(px(50.0))
+                                .h(px(50.0))
+                                .bg(rgb(0xf9e2af))
+                                .rounded(px(8.0)),
+                        ),
                 )
                 // Column: items_start / center / end
                 .child(section_label("flex_col + items_start / center / end"))
@@ -2359,7 +2404,13 @@ impl Render for IosLayoutShowcase {
                                 .flex_col()
                                 .items_start()
                                 .p(px(4.0))
-                                .child(div().w(px(30.0)).h(px(20.0)).bg(rgb(0xf38ba8)).rounded(px(4.0)))
+                                .child(
+                                    div()
+                                        .w(px(30.0))
+                                        .h(px(20.0))
+                                        .bg(rgb(0xf38ba8))
+                                        .rounded(px(4.0)),
+                                )
                                 .child(
                                     div()
                                         .text_size(px(9.0))
@@ -2377,7 +2428,13 @@ impl Render for IosLayoutShowcase {
                                 .flex_col()
                                 .items_center()
                                 .p(px(4.0))
-                                .child(div().w(px(30.0)).h(px(20.0)).bg(rgb(0xa6e3a1)).rounded(px(4.0)))
+                                .child(
+                                    div()
+                                        .w(px(30.0))
+                                        .h(px(20.0))
+                                        .bg(rgb(0xa6e3a1))
+                                        .rounded(px(4.0)),
+                                )
                                 .child(
                                     div()
                                         .text_size(px(9.0))
@@ -2395,7 +2452,13 @@ impl Render for IosLayoutShowcase {
                                 .flex_col()
                                 .items_end()
                                 .p(px(4.0))
-                                .child(div().w(px(30.0)).h(px(20.0)).bg(rgb(0x89b4fa)).rounded(px(4.0)))
+                                .child(
+                                    div()
+                                        .w(px(30.0))
+                                        .h(px(20.0))
+                                        .bg(rgb(0x89b4fa))
+                                        .rounded(px(4.0)),
+                                )
                                 .child(
                                     div()
                                         .text_size(px(9.0))
@@ -2407,45 +2470,52 @@ impl Render for IosLayoutShowcase {
                 // justify_start / center / end / between
                 .child(section_label("justify_start / center / end / between"))
                 .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.0))
-                        .children(
-                            [
-                                ("start", 0x89b4fau32),
-                                ("center", 0xa6e3a1u32),
-                                ("end", 0xfab387u32),
-                                ("between", 0xcba6f7u32),
-                            ]
-                            .iter()
-                            .map(|(label, color)| {
-                                let row = div()
-                                    .w_full()
-                                    .h(px(28.0))
-                                    .bg(rgb(0x313244))
-                                    .rounded(px(4.0))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(4.0));
-                                let row = match *label {
-                                    "start" => row.justify_start(),
-                                    "center" => row.justify_center(),
-                                    "end" => row.justify_end(),
-                                    _ => row.justify_between(),
-                                };
-                                row.child(div().w(px(20.0)).h(px(16.0)).bg(rgb(*color)).rounded(px(3.0)))
-                                    .child(div().w(px(20.0)).h(px(16.0)).bg(rgb(*color)).rounded(px(3.0)))
-                                    .child(
-                                        div()
-                                            .text_size(px(9.0))
-                                            .text_color(rgb(0x6c7086))
-                                            .child(label.to_string()),
-                                    )
-                            }),
-                        ),
+                    div().w_full().flex().flex_col().gap(px(6.0)).children(
+                        [
+                            ("start", 0x89b4fau32),
+                            ("center", 0xa6e3a1u32),
+                            ("end", 0xfab387u32),
+                            ("between", 0xcba6f7u32),
+                        ]
+                        .iter()
+                        .map(|(label, color)| {
+                            let row = div()
+                                .w_full()
+                                .h(px(28.0))
+                                .bg(rgb(0x313244))
+                                .rounded(px(4.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0));
+                            let row = match *label {
+                                "start" => row.justify_start(),
+                                "center" => row.justify_center(),
+                                "end" => row.justify_end(),
+                                _ => row.justify_between(),
+                            };
+                            row.child(
+                                div()
+                                    .w(px(20.0))
+                                    .h(px(16.0))
+                                    .bg(rgb(*color))
+                                    .rounded(px(3.0)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(20.0))
+                                    .h(px(16.0))
+                                    .bg(rgb(*color))
+                                    .rounded(px(3.0)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(9.0))
+                                    .text_color(rgb(0x6c7086))
+                                    .child(label.to_string()),
+                            )
+                        }),
+                    ),
                 )
                 .into_any_element(),
 
@@ -2499,9 +2569,19 @@ impl Render for IosLayoutShowcase {
                                 .bg(rgb(0x313244))
                                 .rounded(px(6.0))
                                 .p(px(16.0))
-                                .child(div().w_full().h(px(20.0)).bg(rgb(0xf38ba8)).rounded(px(4.0)).child(
-                                    div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("p(16)")
-                                )),
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(20.0))
+                                        .bg(rgb(0xf38ba8))
+                                        .rounded(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(9.0))
+                                                .text_color(rgb(0x1e1e2e))
+                                                .child("p(16)"),
+                                        ),
+                                ),
                         )
                         .child(
                             div()
@@ -2510,9 +2590,19 @@ impl Render for IosLayoutShowcase {
                                 .rounded(px(6.0))
                                 .px(px(24.0))
                                 .py(px(8.0))
-                                .child(div().w_full().h(px(20.0)).bg(rgb(0xa6e3a1)).rounded(px(4.0)).child(
-                                    div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("px(24) py(8)")
-                                )),
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(20.0))
+                                        .bg(rgb(0xa6e3a1))
+                                        .rounded(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(9.0))
+                                                .text_color(rgb(0x1e1e2e))
+                                                .child("px(24) py(8)"),
+                                        ),
+                                ),
                         )
                         .child(
                             div()
@@ -2523,9 +2613,19 @@ impl Render for IosLayoutShowcase {
                                 .pb(px(4.0))
                                 .pl(px(8.0))
                                 .pr(px(32.0))
-                                .child(div().w_full().h(px(20.0)).bg(rgb(0x89b4fa)).rounded(px(4.0)).child(
-                                    div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("pt20 pb4 pl8 pr32")
-                                )),
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(20.0))
+                                        .bg(rgb(0x89b4fa))
+                                        .rounded(px(4.0))
+                                        .child(
+                                            div()
+                                                .text_size(px(9.0))
+                                                .text_color(rgb(0x1e1e2e))
+                                                .child("pt20 pb4 pl8 pr32"),
+                                        ),
+                                ),
                         ),
                 )
                 // Margin variants
@@ -2544,7 +2644,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(36.0))
                                 .bg(rgb(0xf9e2af))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("m(8)")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("m(8)"),
+                                ),
                         )
                         .child(
                             div()
@@ -2554,7 +2659,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(36.0))
                                 .bg(rgb(0x94e2d5))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("mx4 my12")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("mx4 my12"),
+                                ),
                         ),
                 )
                 .into_any_element(),
@@ -2578,7 +2688,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(24.0))
                                 .bg(rgb(0xf38ba8))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("w100 h24")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("w100 h24"),
+                                ),
                         )
                         .child(
                             div()
@@ -2586,7 +2701,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(32.0))
                                 .bg(rgb(0xa6e3a1))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("w200 h32")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("w200 h32"),
+                                ),
                         )
                         .child(
                             div()
@@ -2594,7 +2714,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(40.0))
                                 .bg(rgb(0x89b4fa))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("w300 h40")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("w300 h40"),
+                                ),
                         ),
                 )
                 // w_full, flex_1, flex_shrink_0
@@ -2611,7 +2736,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(40.0))
                                 .bg(rgb(0xfab387))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("flex_1")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("flex_1"),
+                                ),
                         )
                         .child(
                             div()
@@ -2619,7 +2749,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(40.0))
                                 .bg(rgb(0xcba6f7))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("flex_1")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("flex_1"),
+                                ),
                         )
                         .child(
                             div()
@@ -2628,7 +2763,12 @@ impl Render for IosLayoutShowcase {
                                 .h(px(40.0))
                                 .bg(rgb(0xf9e2af))
                                 .rounded(px(4.0))
-                                .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("shrink_0")),
+                                .child(
+                                    div()
+                                        .text_size(px(9.0))
+                                        .text_color(rgb(0x1e1e2e))
+                                        .child("shrink_0"),
+                                ),
                         ),
                 )
                 // min/max width & height
@@ -2652,7 +2792,12 @@ impl Render for IosLayoutShowcase {
                                         .h(px(28.0))
                                         .bg(rgb(0x94e2d5))
                                         .rounded(px(4.0))
-                                        .child(div().text_size(px(9.0)).text_color(rgb(0x1e1e2e)).child("min80 max200")),
+                                        .child(
+                                            div()
+                                                .text_size(px(9.0))
+                                                .text_color(rgb(0x1e1e2e))
+                                                .child("min80 max200"),
+                                        ),
                                 ),
                         )
                         .child(
@@ -2680,7 +2825,13 @@ impl Render for IosLayoutShowcase {
             // --- Tab 3: Overflow ---
             3 => {
                 let scroll_colors = [
-                    0xf38ba8u32, 0xa6e3a1, 0x89b4fa, 0xfab387, 0xcba6f7, 0xf9e2af, 0x94e2d5,
+                    0xf38ba8u32,
+                    0xa6e3a1,
+                    0x89b4fa,
+                    0xfab387,
+                    0xcba6f7,
+                    0xf9e2af,
+                    0x94e2d5,
                 ];
 
                 let mut vlist = div().flex().flex_col().gap(px(6.0));
@@ -2762,7 +2913,9 @@ impl Render for IosLayoutShowcase {
                                     .flex()
                                     .items_center()
                                     .px(px(8.0))
-                                    .child("This text is wider than the container and gets clipped"),
+                                    .child(
+                                        "This text is wider than the container and gets clipped",
+                                    ),
                             ),
                     )
                     .into_any_element()
@@ -2970,6 +3123,636 @@ pub extern "C" fn gpui_ios_run_layout_showcase() {
 }
 
 // ---------------------------------------------------------------------------
+// Validation Demos
+// ---------------------------------------------------------------------------
+
+struct IosTier1KeyboardImeDemo {
+    focus_handle: FocusHandle,
+    text: String,
+    recent_events: Vec<String>,
+}
+
+impl Focusable for IosTier1KeyboardImeDemo {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for IosTier1KeyboardImeDemo {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let safe = window.safe_area_insets();
+        let focused = self.focus_handle.is_focused(window);
+        let border_color = if focused { 0x89b4fa } else { 0x585b70 };
+        let display_text = if self.text.is_empty() {
+            "<empty>".to_string()
+        } else {
+            self.text.clone()
+        };
+
+        let mut events = div().flex().flex_col().gap(px(4.0));
+        for line in self.recent_events.iter().rev().take(10) {
+            events = events.child(
+                div()
+                    .text_size(px(11.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child(line.clone()),
+            );
+        }
+
+        div()
+            .id("tier1-keyboard-ime-root")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .pt(safe.top + px(16.0))
+            .pb(safe.bottom + px(16.0))
+            .pl(safe.left + px(16.0))
+            .pr(safe.right + px(16.0))
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .on_key_down(cx.listener(|this: &mut Self, event: &KeyDownEvent, _, cx| {
+                let key = event.keystroke.key.clone();
+                let key_char = event.keystroke.key_char.clone();
+
+                if key == "backspace" {
+                    this.text.pop();
+                } else if key == "enter" {
+                    this.text.push('\n');
+                } else if let Some(ch) = key_char.as_deref() {
+                    this.text.push_str(ch);
+                }
+
+                this.recent_events.push(format!(
+                    "key={} key_char={:?} held={} mods={:?} native={:?}",
+                    key,
+                    key_char,
+                    event.is_held,
+                    event.keystroke.modifiers,
+                    event.keystroke.native_key_code
+                ));
+                if this.recent_events.len() > 40 {
+                    this.recent_events.remove(0);
+                }
+
+                cx.notify();
+            }))
+            .child(div().text_size(px(22.0)).child("Keyboard + IME Validation"))
+            .child(div().text_size(px(12.0)).text_color(rgb(0xa6adc8)).child(
+                "Tap the input area, then test hardware keys and IME composition (CJK/emoji).",
+            ))
+            .child(
+                div()
+                    .id("tier1-keyboard-ime-input")
+                    .w_full()
+                    .min_h(px(120.0))
+                    .p(px(12.0))
+                    .bg(rgb(0x313244))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(rgb(border_color))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_this, _, window, cx| {
+                            cx.focus_self(window);
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().text_size(px(15.0)).child(display_text)),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(0xf9e2af))
+                    .child(if focused {
+                        "Focus: active"
+                    } else {
+                        "Focus: inactive (tap input area)"
+                    }),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x181825))
+                    .child(events),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_keyboard_ime_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSKeyboardIMEValidation", |_window, cx| {
+        let focus_handle = cx.focus_handle();
+        IosTier1KeyboardImeDemo {
+            focus_handle,
+            text: String::new(),
+            recent_events: Vec::new(),
+        }
+    });
+}
+
+struct IosTier1FilePickerDemo {
+    status: String,
+    picked_paths: Vec<String>,
+    save_path: Option<String>,
+}
+
+impl IosTier1FilePickerDemo {
+    fn open_files(&mut self, cx: &mut Context<Self>) {
+        self.status = "Opening file picker (files)...".to_string();
+        cx.notify();
+
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Open Files".into()),
+        });
+
+        cx.spawn(async move |this, cx| {
+            let result = rx.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(Some(paths))) => {
+                        this.picked_paths = paths
+                            .into_iter()
+                            .map(|path| path.display().to_string())
+                            .collect();
+                        this.status = format!("Selected {} file(s)", this.picked_paths.len());
+                    }
+                    Ok(Ok(None)) => {
+                        this.status = "File picker cancelled".to_string();
+                    }
+                    Ok(Err(err)) => {
+                        this.status = format!("File picker failed: {err}");
+                    }
+                    Err(err) => {
+                        this.status = format!("File picker channel failed: {err}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn open_directories(&mut self, cx: &mut Context<Self>) {
+        self.status = "Opening file picker (directories)...".to_string();
+        cx.notify();
+
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: true,
+            prompt: Some("Open Folders".into()),
+        });
+
+        cx.spawn(async move |this, cx| {
+            let result = rx.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(Some(paths))) => {
+                        this.picked_paths = paths
+                            .into_iter()
+                            .map(|path| path.display().to_string())
+                            .collect();
+                        this.status = format!("Selected {} folder(s)", this.picked_paths.len());
+                    }
+                    Ok(Ok(None)) => {
+                        this.status = "Directory picker cancelled".to_string();
+                    }
+                    Ok(Err(err)) => {
+                        this.status = format!("Directory picker failed: {err}");
+                    }
+                    Err(err) => {
+                        this.status = format!("Directory picker channel failed: {err}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn save_file(&mut self, cx: &mut Context<Self>) {
+        self.status = "Opening save picker...".to_string();
+        cx.notify();
+
+        let default_dir = std::env::temp_dir();
+        let rx = cx.prompt_for_new_path(&default_dir, Some("gpui-tier1-save.txt"));
+        cx.spawn(async move |this, cx| {
+            let result = rx.await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(Ok(Some(path))) => {
+                        let path = path.display().to_string();
+                        this.save_path = Some(path.clone());
+                        this.status = "Save destination selected".to_string();
+                        this.picked_paths = vec![path];
+                    }
+                    Ok(Ok(None)) => {
+                        this.status = "Save picker cancelled".to_string();
+                    }
+                    Ok(Err(err)) => {
+                        this.status = format!("Save picker failed: {err}");
+                    }
+                    Err(err) => {
+                        this.status = format!("Save picker channel failed: {err}");
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+impl Render for IosTier1FilePickerDemo {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let safe = window.safe_area_insets();
+
+        let mut picked = div().flex().flex_col().gap(px(4.0));
+        if self.picked_paths.is_empty() {
+            picked = picked.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child("No selected paths yet"),
+            );
+        } else {
+            for path in self.picked_paths.iter().take(8) {
+                picked = picked.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xa6adc8))
+                        .child(path.clone()),
+                );
+            }
+        }
+
+        div()
+            .id("tier1-file-picker-root")
+            .size_full()
+            .pt(safe.top + px(16.0))
+            .pb(safe.bottom + px(16.0))
+            .pl(safe.left + px(16.0))
+            .pr(safe.right + px(16.0))
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(div().text_size(px(22.0)).child("File Open/Save Validation"))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child("Uses real UIDocumentPicker open/export flows."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(10.0))
+                    .child(
+                        native_button("tier1-pick-files", "Open Files")
+                            .on_click(cx.listener(|this, _event, _window, cx| this.open_files(cx))),
+                    )
+                    .child(
+                        native_button("tier1-pick-folders", "Open Folders").on_click(
+                            cx.listener(|this, _event, _window, cx| this.open_directories(cx)),
+                        ),
+                    )
+                    .child(
+                        native_button("tier1-save-file", "Save As")
+                            .on_click(cx.listener(|this, _event, _window, cx| this.save_file(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(0xf9e2af))
+                    .child(format!("Status: {}", self.status)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x181825))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xcdd6f4))
+                            .child("Selected paths"),
+                    )
+                    .child(picked),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child(format!(
+                        "Last save path: {}",
+                        self.save_path.as_deref().unwrap_or("<none>")
+                    )),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_file_picker_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSFilePickerValidation", |_window, _cx| {
+        IosTier1FilePickerDemo {
+            status: "Ready".to_string(),
+            picked_paths: Vec::new(),
+            save_path: None,
+        }
+    });
+}
+
+struct IosTier1ClipboardDemo {
+    status: String,
+    last_text: String,
+    last_metadata: String,
+    last_image_size: usize,
+}
+
+impl IosTier1ClipboardDemo {
+    fn copy_text_with_metadata(&mut self, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string_with_metadata(
+            "Tier1 clipboard text".to_string(),
+            "{\"source\":\"ios-demo\",\"kind\":\"text+metadata\"}".to_string(),
+        ));
+        self.status = "Wrote text + metadata to clipboard".to_string();
+        cx.notify();
+    }
+
+    fn copy_image(&mut self, cx: &mut Context<Self>) {
+        let image = Image::from_bytes(ImageFormat::Png, IOS_CLIPBOARD_TEST_PNG.to_vec());
+        cx.write_to_clipboard(ClipboardItem::new_image(&image));
+        self.status = format!(
+            "Wrote PNG image to clipboard ({} bytes)",
+            image.bytes().len()
+        );
+        cx.notify();
+    }
+
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            self.status = "Clipboard was empty".to_string();
+            self.last_text = "<none>".to_string();
+            self.last_metadata = "<none>".to_string();
+            self.last_image_size = 0;
+            cx.notify();
+            return;
+        };
+
+        self.last_text = item.text().unwrap_or_else(|| "<none>".to_string());
+        self.last_metadata = item
+            .metadata()
+            .cloned()
+            .unwrap_or_else(|| "<none>".to_string());
+        self.last_image_size = item
+            .entries()
+            .iter()
+            .find_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(image.bytes().len()),
+                _ => None,
+            })
+            .unwrap_or(0);
+        let count = item.entries().len();
+        self.status = format!(
+            "Read {} clipboard {}",
+            count,
+            if count == 1 { "entry" } else { "entries" }
+        );
+        cx.notify();
+    }
+}
+
+impl Render for IosTier1ClipboardDemo {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let safe = window.safe_area_insets();
+
+        div()
+            .id("tier1-clipboard-root")
+            .size_full()
+            .pt(safe.top + px(16.0))
+            .pb(safe.bottom + px(16.0))
+            .pl(safe.left + px(16.0))
+            .pr(safe.right + px(16.0))
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(div().text_size(px(22.0)).child("Clipboard Validation"))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child("Verifies text+metadata and image clipboard read/write paths."),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(px(10.0))
+                    .child(
+                        native_button("tier1-copy-text-meta", "Copy Text+Meta").on_click(
+                            cx.listener(|this, _event, _window, cx| {
+                                this.copy_text_with_metadata(cx)
+                            }),
+                        ),
+                    )
+                    .child(
+                        native_button("tier1-copy-image", "Copy Image")
+                            .on_click(cx.listener(|this, _event, _window, cx| this.copy_image(cx))),
+                    )
+                    .child(
+                        native_button("tier1-paste", "Paste")
+                            .on_click(cx.listener(|this, _event, _window, cx| this.paste(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(0xf9e2af))
+                    .child(format!("Status: {}", self.status)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x181825))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xa6adc8))
+                            .child(format!("Text: {}", self.last_text)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xa6adc8))
+                            .child(format!("Metadata: {}", self.last_metadata)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xa6adc8))
+                            .child(format!("Image bytes: {}", self.last_image_size)),
+                    ),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_clipboard_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSClipboardValidation", |_window, _cx| {
+        IosTier1ClipboardDemo {
+            status: "Ready".to_string(),
+            last_text: "<none>".to_string(),
+            last_metadata: "<none>".to_string(),
+            last_image_size: 0,
+        }
+    });
+}
+
+struct IosTier1FileDropDemo {
+    status: String,
+    hover_count: usize,
+    dropped_paths: Vec<String>,
+}
+
+impl Render for IosTier1FileDropDemo {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let safe = window.safe_area_insets();
+        let border_color = if self.hover_count > 0 {
+            0xa6e3a1
+        } else {
+            0x585b70
+        };
+
+        let mut dropped = div().flex().flex_col().gap(px(4.0));
+        if self.dropped_paths.is_empty() {
+            dropped = dropped.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child("No dropped paths yet"),
+            );
+        } else {
+            for path in self.dropped_paths.iter().take(8) {
+                dropped = dropped.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(rgb(0xa6adc8))
+                        .child(path.clone()),
+                );
+            }
+        }
+
+        div()
+            .id("tier1-file-drop-root")
+            .size_full()
+            .pt(safe.top + px(16.0))
+            .pb(safe.bottom + px(16.0))
+            .pl(safe.left + px(16.0))
+            .pr(safe.right + px(16.0))
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(
+                div()
+                    .text_size(px(22.0))
+                    .child("External File Drop Validation"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(rgb(0xa6adc8))
+                    .child("Drag files from Files app into the drop zone."),
+            )
+            .child(
+                div()
+                    .id("tier1-drop-zone")
+                    .w_full()
+                    .h(px(180.0))
+                    .p(px(12.0))
+                    .bg(rgb(0x313244))
+                    .rounded(px(10.0))
+                    .border_2()
+                    .border_color(rgb(border_color))
+                    .can_drop(|value, _, _| value.is::<ExternalPaths>())
+                    .on_drag_move(cx.listener(
+                        |this, event: &gpui::DragMoveEvent<ExternalPaths>, _window, cx| {
+                            let paths = event.drag(cx).paths();
+                            this.hover_count = paths.len();
+                            this.status = format!("Dragging {} file(s)...", this.hover_count);
+                            cx.notify();
+                        },
+                    ))
+                    .on_drop(cx.listener(|this, paths: &ExternalPaths, _window, cx| {
+                        this.hover_count = 0;
+                        this.dropped_paths = paths
+                            .paths()
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect();
+                        this.status = format!("Dropped {} file(s)", this.dropped_paths.len());
+                        cx.notify();
+                    }))
+                    .child(div().text_size(px(14.0)).child("Drop zone")),
+            )
+            .child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(rgb(0xf9e2af))
+                    .child(format!("Status: {}", self.status)),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .p(px(10.0))
+                    .rounded(px(8.0))
+                    .bg(rgb(0x181825))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(rgb(0xcdd6f4))
+                            .child("Dropped paths"),
+                    )
+                    .child(dropped),
+            )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn gpui_ios_run_file_drop_demo() {
+    run_ios_app("dev.glasshq.GPUIiOSFileDropValidation", |_window, _cx| {
+        IosTier1FileDropDemo {
+            status: "Waiting for drag".to_string(),
+            hover_count: 0,
+            dropped_paths: Vec::new(),
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Demo dispatcher — called from ObjC main.m with demo name as C string
 // ---------------------------------------------------------------------------
 
@@ -2989,6 +3772,10 @@ const AVAILABLE_DEMOS: &[&str] = &[
     "native_controls",
     "safe_area",
     "layout_showcase",
+    "keyboard_ime",
+    "file_picker",
+    "clipboard",
+    "file_drop",
 ];
 
 #[unsafe(no_mangle)]
@@ -3016,6 +3803,10 @@ pub unsafe extern "C" fn gpui_ios_run_demo(name: *const std::ffi::c_char) {
         "native_controls" => gpui_ios_run_native_controls_demo(),
         "safe_area" => gpui_ios_run_safe_area_demo(),
         "layout_showcase" => gpui_ios_run_layout_showcase(),
+        "keyboard_ime" => gpui_ios_run_keyboard_ime_demo(),
+        "file_picker" => gpui_ios_run_file_picker_demo(),
+        "clipboard" => gpui_ios_run_clipboard_demo(),
+        "file_drop" => gpui_ios_run_file_drop_demo(),
         unknown => {
             // Init logging so the error is visible
             init_logging("dev.glasshq.GPUIiOS");
