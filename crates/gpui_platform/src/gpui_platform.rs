@@ -18,6 +18,14 @@ pub fn headless() -> gpui::Application {
     gpui::Application::with_platform(current_platform(true))
 }
 
+/// Initializes panic hooks and logging for the web platform.
+/// Call this before running the application in a wasm_bindgen entrypoint.
+#[cfg(target_family = "wasm")]
+pub fn web_init() {
+    console_error_panic_hook::set_once();
+    gpui_web::init_logging();
+}
+
 /// Returns the default [`Platform`] for the current OS.
 pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     #[cfg(target_os = "macos")]
@@ -41,6 +49,12 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
         gpui_linux::current_platform(headless)
+    }
+
+    #[cfg(target_family = "wasm")]
+    {
+        let _ = headless;
+        Rc::new(gpui_web::WebPlatform::new())
     }
 }
 
