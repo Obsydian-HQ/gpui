@@ -56,6 +56,7 @@ etagere = "0.2"
 futures-concurrency.workspace = true
 futures.workspace = true
 gpui_macros.workspace = true
+http_client.workspace = true
 image.workspace = true
 inventory.workspace = true
 itertools.workspace = true
@@ -106,9 +107,6 @@ semver.workspace = true
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = { version = "0.3.4", features = ["wasm_js"] }
 uuid = { workspace = true, features = ["js"] }
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-http_client.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 block = "0.1"
