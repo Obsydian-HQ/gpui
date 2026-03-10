@@ -1,5 +1,6 @@
+#![cfg(target_os = "ios")]
 use gpui::{
-    App, Application, ClipboardEntry, ClipboardItem, Context, ExternalPaths, FocusHandle,
+    App, ClipboardEntry, ClipboardItem, Context, ExternalPaths, FocusHandle,
     Focusable, Image, ImageFormat, KeyDownEvent, MouseButton, NativeImageSymbolWeight,
     PathPromptOptions, PinchEvent, RotationEvent, Window, WindowAppearance, WindowOptions, div,
     native_button, native_checkbox, native_image_view, native_progress_bar, native_slider,
@@ -244,7 +245,7 @@ fn run_ios_app<V: Render + 'static>(
 
     log::info!("[GPUI-iOS] launching app ({subsystem})");
 
-    let app = Application::new();
+    let app = gpui_platform::application();
     let keepalive = app.clone();
     let _ = Box::leak(Box::new(keepalive));
 

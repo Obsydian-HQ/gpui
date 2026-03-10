@@ -1,5 +1,5 @@
 use gpui::{
-    actions, App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
+    actions, App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
     MenuItem, MouseButton, NativeMenuItem, NativeVisualEffectBlendingMode,
     NativeVisualEffectMaterial, SharedString, Subscription, TitlebarOptions, WeakEntity, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_image_view, native_sidebar,
@@ -786,7 +786,7 @@ impl Focusable for SidebarTabPanel {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("cmd-t", NewTab, None),
             KeyBinding::new("cmd-w", CloseTab, None),

@@ -1,0 +1,40 @@
+[package]
+name = "gpui_metal"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "Apache-2.0"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/gpui_metal.rs"
+
+[features]
+default = []
+runtime_shaders = []
+
+[build-dependencies]
+cbindgen = "0.27"
+
+[dependencies]
+gpui.workspace = true
+anyhow.workspace = true
+block = "0.1"
+collections.workspace = true
+derive_more.workspace = true
+etagere = "0.2"
+foreign-types = "0.5"
+image.workspace = true
+log.workspace = true
+metal.workspace = true
+objc.workspace = true
+parking_lot.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa.workspace = true
+core-foundation.workspace = true
+core-graphics = "0.24"
+core-video.workspace = true
+media.workspace = true

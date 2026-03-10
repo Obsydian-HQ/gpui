@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeStackDistribution, NativeStackOrientation, Window,
+    App, Bounds, Context, NativeStackDistribution, NativeStackOrientation, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_button, native_stack_view,
     prelude::*, px, rgb, size,
 };
@@ -159,7 +159,7 @@ impl Render for StackViewExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(550.), px(500.)), cx);
         cx.open_window(
             WindowOptions {

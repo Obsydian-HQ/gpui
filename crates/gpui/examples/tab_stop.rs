@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, Div, ElementId, FocusHandle, KeyBinding, SharedString,
+    App, Bounds, Context, Div, ElementId, FocusHandle, KeyBinding, SharedString,
     Stateful, Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
 };
 
@@ -178,7 +178,7 @@ impl Render for Example {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("tab", Tab, None),
             KeyBinding::new("shift-tab", TabPrev, None),

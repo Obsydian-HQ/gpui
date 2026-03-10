@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, Half, Hsla, Pixels, Point, Window, WindowBounds,
+    App, Bounds, Context, Half, Hsla, Pixels, Point, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size,
 };
 
@@ -121,7 +121,7 @@ impl Render for DragDrop {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(800.), px(600.0)), cx);
         cx.open_window(
             WindowOptions {

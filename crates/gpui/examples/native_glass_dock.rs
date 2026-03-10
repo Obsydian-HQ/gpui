@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
     MenuItem, MenuItemSelectEvent, NativeButtonStyle, NativeButtonTint, NativeMenuItem,
     NativeOutlineHighlight, NativeOutlineNode, NativeSegmentedStyle, OutlineRowSelectEvent,
     SegmentSelectEvent, TextChangeEvent, TextSubmitEvent, Window, WindowAppearance, WindowBounds,
@@ -977,7 +977,7 @@ impl Focusable for GlassDock {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("cmd-alt-s", ToggleSidebar, None),
             KeyBinding::new("cmd-shift-a", StageAll, None),

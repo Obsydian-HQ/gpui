@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Context, Corner, Div, Hsla, Stateful, Window, WindowOptions, anchored,
+    App, Context, Corner, Div, Hsla, Stateful, Window, WindowOptions, anchored,
     deferred, div, prelude::*, px,
 };
 
@@ -161,7 +161,7 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.open_window(WindowOptions::default(), |_, cx| {
             cx.new(|_| HelloWorld {
                 open: false,

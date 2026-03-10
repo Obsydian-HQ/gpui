@@ -1,0 +1,114 @@
+mod alert;
+mod button;
+mod checkbox;
+mod collection;
+mod combo_box;
+mod glass_effect_view;
+mod image_view;
+mod menu;
+mod outline;
+mod panel;
+mod popover;
+mod popup;
+mod progress;
+mod search_field;
+mod segmented;
+mod sidebar;
+mod slider;
+mod stack_view;
+mod stepper;
+mod switch;
+mod tab_view;
+mod table;
+mod text_field;
+mod tracking_area;
+mod visual_effect_view;
+
+pub(crate) use alert::*;
+pub(crate) use button::*;
+pub(crate) use checkbox::*;
+pub(crate) use collection::*;
+pub(crate) use combo_box::*;
+pub(crate) use glass_effect_view::*;
+pub(crate) use image_view::*;
+pub(crate) use menu::*;
+pub(crate) use outline::*;
+pub(crate) use panel::*;
+pub(crate) use popover::*;
+pub(crate) use popup::*;
+pub(crate) use progress::*;
+pub(crate) use search_field::*;
+pub(crate) use segmented::*;
+pub(crate) use sidebar::*;
+pub(crate) use slider::*;
+pub(crate) use stack_view::*;
+pub(crate) use stepper::*;
+pub(crate) use switch::*;
+pub(crate) use tab_view::*;
+pub(crate) use table::*;
+pub(crate) use text_field::*;
+pub(crate) use tracking_area::*;
+pub(crate) use visual_effect_view::*;
+
+use cocoa::{
+    base::id,
+    foundation::{NSPoint, NSRect, NSSize},
+};
+use gpui::{Bounds, Pixels};
+use objc::{msg_send, sel, sel_impl};
+
+pub(super) const CALLBACK_IVAR: &str = "callbackPtr";
+
+// =============================================================================
+// Shared helpers
+// =============================================================================
+
+pub(crate) fn attach_and_position(
+    parent: *mut std::ffi::c_void,
+    view: id,
+    bounds: Bounds<Pixels>,
+    _scale: f32,
+) {
+    unsafe {
+        let parent_view = parent as id;
+        let x = f32::from(bounds.origin.x) as f64;
+        let y = f32::from(bounds.origin.y) as f64;
+        let w = f32::from(bounds.size.width) as f64;
+        let h = f32::from(bounds.size.height) as f64;
+
+        let is_flipped: bool = msg_send![parent_view, isFlipped];
+        let final_y = if is_flipped {
+            y
+        } else {
+            let parent_frame: NSRect = msg_send![parent_view, frame];
+            parent_frame.size.height - y - h
+        };
+
+        let frame = NSRect::new(NSPoint::new(x, final_y), NSSize::new(w, h));
+        let _: () = msg_send![view, setFrame: frame];
+
+        let superview: id = msg_send![view, superview];
+        if superview != parent_view {
+            let _: () = msg_send![parent_view, addSubview: view];
+        }
+    }
+}
+
+pub(crate) fn remove_from_parent(view: id) {
+    unsafe {
+        let _: () = msg_send![view, removeFromSuperview];
+    }
+}
+
+pub(crate) unsafe fn set_native_control_enabled(control: id, enabled: bool) {
+    unsafe {
+        let _: () = msg_send![control, setEnabled: enabled as i8];
+    }
+}
+
+pub(crate) unsafe fn set_native_view_tooltip(view: id, tooltip: &str) {
+    unsafe {
+        use crate::ns_string;
+        let _: () = msg_send![view, setToolTip: ns_string(tooltip)];
+    }
+}

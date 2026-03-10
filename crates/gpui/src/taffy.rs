@@ -6,7 +6,7 @@ use collections::{FxHashMap, FxHashSet};
 use stacksafe::{StackSafe, stacksafe};
 use std::{fmt::Debug, ops::Range};
 use taffy::{
-    TaffyTree, TraversePartialTree as _,
+    TaffyTree,
     geometry::{Point as TaffyPoint, Rect as TaffyRect, Size as TaffySize},
     prelude::min_content,
     style::AvailableSpace as TaffyAvailableSpace,
@@ -101,53 +101,6 @@ impl TaffyLayoutEngine {
             )
             .expect(EXPECT_MESSAGE)
             .into()
-    }
-
-    // Used to understand performance
-    #[allow(dead_code)]
-    fn count_all_children(&self, parent: LayoutId) -> anyhow::Result<u32> {
-        let mut count = 0;
-
-        for child in self.taffy.children(parent.0)? {
-            // Count this child.
-            count += 1;
-
-            // Count all of this child's children.
-            count += self.count_all_children(LayoutId(child))?
-        }
-
-        Ok(count)
-    }
-
-    // Used to understand performance
-    #[allow(dead_code)]
-    fn max_depth(&self, depth: u32, parent: LayoutId) -> anyhow::Result<u32> {
-        println!(
-            "{parent:?} at depth {depth} has {} children",
-            self.taffy.child_count(parent.0)
-        );
-
-        let mut max_child_depth = 0;
-
-        for child in self.taffy.children(parent.0)? {
-            max_child_depth = std::cmp::max(max_child_depth, self.max_depth(0, LayoutId(child))?);
-        }
-
-        Ok(depth + 1 + max_child_depth)
-    }
-
-    // Used to understand performance
-    #[allow(dead_code)]
-    fn get_edges(&self, parent: LayoutId) -> anyhow::Result<Vec<(LayoutId, LayoutId)>> {
-        let mut edges = Vec::new();
-
-        for child in self.taffy.children(parent.0)? {
-            edges.push((parent, LayoutId(child)));
-
-            edges.extend(self.get_edges(LayoutId(child))?);
-        }
-
-        Ok(edges)
     }
 
     #[stacksafe]

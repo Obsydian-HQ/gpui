@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeTextFieldStyle, Window, WindowAppearance,
+    App, Bounds, Context, NativeTextFieldStyle, Window, WindowAppearance,
     WindowBounds, WindowOptions, div, native_button, native_text_field, prelude::*, px, rgb, size,
 };
 
@@ -123,7 +123,7 @@ impl Render for TextFieldExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(450.), px(400.)), cx);
         cx.open_window(
             WindowOptions {

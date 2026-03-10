@@ -1,14 +1,14 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{NativeControlState, SidebarViewConfig};
 use crate::{
     AbsoluteLength, AnyView, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
-    Hsla, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Render, SharedString, Style,
-    StyleRefinement, Styled, Window, px,
+    HostedContentConfig, Hsla, InspectorElementId, IntoElement, LayoutId, Length, Pixels,
+    Render, SharedString, Style, StyleRefinement, Styled, Window, px,
 };
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_os = "macos")]
 use crate::SurfaceId;
 
 use super::native_element_helpers::schedule_native_callback;
@@ -226,57 +226,49 @@ impl NativeSidebar {
     }
 }
 
-struct NativeSidebarState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_items: Vec<SharedString>,
-    current_selected: Option<usize>,
-    current_sidebar_width: f64,
-    current_min_sidebar_width: f64,
-    current_max_sidebar_width: f64,
-    current_collapsed: bool,
-    #[allow(dead_code)]
-    embed_in_sidebar: bool,
-    attached: bool,
-    current_header_title: Option<SharedString>,
-    current_header_button_symbols: Vec<SharedString>,
-    current_sidebar_background_color: Option<(f64, f64, f64, f64)>,
-    /// Surface ID for the dual-surface sidebar mode.
+/// Extra state tracked alongside the NativeControlState for sidebar-specific
+/// bookkeeping (surface ID for dual-surface mode and previous config values
+/// used to avoid redundant AppKit updates during paint).
+struct SidebarExtraState {
+    native: NativeControlState,
     #[cfg(target_os = "macos")]
     surface_id: Option<SurfaceId>,
-    /// Surface ID for the dual-surface sidebar mode.
-    #[cfg(target_os = "ios")]
-    surface_id: Option<SurfaceId>,
+    // Tracked config values for state diffing — only call into the platform
+    // layer when these actually change. Unconditional updates trigger heavy
+    // AppKit layout work during paint that causes reentrancy and hangs.
+    prev_items: Vec<SharedString>,
+    prev_selected: Option<usize>,
+    prev_sidebar_width: f64,
+    prev_min_width: f64,
+    prev_max_width: f64,
+    prev_collapsed: bool,
+    prev_embed_in_host: bool,
+    prev_header_title: Option<SharedString>,
+    prev_header_button_symbols: Vec<SharedString>,
+    prev_background_color: Option<(f64, f64, f64, f64)>,
 }
 
-impl Drop for NativeSidebarState {
-    fn drop(&mut self) {
-        if self.attached {
+impl Default for SidebarExtraState {
+    fn default() -> Self {
+        Self {
+            native: NativeControlState::default(),
             #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_sidebar_target,
-                    native_controls::release_native_sidebar_view,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_sidebar_target,
-                    native_controls::release_native_sidebar_view,
-                );
-            }
+            surface_id: None,
+            prev_items: Vec::new(),
+            prev_selected: None,
+            prev_sidebar_width: 0.0,
+            prev_min_width: 0.0,
+            prev_max_width: 0.0,
+            prev_collapsed: false,
+            prev_embed_in_host: false,
+            prev_header_title: None,
+            prev_header_button_symbols: Vec::new(),
+            prev_background_color: None,
         }
     }
 }
 
-unsafe impl Send for NativeSidebarState {}
+unsafe impl Send for SidebarExtraState {}
 
 impl IntoElement for NativeSidebar {
     type Element = Self;
@@ -309,9 +301,6 @@ impl Element for NativeSidebar {
         style.refine(&self.style);
 
         if self.embed_in_sidebar || self.sidebar_view.is_some() {
-            // In embed or dual-surface mode the native_view is reparented into a
-            // sidebar pane, so this element is purely a side-effect — it should
-            // not consume any layout space; the sibling content div fills the viewport.
             style.size.width =
                 Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(0.0))));
             style.size.height =
@@ -353,472 +342,165 @@ impl Element for NativeSidebar {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let mut on_select = self.on_select.take();
-            let sidebar_view = self.sidebar_view.take();
-            let has_sidebar_view = sidebar_view.is_some();
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let sidebar_width = self.sidebar_width.max(120.0);
-            let min_sidebar_width = self.min_sidebar_width.max(120.0);
-            let max_sidebar_width = self.max_sidebar_width.max(min_sidebar_width);
-            let collapsed = self.collapsed;
-            let embed_in_sidebar = self.embed_in_sidebar;
-            let manage_window_chrome = self.manage_window_chrome;
-            let manage_toolbar = self.manage_toolbar;
-            let header_title = self.header_title.take();
-            let header_buttons = std::mem::take(&mut self.header_buttons);
-            let on_header_click = self.on_header_click.take();
-            let header_button_symbols: Vec<SharedString> =
-                header_buttons.iter().map(|b| b.symbol.clone()).collect();
-            let sidebar_background_color = self.sidebar_background_color.map(|color| {
-                let rgba = color.to_rgb();
-                (rgba.r as f64, rgba.g as f64, rgba.b as f64, rgba.a as f64)
-            });
-
-            // When sidebar_view is set, we create the sidebar container in
-            // "embed" mode (plain NSView + VFX background, no table) but
-            // configure the main GPUI view in the detail pane (not sidebar).
-            let effective_embed_for_create = embed_in_sidebar || has_sidebar_view;
-            let effective_embed_for_configure = embed_in_sidebar && !has_sidebar_view;
-            let skip_source_list = embed_in_sidebar || has_sidebar_view;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeSidebarState, _>(
-                id,
-                |prev_state, window| {
-                    let mut state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::configure_native_sidebar_window(
-                                state.control_ptr as cocoa::base::id,
-                                native_view as cocoa::base::id,
-                                effective_embed_for_configure,
-                                manage_window_chrome,
-                                manage_toolbar,
-                            );
-                        }
-
-                        let min_max_changed = state.current_min_sidebar_width != min_sidebar_width
-                            || state.current_max_sidebar_width != max_sidebar_width;
-                        let width_changed = state.current_sidebar_width != sidebar_width;
-
-                        if width_changed || min_max_changed {
-                            if !collapsed {
-                                unsafe {
-                                    native_controls::set_native_sidebar_width(
-                                        state.control_ptr as cocoa::base::id,
-                                        sidebar_width,
-                                        min_sidebar_width,
-                                        max_sidebar_width,
-                                    );
-                                }
-                            }
-                            state.current_sidebar_width = sidebar_width;
-                            state.current_min_sidebar_width = min_sidebar_width;
-                            state.current_max_sidebar_width = max_sidebar_width;
-                        }
-
-                        if state.current_collapsed != collapsed {
-                            unsafe {
-                                native_controls::set_native_sidebar_collapsed(
-                                    state.control_ptr as cocoa::base::id,
-                                    collapsed,
-                                    sidebar_width,
-                                    min_sidebar_width,
-                                    max_sidebar_width,
-                                );
-                            }
-                            state.current_collapsed = collapsed;
-                        }
-
-                        // Skip the source-list items in embed or dual-surface mode
-                        if !skip_source_list {
-                            let needs_rebind = state.current_items != items
-                                || state.current_selected != selected_index
-                                || on_select.is_some()
-                                || min_max_changed;
-
-                            if needs_rebind {
-                                unsafe {
-                                    native_controls::release_native_sidebar_target(
-                                        state.target_ptr,
-                                    );
-                                }
-
-                                let callback = on_select.take().map(|handler| {
-                                    let nfc = next_frame_callbacks.clone();
-                                    let inv = invalidator.clone();
-                                    let handler = Rc::new(handler);
-                                    schedule_native_callback(
-                                        handler,
-                                        |(index, title): (usize, String)| SidebarSelectEvent {
-                                            index,
-                                            title: SharedString::from(title),
-                                        },
-                                        nfc,
-                                        inv,
-                                    )
-                                });
-
-                                let item_strs: Vec<&str> =
-                                    items.iter().map(|item| item.as_ref()).collect();
-                                unsafe {
-                                    state.target_ptr = native_controls::set_native_sidebar_items(
-                                        state.control_ptr as cocoa::base::id,
-                                        &item_strs,
-                                        selected_index,
-                                        min_sidebar_width,
-                                        max_sidebar_width,
-                                        callback,
-                                    );
-                                }
-                                state.current_items = items.clone();
-                                state.current_selected = selected_index;
-                            }
-                        }
-
-                        // Update the surface's root view on subsequent paints
-                        if let Some(view) = sidebar_view {
-                            if let Some(surface_id) = state.surface_id {
-                                window.update_surface_root_view(surface_id, view);
-                            }
-                        }
-
-                        state
-                    } else {
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_sidebar_view(
-                                sidebar_width,
-                                min_sidebar_width,
-                                max_sidebar_width,
-                                effective_embed_for_create,
-                            );
-
-                            let target = if !skip_source_list {
-                                let callback = on_select.take().map(|handler| {
-                                    let nfc = next_frame_callbacks.clone();
-                                    let inv = invalidator.clone();
-                                    let handler = Rc::new(handler);
-                                    schedule_native_callback(
-                                        handler,
-                                        |(index, title): (usize, String)| SidebarSelectEvent {
-                                            index,
-                                            title: SharedString::from(title),
-                                        },
-                                        nfc,
-                                        inv,
-                                    )
-                                });
-
-                                let item_strs: Vec<&str> =
-                                    items.iter().map(|item| item.as_ref()).collect();
-                                native_controls::set_native_sidebar_items(
-                                    control,
-                                    &item_strs,
-                                    selected_index,
-                                    min_sidebar_width,
-                                    max_sidebar_width,
-                                    callback,
-                                )
-                            } else {
-                                std::ptr::null_mut()
-                            };
-
-                            if collapsed {
-                                native_controls::set_native_sidebar_collapsed(
-                                    control,
-                                    true,
-                                    sidebar_width,
-                                    min_sidebar_width,
-                                    max_sidebar_width,
-                                );
-                            }
-
-                            native_controls::configure_native_sidebar_window(
-                                control,
-                                native_view as cocoa::base::id,
-                                effective_embed_for_configure,
-                                manage_window_chrome,
-                                manage_toolbar,
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        // Register a surface for the sidebar view if provided
-                        let surface_id = if let Some(view) = sidebar_view {
-                            let handle = window.register_surface(view);
-                            // Embed the surface's NSView in the sidebar container
-                            unsafe {
-                                native_controls::embed_surface_view_in_sidebar(
-                                    control_ptr as cocoa::base::id,
-                                    handle.native_view_ptr as cocoa::base::id,
-                                );
-                            }
-                            Some(handle.id)
-                        } else {
-                            None
-                        };
-
-                        // Apply initial background color if provided
-                        if let Some((r, g, b, a)) = sidebar_background_color {
-                            unsafe {
-                                native_controls::set_native_sidebar_background_color(
-                                    control_ptr as cocoa::base::id,
-                                    r, g, b, a,
-                                );
-                            }
-                        }
-
-                        NativeSidebarState {
-                            control_ptr,
-                            target_ptr,
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_sidebar_width: sidebar_width,
-                            current_min_sidebar_width: min_sidebar_width,
-                            current_max_sidebar_width: max_sidebar_width,
-                            current_collapsed: collapsed,
-                            embed_in_sidebar: effective_embed_for_create,
-                            attached: true,
-                            current_header_title: None,
-                            current_header_button_symbols: Vec::new(),
-                            current_sidebar_background_color: sidebar_background_color,
-                            surface_id,
-                        }
-                    };
-
-                    // Update header click callback (every paint)
-                    unsafe {
-                        let callback = on_header_click.map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            let button_ids: Vec<SharedString> =
-                                header_buttons.iter().map(|b| b.id.clone()).collect();
-                            schedule_native_callback(
-                                handler,
-                                move |index: usize| SidebarHeaderClickEvent {
-                                    index,
-                                    id: button_ids
-                                        .get(index)
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                },
-                                nfc,
-                                inv,
-                            )
-                        });
-                        native_controls::update_native_sidebar_header_callback(
-                            state.control_ptr as cocoa::base::id,
-                            callback,
-                        );
-                    }
-
-                    // Rebuild header structure when title or buttons change
-                    if state.current_header_title != header_title
-                        || state.current_header_button_symbols != header_button_symbols
-                    {
-                        let symbol_strs: Vec<&str> =
-                            header_button_symbols.iter().map(|s| s.as_ref()).collect();
-                        unsafe {
-                            native_controls::set_native_sidebar_header(
-                                state.control_ptr as cocoa::base::id,
-                                header_title.as_deref().map(|v| &**v),
-                                &symbol_strs,
-                            );
-                        }
-                        state.current_header_title = header_title;
-                        state.current_header_button_symbols = header_button_symbols;
-                    }
-
-                    if state.current_sidebar_background_color != sidebar_background_color {
-                        unsafe {
-                            match sidebar_background_color {
-                                Some((r, g, b, a)) => {
-                                    native_controls::set_native_sidebar_background_color(
-                                        state.control_ptr as cocoa::base::id,
-                                        r, g, b, a,
-                                    );
-                                }
-                                None => {
-                                    native_controls::clear_native_sidebar_background_color(
-                                        state.control_ptr as cocoa::base::id,
-                                    );
-                                }
-                            }
-                        }
-                        state.current_sidebar_background_color = sidebar_background_color;
-                    }
-
-                    ((), Some(state))
-                },
-            );
-
-            // After the native_view has been reparented into the sidebar pane,
-            // GPUI's viewport_size may be stale (still reflecting the full
-            // window).  Re-read content_size (which now returns the native_view's
-            // frame) and schedule a redraw so the next layout uses the correct
-            // dimensions.
-            if embed_in_sidebar || has_sidebar_view {
-                let new_size = window.platform_window.content_size();
-                if window.viewport_size != new_size {
-                    window.viewport_size = new_size;
-                    window.invalidator.set_dirty(true);
-                }
-            }
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_select = self.on_select.take();
+        let sidebar_view = self.sidebar_view.take();
+        let has_sidebar_view = sidebar_view.is_some();
+        let items = self.items.clone();
+        let selected_index = self.selected_index;
+        let sidebar_width = self.sidebar_width.max(120.0);
+        let min_sidebar_width = self.min_sidebar_width.max(120.0);
+        let max_sidebar_width = self.max_sidebar_width.max(min_sidebar_width);
+        let collapsed = self.collapsed;
+        let embed_in_sidebar = self.embed_in_sidebar;
+        let manage_window_chrome = self.manage_window_chrome;
+        let manage_toolbar = self.manage_toolbar;
+        let header_title = self.header_title.take();
+        let header_buttons = std::mem::take(&mut self.header_buttons);
+        let on_header_click = self.on_header_click.take();
+        let header_button_symbols: Vec<SharedString> =
+            header_buttons.iter().map(|b| b.symbol.clone()).collect();
+        let sidebar_background_color = self.sidebar_background_color.map(|color| {
+            let rgba = color.to_rgb();
+            (rgba.r as f64, rgba.g as f64, rgba.b as f64, rgba.a as f64)
+        });
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let sidebar_view = self.sidebar_view.take();
-            let has_sidebar_view = sidebar_view.is_some();
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let sidebar_width = self.sidebar_width.max(120.0);
-            let min_sidebar_width = self.min_sidebar_width.max(120.0);
-            let max_sidebar_width = self.max_sidebar_width.max(min_sidebar_width);
-            let collapsed = self.collapsed;
-            let sidebar_background_color = self.sidebar_background_color.map(|color| {
-                let rgba = color.to_rgb();
-                (rgba.r as f64, rgba.g as f64, rgba.b as f64, rgba.a as f64)
+        window.with_optional_element_state::<SidebarExtraState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
+
+            let on_select_fn = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |(index, title): (usize, String)| SidebarSelectEvent {
+                        index,
+                        title: SharedString::from(title),
+                    },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
             });
 
-            window.with_optional_element_state::<NativeSidebarState, _>(
-                id,
-                |prev_state, window| {
-                    let mut state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::configure_native_sidebar_window(
-                                state.control_ptr as native_controls::id,
-                                native_view as *mut std::ffi::c_void,
-                            );
-                        }
+            let on_header_button_fn = on_header_click.map(|handler| {
+                let handler = Rc::new(handler);
+                let button_ids: Vec<SharedString> =
+                    header_buttons.iter().map(|b| b.id.clone()).collect();
+                schedule_native_callback(
+                    handler,
+                    move |index: usize| SidebarHeaderClickEvent {
+                        index,
+                        id: button_ids.get(index).cloned().unwrap_or_default(),
+                    },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-                        if state.current_sidebar_width != sidebar_width {
-                            unsafe {
-                                native_controls::set_native_sidebar_width(
-                                    state.control_ptr as native_controls::id,
-                                    sidebar_width,
-                                );
-                            }
-                            state.current_sidebar_width = sidebar_width;
-                            state.current_min_sidebar_width = min_sidebar_width;
-                            state.current_max_sidebar_width = max_sidebar_width;
-                        }
+            let effective_embed = embed_in_sidebar || has_sidebar_view;
 
-                        if state.current_collapsed != collapsed {
-                            unsafe {
-                                native_controls::set_native_sidebar_collapsed(
-                                    state.control_ptr as native_controls::id,
-                                    collapsed,
-                                );
-                            }
-                            state.current_collapsed = collapsed;
-                        }
+            // Only call update_sidebar when the sidebar hasn't been created
+            // yet, or when config values actually changed. Unconditional
+            // updates trigger heavy AppKit layout/table-reload work during
+            // paint that causes RefCell reentrancy and render-loop hangs.
+            let needs_update = !state.native.is_initialized()
+                || state.prev_items != items
+                || state.prev_selected != selected_index
+                || state.prev_sidebar_width != sidebar_width
+                || state.prev_min_width != min_sidebar_width
+                || state.prev_max_width != max_sidebar_width
+                || state.prev_collapsed != collapsed
+                || state.prev_embed_in_host != effective_embed
+                || state.prev_header_title != header_title
+                || state.prev_header_button_symbols != header_button_symbols
+                || state.prev_background_color != sidebar_background_color
+                || on_select_fn.is_some()
+                || on_header_button_fn.is_some();
 
-                        // Surfaces are macOS-only; iOS sidebar is a plain container
-                        let _ = sidebar_view;
+            if needs_update {
+                let item_strs: Vec<&str> = items.iter().map(|item| item.as_ref()).collect();
+                let symbol_strs: Vec<&str> =
+                    header_button_symbols.iter().map(|s| s.as_ref()).collect();
 
-                        state
-                    } else {
-                        let control_ptr = unsafe {
-                            let control = native_controls::create_native_sidebar_view(
-                                sidebar_width,
-                                min_sidebar_width,
-                                max_sidebar_width,
-                            );
+                let scale = window.scale_factor();
+                let nc = window.native_controls();
+                nc.update_sidebar(
+                    &mut state.native,
+                    parent,
+                    Bounds::default(),
+                    scale,
+                    SidebarViewConfig {
+                        sidebar_width,
+                        min_width: min_sidebar_width,
+                        max_width: max_sidebar_width,
+                        collapsed,
+                        expanded_width: sidebar_width,
+                        embed_in_host: effective_embed,
+                        items: &item_strs,
+                        selected_index,
+                        header_title: header_title.as_deref().map(|v| &**v),
+                        header_button_symbols: &symbol_strs,
+                        background_color: sidebar_background_color,
+                        on_select: on_select_fn,
+                        on_header_button: on_header_button_fn,
+                    },
+                );
 
-                            if collapsed {
-                                native_controls::set_native_sidebar_collapsed(control, true);
-                            }
+                state.prev_items = items;
+                state.prev_selected = selected_index;
+                state.prev_sidebar_width = sidebar_width;
+                state.prev_min_width = min_sidebar_width;
+                state.prev_max_width = max_sidebar_width;
+                state.prev_collapsed = collapsed;
+                state.prev_embed_in_host = effective_embed;
+                state.prev_header_title = header_title;
+                state.prev_header_button_symbols = header_button_symbols;
+                state.prev_background_color = sidebar_background_color;
+            }
 
-                            native_controls::configure_native_sidebar_window(
-                                control,
-                                native_view as *mut std::ffi::c_void,
-                            );
-
-                            control as *mut c_void
-                        };
-
-                        // Surfaces are macOS-only; on iOS skip surface embedding
-                        let surface_id: Option<SurfaceId> = None;
-                        let _ = sidebar_view;
-
-                        // Apply initial background color if provided
-                        if let Some((r, g, b, a)) = sidebar_background_color {
-                            unsafe {
-                                native_controls::set_native_sidebar_background_color(
-                                    control_ptr as native_controls::id,
-                                    r, g, b, a,
-                                );
-                            }
-                        }
-
-                        NativeSidebarState {
-                            control_ptr,
-                            target_ptr: std::ptr::null_mut(),
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_sidebar_width: sidebar_width,
-                            current_min_sidebar_width: min_sidebar_width,
-                            current_max_sidebar_width: max_sidebar_width,
-                            current_collapsed: collapsed,
-                            embed_in_sidebar: self.embed_in_sidebar,
-                            attached: true,
-                            current_header_title: None,
-                            current_header_button_symbols: Vec::new(),
-                            current_sidebar_background_color: sidebar_background_color,
-                            surface_id,
-                        }
-                    };
-
-                    if state.current_sidebar_background_color != sidebar_background_color {
-                        unsafe {
-                            match sidebar_background_color {
-                                Some((r, g, b, a)) => {
-                                    native_controls::set_native_sidebar_background_color(
-                                        state.control_ptr as native_controls::id,
-                                        r, g, b, a,
-                                    );
-                                }
-                                None => {
-                                    native_controls::clear_native_sidebar_background_color(
-                                        state.control_ptr as native_controls::id,
-                                    );
-                                }
-                            }
-                        }
-                        state.current_sidebar_background_color = sidebar_background_color;
-                    }
-
-                    ((), Some(state))
+            // Deferred to the next run loop iteration to avoid AppKit
+            // callbacks (setFrameSize:) re-entering GPUI during paint.
+            window.configure_hosted_content(
+                state.native.view(),
+                parent,
+                HostedContentConfig {
+                    embed_in_host: embed_in_sidebar && !has_sidebar_view,
+                    manage_window_chrome,
+                    manage_toolbar,
                 },
             );
 
-            if self.embed_in_sidebar || has_sidebar_view {
-                let new_size = window.platform_window.content_size();
-                if window.viewport_size != new_size {
-                    window.viewport_size = new_size;
-                    window.invalidator.set_dirty(true);
+            // Register or update the sidebar surface for dual-surface mode
+            #[cfg(target_os = "macos")]
+            if let Some(view) = sidebar_view {
+                if let Some(surface_id) = state.surface_id {
+                    window.update_surface_root_view(surface_id, view);
+                } else {
+                    let handle = window.register_surface(view);
+                    window.attach_hosted_surface(state.native.view(), handle.native_view_ptr);
+                    state.surface_id = Some(handle.id);
                 }
+            }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = sidebar_view;
+            }
+
+            ((), Some(state))
+        });
+
+        if embed_in_sidebar || has_sidebar_view {
+            let new_size = window.platform_window.content_size();
+            if window.viewport_size != new_size {
+                window.viewport_size = new_size;
+                window.invalidator.set_dirty(true);
             }
         }
     }

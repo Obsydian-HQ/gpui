@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, CheckboxChangeEvent, Context, DropdownSelectEvent,
+    App, Bounds, CheckboxChangeEvent, Context, DropdownSelectEvent,
     NativeTableGridMask, NativeTableRowSizeStyle, NativeTableSelectionHighlightStyle,
     NativeTableStyle, TableRowSelectEvent, Window, WindowAppearance, WindowBounds, WindowOptions,
     div, native_checkbox, native_dropdown, native_table_view, prelude::*, px, rgb, size,
@@ -209,7 +209,7 @@ impl Render for TableStylesExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(920.), px(680.)), cx);
         cx.open_window(
             WindowOptions {

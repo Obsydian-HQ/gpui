@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, SearchChangeEvent, SearchSubmitEvent, Window,
+    App, Bounds, Context, SearchChangeEvent, SearchSubmitEvent, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_search_field, prelude::*, px, rgb,
     size,
 };
@@ -65,7 +65,7 @@ impl Render for SearchFieldExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(620.), px(330.)), cx);
         cx.open_window(
             WindowOptions {

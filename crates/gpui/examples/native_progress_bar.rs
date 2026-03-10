@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeProgressStyle, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, NativeProgressStyle, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_button, native_progress_bar, prelude::*, px, rgb, size,
 };
 
@@ -89,7 +89,7 @@ impl Render for ProgressExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(620.), px(420.)), cx);
         cx.open_window(
             WindowOptions {

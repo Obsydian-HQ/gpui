@@ -39,6 +39,13 @@ use unicase::UniCase;
 pub use take_until::*;
 
 #[macro_export]
+macro_rules! path {
+    ($path:literal) => {
+        $path
+    };
+}
+
+#[macro_export]
 macro_rules! debug_panic {
     ( $($fmt_arg:tt)* ) => {
         if cfg!(debug_assertions) {

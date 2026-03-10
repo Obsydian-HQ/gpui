@@ -4,7 +4,7 @@ use std::{
 };
 
 use gpui::{
-    AbsoluteLength, App, Application, Context, DefiniteLength, ElementId, Global, Hsla, Menu,
+    AbsoluteLength, App, Context, DefiniteLength, ElementId, Global, Hsla, Menu,
     SharedString, TextStyle, TitlebarOptions, Window, WindowBounds, WindowOptions, bounds,
     colors::DefaultColors, div, point, prelude::*, px, relative, rgb, size,
 };
@@ -298,7 +298,7 @@ impl Render for TextExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.set_menus(vec![Menu {
             name: "GPUI Typography".into(),
             items: vec![],

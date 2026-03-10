@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativePopover, NativePopoverAnchor,
+    App, Bounds, Context, NativePopover, NativePopoverAnchor,
     NativePopoverBehavior, NativePopoverCloseEvent, NativePopoverContentItem,
     NativePopoverShowEvent, NativeToolbar, NativeToolbarButton, NativeToolbarClickEvent,
     NativeToolbarDisplayMode, NativeToolbarItem, NativeToolbarSizeMode, Window,
@@ -312,7 +312,7 @@ impl Render for ToolbarPopoverExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(780.0), px(460.0)), cx);
         cx.open_window(
             WindowOptions {

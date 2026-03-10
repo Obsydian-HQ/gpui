@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeToolbar, NativeToolbarButton, NativeToolbarClickEvent,
+    App, Bounds, Context, NativeToolbar, NativeToolbarButton, NativeToolbarClickEvent,
     NativeToolbarDisplayMode, NativeToolbarItem, NativeToolbarLabel, NativeToolbarMenuButton,
     NativeToolbarMenuButtonSelectEvent, NativeToolbarMenuItem, NativeToolbarSizeMode, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
@@ -95,7 +95,7 @@ impl Render for NativeToolbarLabelExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(780.0), px(460.0)), cx);
         cx.open_window(
             WindowOptions {

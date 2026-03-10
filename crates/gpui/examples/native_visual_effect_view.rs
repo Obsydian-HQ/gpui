@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeGlassEffectStyle, NativeVisualEffectBlendingMode,
+    App, Bounds, Context, NativeGlassEffectStyle, NativeVisualEffectBlendingMode,
     NativeVisualEffectMaterial, TitlebarOptions, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_glass_effect_view, native_visual_effect_view, prelude::*, px, rgb,
     size,
@@ -210,7 +210,7 @@ impl Render for VisualEffectExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
         cx.open_window(
             WindowOptions {

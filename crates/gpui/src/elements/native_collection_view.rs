@@ -1,7 +1,7 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{CollectionItemStyle, CollectionViewConfig, NativeControlState};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
@@ -25,6 +25,15 @@ pub enum NativeCollectionItemStyle {
     /// Card-like cells backed by AppKit `NSBox`.
     #[default]
     Card,
+}
+
+impl From<NativeCollectionItemStyle> for CollectionItemStyle {
+    fn from(s: NativeCollectionItemStyle) -> Self {
+        match s {
+            NativeCollectionItemStyle::Label => CollectionItemStyle::Label,
+            NativeCollectionItemStyle::Card => CollectionItemStyle::Card,
+        }
+    }
 }
 
 /// Creates a native collection view (NSCollectionView) with clickable cards.
@@ -102,48 +111,6 @@ impl NativeCollectionView {
     }
 }
 
-struct NativeCollectionViewState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_items: Vec<SharedString>,
-    current_selected: Option<usize>,
-    current_columns: usize,
-    current_width: f64,
-    current_item_height: f64,
-    current_spacing: f64,
-    current_item_style: NativeCollectionItemStyle,
-    attached: bool,
-}
-
-impl Drop for NativeCollectionViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_collection_target,
-                    native_controls::release_native_collection_view,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_collection_target,
-                    native_controls::release_native_collection_view,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeCollectionViewState {}
-
 impl IntoElement for NativeCollectionView {
     type Element = Self;
 
@@ -209,320 +176,59 @@ impl Element for NativeCollectionView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let mut on_select = self.on_select.take();
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let columns = self.columns;
-            let width = bounds.size.width.0 as f64;
-            let item_height = self.item_height;
-            let spacing = self.spacing;
-            let item_style = self.item_style;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeCollectionViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                        }
-
-                        if state.current_columns != columns
-                            || (state.current_width - width).abs() > f64::EPSILON
-                            || state.current_item_height != item_height
-                            || state.current_spacing != spacing
-                        {
-                            unsafe {
-                                native_controls::set_native_collection_layout(
-                                    state.control_ptr as cocoa::base::id,
-                                    width,
-                                    columns,
-                                    item_height,
-                                    spacing,
-                                );
-                            }
-                            state.current_columns = columns;
-                            state.current_width = width;
-                            state.current_item_height = item_height;
-                            state.current_spacing = spacing;
-                        }
-
-                        let needs_rebind = state.current_items != items
-                            || state.current_selected != selected_index
-                            || state.current_item_style != item_style
-                            || on_select.is_some();
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_collection_target(state.target_ptr);
-                            }
-
-                            let callback = on_select.take().map(|handler| {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let handler = Rc::new(handler);
-                                schedule_native_callback(
-                                    handler,
-                                    |index| CollectionSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                )
-                            });
-
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            unsafe {
-                                state.target_ptr =
-                                    native_controls::set_native_collection_data_source(
-                                        state.control_ptr as cocoa::base::id,
-                                        &item_strs,
-                                        selected_index,
-                                        match item_style {
-                                            NativeCollectionItemStyle::Label => {
-                                                native_controls::NativeCollectionItemStyleData::Label
-                                            }
-                                            NativeCollectionItemStyle::Card => {
-                                                native_controls::NativeCollectionItemStyleData::Card
-                                            }
-                                        },
-                                        callback,
-                                    );
-                            }
-                            state.current_items = items.clone();
-                            state.current_selected = selected_index;
-                            state.current_item_style = item_style;
-                        }
-
-                        state
-                    } else {
-                        let callback = on_select.take().map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            schedule_native_callback(
-                                handler,
-                                |index| CollectionSelectEvent { index },
-                                nfc,
-                                inv,
-                            )
-                        });
-
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_collection_view();
-                            native_controls::set_native_collection_layout(
-                                control,
-                                width,
-                                columns,
-                                item_height,
-                                spacing,
-                            );
-
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            let target = native_controls::set_native_collection_data_source(
-                                control,
-                                &item_strs,
-                                selected_index,
-                                match item_style {
-                                    NativeCollectionItemStyle::Label => {
-                                        native_controls::NativeCollectionItemStyleData::Label
-                                    }
-                                    NativeCollectionItemStyle::Card => {
-                                        native_controls::NativeCollectionItemStyleData::Card
-                                    }
-                                },
-                                callback,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeCollectionViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_columns: columns,
-                            current_width: width,
-                            current_item_height: item_height,
-                            current_spacing: spacing,
-                            current_item_style: item_style,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_select = self.on_select.take();
+        let items = std::mem::take(&mut self.items);
+        let selected_index = self.selected_index;
+        let columns = self.columns;
+        let width = bounds.size.width.0 as f64;
+        let item_height = self.item_height;
+        let spacing = self.spacing;
+        let item_style = self.item_style;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let columns = self.columns;
-            let width = bounds.size.width.0 as f64;
-            let item_height = self.item_height;
-            let spacing = self.spacing;
-            let item_style = self.item_style;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeCollectionViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                        }
+            let on_select_fn: Option<Box<dyn Fn(usize)>> = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |index| CollectionSelectEvent { index },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-                        if state.current_columns != columns
-                            || (state.current_width - width).abs() > f64::EPSILON
-                            || state.current_item_height != item_height
-                            || state.current_spacing != spacing
-                        {
-                            let item_width = if columns > 0 {
-                                (width - spacing * (columns as f64 - 1.0)) / columns as f64
-                            } else {
-                                width
-                            };
-                            unsafe {
-                                native_controls::set_native_collection_layout(
-                                    state.control_ptr as native_controls::id,
-                                    item_width,
-                                    item_height,
-                                    spacing,
-                                );
-                            }
-                            state.current_columns = columns;
-                            state.current_width = width;
-                            state.current_item_height = item_height;
-                            state.current_spacing = spacing;
-                        }
+            let item_strs: Vec<&str> = items.iter().map(|s| s.as_ref()).collect();
 
-                        let needs_rebind = state.current_items != items
-                            || state.current_selected != selected_index
-                            || state.current_item_style != item_style;
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_collection_target(state.target_ptr);
-                            }
-
-                            let ios_items: Vec<native_controls::IosCollectionItem> = items
-                                .iter()
-                                .map(|item| native_controls::IosCollectionItem {
-                                    text: item.to_string(),
-                                })
-                                .collect();
-                            unsafe {
-                                state.target_ptr =
-                                    native_controls::set_native_collection_data_source(
-                                        state.control_ptr as native_controls::id,
-                                        ios_items,
-                                    );
-                            }
-                            state.current_items = items.clone();
-                            state.current_selected = selected_index;
-                            state.current_item_style = item_style;
-                        }
-
-                        state
-                    } else {
-                        let item_width = if columns > 0 {
-                            (width - spacing * (columns as f64 - 1.0)) / columns as f64
-                        } else {
-                            width
-                        };
-
-                        let ios_items: Vec<native_controls::IosCollectionItem> = items
-                            .iter()
-                            .map(|item| native_controls::IosCollectionItem {
-                                text: item.to_string(),
-                            })
-                            .collect();
-
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_collection_view();
-                            native_controls::set_native_collection_layout(
-                                control,
-                                item_width,
-                                item_height,
-                                spacing,
-                            );
-
-                            let target = native_controls::set_native_collection_data_source(
-                                control,
-                                ios_items,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeCollectionViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_columns: columns,
-                            current_width: width,
-                            current_item_height: item_height,
-                            current_spacing: spacing,
-                            current_item_style: item_style,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_collection_view(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                CollectionViewConfig {
+                    width,
+                    columns,
+                    item_height,
+                    spacing,
+                    items: &item_strs,
+                    selected: selected_index,
+                    item_style: item_style.into(),
+                    on_select: on_select_fn,
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

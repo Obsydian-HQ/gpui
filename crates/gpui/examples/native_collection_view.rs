@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, CollectionSelectEvent, Context, NativeCollectionItemStyle, Window,
+    App, Bounds, CollectionSelectEvent, Context, NativeCollectionItemStyle, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_collection_view, prelude::*, px,
     rgb, size,
 };
@@ -68,7 +68,7 @@ impl Render for CollectionViewExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(760.), px(520.)), cx);
         cx.open_window(
             WindowOptions {

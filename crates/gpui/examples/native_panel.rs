@@ -3,7 +3,7 @@
 /// Demonstrates NSPanel with different styles, levels, and materials.
 /// Shows borderless, HUD, utility, and titled panels with content items.
 use gpui::{
-    App, Application, Bounds, Context, NativeColor, NativePanel, NativePanelAnchor,
+    App, Bounds, Context, NativeColor, NativePanel, NativePanelAnchor,
     NativePanelLevel, NativePanelMaterial, NativePanelStyle, NativePopoverClickableRow,
     NativePopoverColorDot, NativePopoverContentItem, NativePopoverProgress, NativePopoverToggle,
     Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
@@ -217,7 +217,7 @@ fn make_button(
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(500.0), px(450.0)), cx);
         cx.open_window(
             WindowOptions {

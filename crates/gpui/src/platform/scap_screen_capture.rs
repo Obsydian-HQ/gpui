@@ -14,26 +14,11 @@ use std::sync::atomic::{self, AtomicBool};
 ///
 /// `scap_default_target_source` should be used instead on Wayland, since `scap_screen_sources`
 /// won't return any results.
-#[allow(dead_code)]
 pub(crate) fn scap_screen_sources(
     foreground_executor: &ForegroundExecutor,
 ) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
     let (sources_tx, sources_rx) = oneshot::channel();
     get_screen_targets(sources_tx);
-    to_dyn_screen_capture_sources(sources_rx, foreground_executor)
-}
-
-/// Starts screen capture for the default target, and populates the receiver with a single source
-/// for it. The first frame of the screen capture is used to determine the size of the stream.
-///
-/// On Wayland (Linux), prompts the user to select a target, and populates the receiver with a
-/// single screen capture source for their selection.
-#[allow(dead_code)]
-pub(crate) fn start_scap_default_target_source(
-    foreground_executor: &ForegroundExecutor,
-) -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
-    let (sources_tx, sources_rx) = oneshot::channel();
-    start_default_target_screen_capture(sources_tx);
     to_dyn_screen_capture_sources(sources_rx, foreground_executor)
 }
 
@@ -126,7 +111,7 @@ fn start_default_target_screen_capture(
 ) {
     // Due to use of blocking APIs, a dedicated thread is used.
     std::thread::spawn(|| {
-        let start_result = util::maybe!({
+        let start_result = gpui_util::maybe!({
             let mut capturer = new_scap_capturer(None)?;
             capturer.start_capture();
             let first_frame = capturer

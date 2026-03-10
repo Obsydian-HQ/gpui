@@ -1,24 +1,13 @@
 mod app_menu;
 mod keyboard;
 mod keystroke;
+#[allow(missing_docs)]
+pub mod native_controls;
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-mod linux;
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+#[expect(missing_docs)]
+pub mod layer_shell;
 
-#[cfg(target_os = "ios")]
-mod ios;
-
-#[cfg(target_os = "macos")]
-mod mac;
-
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-pub(crate) mod metal;
-
-#[cfg(all(
-    any(target_os = "linux", target_os = "freebsd"),
-    any(feature = "wayland", feature = "x11")
-))]
-mod wgpu;
 
 #[cfg(any(test, feature = "test-support"))]
 mod test;
@@ -26,28 +15,33 @@ mod test;
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
 mod visual_test;
 
-#[cfg(target_os = "windows")]
-mod windows;
-
 #[cfg(all(
     feature = "screen-capture",
     any(target_os = "windows", target_os = "linux", target_os = "freebsd",)
 ))]
-pub(crate) mod scap_screen_capture;
+pub mod scap_screen_capture;
+
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux"),
+    feature = "screen-capture"
+))]
+pub(crate) type PlatformScreenCaptureFrame = scap::frame::Frame;
+#[cfg(not(feature = "screen-capture"))]
+pub(crate) type PlatformScreenCaptureFrame = ();
+#[cfg(all(target_os = "macos", feature = "screen-capture"))]
+pub(crate) type PlatformScreenCaptureFrame = core_video::image_buffer::CVImageBuffer;
 
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
-    DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, Font, FontId, FontMetrics,
-    FontRun, ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels,
-    PlatformInput, Point, Priority, RenderGlyphParams, RenderImage, RenderImageParams,
-    RenderSvgParams, Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer,
-    SystemWindowTab, Task, TaskTiming, ThreadTaskTimings, Window, WindowControlArea, hash, point,
-    px, size,
+    DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, Font, FontId, FontMetrics, FontRun,
+    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels, PlatformInput,
+    Point, Priority, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene,
+    ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task,
+    ThreadTaskTimings, Window, WindowControlArea, hash, point, px, size,
 };
 use anyhow::Result;
 use async_task::Runnable;
 use futures::channel::oneshot;
-#[cfg(any(test, feature = "test-support"))]
 use image::RgbaImage;
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder as _, Frame};
@@ -61,7 +55,8 @@ use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops;
-use std::time::{Duration, Instant};
+use scheduler::Instant;
+use std::time::Duration;
 use std::{
     fmt::{self, Debug},
     ops::Range,
@@ -76,25 +71,8 @@ pub use app_menu::*;
 pub use keyboard::*;
 pub use keystroke::*;
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) use linux::*;
-#[cfg(target_os = "ios")]
-pub(crate) use ios::*;
-#[cfg(target_os = "macos")]
-pub(crate) use mac::*;
-#[cfg(target_os = "macos")]
-pub(crate) use mac::native_controls;
-#[cfg(target_os = "ios")]
-pub(crate) use ios::native_controls;
-#[cfg(target_os = "macos")]
-pub(crate) use mac::gpui_surface;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
-#[cfg(target_os = "windows")]
-pub(crate) use windows::*;
-
-#[cfg(all(target_os = "linux", feature = "wayland"))]
-pub use linux::layer_shell;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream};
@@ -102,57 +80,8 @@ pub use test::{TestDispatcher, TestScreenCaptureSource, TestScreenCaptureStream}
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
 pub use visual_test::VisualTestPlatform;
 
-/// Returns a background executor for the current platform.
-pub fn background_executor() -> BackgroundExecutor {
-    current_platform(true).background_executor()
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
-    Rc::new(MacPlatform::new(headless))
-}
-
-#[cfg(target_os = "ios")]
-pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
-    Rc::new(IosPlatform::new(headless))
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
-    #[cfg(feature = "x11")]
-    use anyhow::Context as _;
-
-    if headless {
-        return Rc::new(HeadlessClient::new());
-    }
-
-    match guess_compositor() {
-        #[cfg(feature = "wayland")]
-        "Wayland" => Rc::new(WaylandClient::new()),
-
-        #[cfg(feature = "x11")]
-        "X11" => Rc::new(
-            X11Client::new()
-                .context("Failed to initialize X11 client.")
-                .unwrap(),
-        ),
-
-        "Headless" => Rc::new(HeadlessClient::new()),
-        _ => unreachable!(),
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
-    Rc::new(
-        WindowsPlatform::new()
-            .inspect_err(|err| show_error("Failed to launch", err.to_string()))
-            .unwrap(),
-    )
-}
-
 /// Return which compositor we're guessing we'll use.
-/// Does not attempt to connect to the given compositor
+/// Does not attempt to connect to the given compositor.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 #[inline]
 pub fn guess_compositor() -> &'static str {
@@ -182,7 +111,8 @@ pub fn guess_compositor() -> &'static str {
     }
 }
 
-pub(crate) trait Platform: 'static {
+#[expect(missing_docs)]
+pub trait Platform: 'static {
     fn background_executor(&self) -> BackgroundExecutor;
     fn foreground_executor(&self) -> ForegroundExecutor;
     fn text_system(&self) -> Arc<dyn PlatformTextSystem>;
@@ -202,16 +132,10 @@ pub(crate) trait Platform: 'static {
         None
     }
 
-    #[cfg(feature = "screen-capture")]
-    fn is_screen_capture_supported(&self) -> bool;
-    #[cfg(not(feature = "screen-capture"))]
     fn is_screen_capture_supported(&self) -> bool {
         false
     }
-    #[cfg(feature = "screen-capture")]
-    fn screen_capture_sources(&self)
-    -> oneshot::Receiver<Result<Vec<Rc<dyn ScreenCaptureSource>>>>;
-    #[cfg(not(feature = "screen-capture"))]
+
     fn screen_capture_sources(
         &self,
     ) -> oneshot::Receiver<anyhow::Result<Vec<Rc<dyn ScreenCaptureSource>>>> {
@@ -307,7 +231,7 @@ pub(crate) trait Platform: 'static {
 }
 
 /// A handle to a platform's display, e.g. a monitor or laptop screen.
-pub trait PlatformDisplay: Send + Sync + Debug {
+pub trait PlatformDisplay: Debug {
     /// Get the ID for this display
     fn id(&self) -> DisplayId;
 
@@ -389,6 +313,19 @@ pub struct ScreenCaptureFrame(pub PlatformScreenCaptureFrame);
 /// An opaque identifier for a hardware display
 #[derive(PartialEq, Eq, Hash, Copy, Clone)]
 pub struct DisplayId(pub(crate) u32);
+
+impl DisplayId {
+    /// Create a new `DisplayId` from a raw platform display identifier.
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+impl From<u32> for DisplayId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
 
 impl From<DisplayId> for u32 {
     fn from(id: DisplayId) -> Self {
@@ -501,15 +438,13 @@ impl Tiling {
     }
 }
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
-pub(crate) struct RequestFrameOptions {
-    pub(crate) require_presentation: bool,
-    /// Force refresh of all rendering states when true
-    pub(crate) force_render: bool,
-}
+// =============================================================================
+// Native toolbar types
+// =============================================================================
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum PlatformNativeToolbarDisplayMode {
+#[allow(missing_docs)]
+pub enum PlatformNativeToolbarDisplayMode {
     #[default]
     Default,
     IconAndLabel,
@@ -518,14 +453,16 @@ pub(crate) enum PlatformNativeToolbarDisplayMode {
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) enum PlatformNativeToolbarSizeMode {
+#[allow(missing_docs)]
+pub enum PlatformNativeToolbarSizeMode {
     #[default]
     Default,
     Regular,
     Small,
 }
 
-pub(crate) struct PlatformNativeToolbar {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbar {
     pub identifier: SharedString,
     pub title: Option<SharedString>,
     pub display_mode: PlatformNativeToolbarDisplayMode,
@@ -534,7 +471,8 @@ pub(crate) struct PlatformNativeToolbar {
     pub items: Vec<PlatformNativeToolbarItem>,
 }
 
-pub(crate) enum PlatformNativeToolbarItem {
+#[allow(missing_docs)]
+pub enum PlatformNativeToolbarItem {
     Button(PlatformNativeToolbarButtonItem),
     Space,
     FlexibleSpace,
@@ -548,13 +486,15 @@ pub(crate) enum PlatformNativeToolbarItem {
     SidebarTrackingSeparator,
 }
 
-pub(crate) struct PlatformNativeToolbarLabelItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarLabelItem {
     pub id: SharedString,
     pub text: SharedString,
     pub icon: Option<SharedString>,
 }
 
-pub(crate) struct PlatformNativeToolbarButtonItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarButtonItem {
     pub id: SharedString,
     pub label: SharedString,
     pub tool_tip: Option<SharedString>,
@@ -564,7 +504,8 @@ pub(crate) struct PlatformNativeToolbarButtonItem {
     pub on_click: Option<Box<dyn Fn()>>,
 }
 
-pub(crate) struct PlatformNativeToolbarSearchFieldItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarSearchFieldItem {
     pub id: SharedString,
     pub placeholder: SharedString,
     pub text: SharedString,
@@ -580,12 +521,14 @@ pub(crate) struct PlatformNativeToolbarSearchFieldItem {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum PlatformNativeSearchFieldTarget {
+#[allow(missing_docs)]
+pub enum PlatformNativeSearchFieldTarget {
     ToolbarItem(SharedString),
     ContentView(SharedString),
 }
 
-pub(crate) struct PlatformNativeToolbarSegmentedItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarSegmentedItem {
     pub id: SharedString,
     pub labels: Vec<SharedString>,
     pub icons: Vec<Option<SharedString>>,
@@ -593,14 +536,16 @@ pub(crate) struct PlatformNativeToolbarSegmentedItem {
     pub on_select: Option<Box<dyn Fn(usize)>>,
 }
 
-pub(crate) struct PlatformNativeToolbarPopUpItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarPopUpItem {
     pub id: SharedString,
     pub items: Vec<SharedString>,
     pub selected_index: usize,
     pub on_select: Option<Box<dyn Fn(usize)>>,
 }
 
-pub(crate) struct PlatformNativeToolbarComboBoxItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarComboBoxItem {
     pub id: SharedString,
     pub placeholder: SharedString,
     pub text: SharedString,
@@ -612,7 +557,8 @@ pub(crate) struct PlatformNativeToolbarComboBoxItem {
     pub on_submit: Option<Box<dyn Fn(String)>>,
 }
 
-pub(crate) struct PlatformNativeToolbarMenuButtonItem {
+#[allow(missing_docs)]
+pub struct PlatformNativeToolbarMenuButtonItem {
     pub id: SharedString,
     pub label: SharedString,
     pub tool_tip: Option<SharedString>,
@@ -624,7 +570,8 @@ pub(crate) struct PlatformNativeToolbarMenuButtonItem {
     pub on_select: Option<Box<dyn Fn(usize)>>,
 }
 
-pub(crate) enum PlatformNativeToolbarMenuItemData {
+#[allow(missing_docs)]
+pub enum PlatformNativeToolbarMenuItemData {
     Action {
         title: SharedString,
         enabled: bool,
@@ -640,27 +587,31 @@ pub(crate) enum PlatformNativeToolbarMenuItemData {
 }
 
 // =============================================================================
-// Native Popover types
+// Native popover types
 // =============================================================================
 
-pub(crate) struct PlatformNativePopover {
+#[allow(missing_docs)]
+pub struct PlatformNativePopover {
     pub content_width: f64,
     pub content_height: f64,
     pub behavior: PlatformNativePopoverBehavior,
     pub on_close: Option<Box<dyn Fn()>>,
     pub on_show: Option<Box<dyn Fn()>>,
     pub content_items: Vec<PlatformNativePopoverContentItem>,
+    pub hosted_surface_view: Option<*mut std::ffi::c_void>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativePopoverBehavior {
+#[allow(missing_docs)]
+pub enum PlatformNativePopoverBehavior {
     ApplicationDefined,
     Transient,
     Semitransient,
 }
 
+#[allow(missing_docs)]
 impl PlatformNativePopoverBehavior {
-    pub(crate) fn to_raw(self) -> i64 {
+        pub fn to_raw(self) -> i64 {
         match self {
             Self::ApplicationDefined => 0,
             Self::Transient => 1,
@@ -669,20 +620,32 @@ impl PlatformNativePopoverBehavior {
     }
 }
 
+/// A semantic color used by platform-native UI elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativeColor {
+#[allow(missing_docs)]
+pub enum PlatformNativeColor {
+    /// Red system color.
     Red,
+    /// Orange system color.
     Orange,
+    /// Yellow system color.
     Yellow,
+    /// Green system color.
     Green,
+    /// Blue system color.
     Blue,
+    /// Purple system color.
     Purple,
+    /// Gray system color.
     Gray,
+    /// Primary label color.
     Primary,
+    /// Secondary label color.
     Secondary,
 }
 
-pub(crate) enum PlatformNativePopoverContentItem {
+#[allow(missing_docs)]
+pub enum PlatformNativePopoverContentItem {
     Label {
         text: SharedString,
         bold: bool,
@@ -733,16 +696,18 @@ pub(crate) enum PlatformNativePopoverContentItem {
     Separator,
 }
 
-pub(crate) enum PlatformNativePopoverAnchor {
+#[allow(missing_docs)]
+pub enum PlatformNativePopoverAnchor {
     ToolbarItem(SharedString),
 }
 
 // =============================================================================
-// Native Panel types
+// Native panel types
 // =============================================================================
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativePanelStyle {
+#[allow(missing_docs)]
+pub enum PlatformNativePanelStyle {
     Titled,
     Borderless,
     Hud,
@@ -750,7 +715,8 @@ pub(crate) enum PlatformNativePanelStyle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativePanelLevel {
+#[allow(missing_docs)]
+pub enum PlatformNativePanelLevel {
     Normal,
     Floating,
     ModalPanel,
@@ -759,20 +725,23 @@ pub(crate) enum PlatformNativePanelLevel {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativePanelMaterial {
+#[allow(missing_docs)]
+pub enum PlatformNativePanelMaterial {
     HudWindow,
     Popover,
     Sidebar,
     UnderWindow,
 }
 
-pub(crate) enum PlatformNativePanelAnchor {
+#[allow(missing_docs)]
+pub enum PlatformNativePanelAnchor {
     ToolbarItem(SharedString),
     Point { x: f64, y: f64 },
     Centered,
 }
 
-pub(crate) struct PlatformNativePanel {
+#[allow(missing_docs)]
+pub struct PlatformNativePanel {
     pub width: f64,
     pub height: f64,
     pub style: PlatformNativePanelStyle,
@@ -783,20 +752,36 @@ pub(crate) struct PlatformNativePanel {
     pub material: Option<PlatformNativePanelMaterial>,
     pub on_close: Option<Box<dyn Fn()>>,
     pub content_items: Vec<PlatformNativePopoverContentItem>,
+    pub hosted_surface_view: Option<*mut std::ffi::c_void>,
+}
+
+/// Configuration for native hosts that mount GPUI-rendered content inside a
+/// platform container such as a sidebar, popover, or panel.
+pub struct HostedContentConfig {
+    /// When true, GPUI content is mounted directly inside the host container.
+    pub embed_in_host: bool,
+    /// When true, the platform host may update window/titlebar chrome to match
+    /// the hosted presentation.
+    pub manage_window_chrome: bool,
+    /// When true, the platform host may install or update any companion
+    /// toolbar needed by the hosted presentation.
+    pub manage_toolbar: bool,
 }
 
 // =============================================================================
-// Native Alert types
+// Native alert types
 // =============================================================================
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PlatformNativeAlertStyle {
+#[allow(missing_docs)]
+pub enum PlatformNativeAlertStyle {
     Warning,
     Informational,
     Critical,
 }
 
-pub(crate) struct PlatformNativeAlert {
+#[allow(missing_docs)]
+pub struct PlatformNativeAlert {
     pub style: PlatformNativeAlertStyle,
     pub message: SharedString,
     pub informative_text: Option<SharedString>,
@@ -804,7 +789,17 @@ pub(crate) struct PlatformNativeAlert {
     pub shows_suppression_button: bool,
 }
 
-pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+#[expect(missing_docs)]
+pub struct RequestFrameOptions {
+    /// Whether a presentation is required.
+    pub require_presentation: bool,
+    /// Force refresh of all rendering states when true.
+    pub force_render: bool,
+}
+
+#[expect(missing_docs)]
+pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn bounds(&self) -> Bounds<Pixels>;
     fn is_maximized(&self) -> bool;
     fn window_bounds(&self) -> WindowBounds;
@@ -850,19 +845,6 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
 
-    fn titlebar_height(&self) -> Pixels {
-        px(0.0)
-    }
-
-    /// Safe area insets for this window (notch, home indicator, status bar, etc.).
-    ///
-    /// On iOS, these are read from UIKit's `safeAreaInsets` and describe how
-    /// much to inset content from each edge to avoid system UI elements.
-    /// On all other platforms, returns zero insets.
-    fn safe_area_insets(&self) -> Edges<Pixels> {
-        Edges::default()
-    }
-
     // macOS specific methods
     fn get_title(&self) -> String {
         String::new()
@@ -885,41 +867,97 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn move_tab_to_new_window(&self) {}
     fn toggle_window_tab_overview(&self) {}
     fn set_tabbing_identifier(&self, _identifier: Option<String>) {}
+
+    fn titlebar_height(&self) -> Pixels {
+        px(0.0)
+    }
+
+    fn safe_area_insets(&self) -> Edges<Pixels> {
+        Edges::default()
+    }
+
     fn set_native_toolbar(&self, _toolbar: Option<PlatformNativeToolbar>) {}
+
     fn focus_native_search_field(
         &self,
         _target: PlatformNativeSearchFieldTarget,
         _select_all: bool,
     ) {
     }
+
     fn show_native_popover(
         &self,
         _popover: PlatformNativePopover,
         _anchor: PlatformNativePopoverAnchor,
     ) {
     }
+
     fn dismiss_native_popover(&self) {}
+
     fn show_native_panel(
         &self,
         _panel: PlatformNativePanel,
         _anchor: PlatformNativePanelAnchor,
     ) {
     }
+
     fn dismiss_native_panel(&self) {}
+
     fn blur_native_field_editor(&self) {}
+
     fn show_native_alert_sheet(
         &self,
         _alert: PlatformNativeAlert,
     ) -> Option<oneshot::Receiver<usize>> {
         None
     }
-    #[allow(dead_code)]
+
     fn present_as_sheet(&self, _child_window: &dyn PlatformWindow) {}
-    #[allow(dead_code)]
+
     fn dismiss_sheet(&self) {}
 
+    fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+
+    fn native_controls(&self) -> Option<&dyn native_controls::PlatformNativeControls> {
+        None
+    }
+
+    fn configure_hosted_content(
+        &self,
+        _host_view: *mut std::ffi::c_void,
+        _parent_view: *mut std::ffi::c_void,
+        _config: HostedContentConfig,
+    ) {
+    }
+
+    fn attach_hosted_surface(
+        &self,
+        _host_view: *mut std::ffi::c_void,
+        _surface_view: *mut std::ffi::c_void,
+    ) {
+    }
+
+    #[cfg(target_os = "macos")]
+    fn window_state_ptr(&self) -> *const std::ffi::c_void {
+        std::ptr::null()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn create_surface(&self) -> Option<Box<dyn PlatformSurface>> {
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_surface_input(
+        &self,
+        _callback: Box<dyn FnMut(*mut std::ffi::c_void, PlatformInput) -> DispatchEventResult>,
+    ) {
+    }
+
     #[cfg(target_os = "windows")]
-    fn get_raw_handle(&self) -> windows::HWND;
+    fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND;
 
     // Linux specific methods
     fn inner_window_bounds(&self) -> WindowBounds {
@@ -944,40 +982,6 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
-    /// Returns a raw pointer to the platform's native view (e.g., NSView on macOS).
-    /// Used by native controls to add platform subviews.
-    /// Returns null on platforms that don't support native subviews.
-    fn raw_native_view_ptr(&self) -> *mut std::ffi::c_void {
-        std::ptr::null_mut()
-    }
-
-    /// Returns shared GPU render resources for creating secondary rendering surfaces.
-    /// Only available on Apple platforms with Metal rendering.
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    fn shared_render_resources(
-        &self,
-    ) -> std::sync::Arc<crate::platform::metal::renderer::SharedRenderResources> {
-        unimplemented!("shared_render_resources not available on this platform window")
-    }
-
-    /// Returns a raw pointer to the platform window state (Arc<Mutex<MacWindowState>>).
-    /// Used to attach the window's event callback to secondary surface views.
-    #[cfg(target_os = "macos")]
-    fn window_state_ptr(&self) -> *const std::ffi::c_void {
-        std::ptr::null()
-    }
-
-    /// Register a callback for mouse events originating from a secondary
-    /// rendering surface. The callback receives the surface view's native
-    /// pointer (for identifying which surface) and the platform input event.
-    /// Only available on macOS.
-    #[cfg(target_os = "macos")]
-    fn on_surface_input(
-        &self,
-        _callback: Box<dyn FnMut(*mut std::ffi::c_void, PlatformInput) -> DispatchEventResult>,
-    ) {
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     fn as_test(&mut self) -> Option<&mut TestWindow> {
         None
@@ -986,10 +990,33 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// Renders the given scene to a texture and returns the pixel data as an RGBA image.
     /// This does not present the frame to screen - useful for visual testing where we want
     /// to capture what would be rendered without displaying it or requiring the window to be visible.
-    #[cfg(any(test, feature = "test-support"))]
     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
         anyhow::bail!("render_to_image not implemented for this platform")
     }
+}
+
+/// Trait for a secondary GPUI rendering surface that can be embedded in any
+/// native container view. Platform crates provide concrete implementations
+/// (e.g., a Metal-backed surface on macOS).
+pub trait PlatformSurface {
+    /// Returns a raw pointer to the surface's native view for embedding.
+    fn native_view_ptr(&self) -> *mut std::ffi::c_void;
+
+    /// Returns the content size of the surface in logical pixels.
+    fn content_size(&self) -> Size<Pixels>;
+
+    /// Sets the contentsScale on the backing layer to match the display's scale factor.
+    fn set_contents_scale(&self, scale: f64);
+
+    /// Updates the drawable size (in device pixels) of the surface.
+    fn update_drawable_size(&mut self, size: Size<DevicePixels>);
+
+    /// Draws the given scene to the surface's rendering layer.
+    fn draw(&mut self, scene: &Scene);
+
+    /// Attach the owning window's state so the surface view can forward events
+    /// back through the window's callbacks. The pointer is opaque to the trait.
+    fn set_window_state(&mut self, raw_state_ptr: *const std::ffi::c_void);
 }
 
 /// Type alias for runnables with metadata.
@@ -998,24 +1025,14 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 pub type RunnableVariant = Runnable<RunnableMeta>;
 
 #[doc(hidden)]
-pub struct TimerResolutionGuard {
-    cleanup: Option<Box<dyn FnOnce() + Send>>,
-}
-
-impl Drop for TimerResolutionGuard {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.cleanup.take() {
-            cleanup();
-        }
-    }
-}
+pub type TimerResolutionGuard = gpui_util::Deferred<Box<dyn FnOnce() + Send>>;
 
 /// This type is public so that our test macro can generate and use it, but it should not
 /// be considered part of our public API.
 #[doc(hidden)]
 pub trait PlatformDispatcher: Send + Sync {
     fn get_all_timings(&self) -> Vec<ThreadTaskTimings>;
-    fn get_current_thread_timings(&self) -> Vec<TaskTiming>;
+    fn get_current_thread_timings(&self) -> ThreadTaskTimings;
     fn is_main_thread(&self) -> bool;
     fn dispatch(&self, runnable: RunnableVariant, priority: Priority);
     fn dispatch_on_main_thread(&self, runnable: RunnableVariant, priority: Priority);
@@ -1027,7 +1044,7 @@ pub trait PlatformDispatcher: Send + Sync {
     }
 
     fn increase_timer_resolution(&self) -> TimerResolutionGuard {
-        TimerResolutionGuard { cleanup: None }
+        gpui_util::defer(Box::new(|| {}))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1036,7 +1053,8 @@ pub trait PlatformDispatcher: Send + Sync {
     }
 }
 
-pub(crate) trait PlatformTextSystem: Send + Sync {
+#[expect(missing_docs)]
+pub trait PlatformTextSystem: Send + Sync {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()>;
     fn all_font_names(&self) -> Vec<String>;
     fn font_id(&self, descriptor: &Font) -> Result<FontId>;
@@ -1055,10 +1073,11 @@ pub(crate) trait PlatformTextSystem: Send + Sync {
     -> TextRenderingMode;
 }
 
-pub(crate) struct NoopTextSystem;
+#[expect(missing_docs)]
+pub struct NoopTextSystem;
 
+#[expect(missing_docs)]
 impl NoopTextSystem {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self
     }
@@ -1186,8 +1205,8 @@ impl PlatformTextSystem for NoopTextSystem {
 // Adapted from https://github.com/microsoft/terminal/blob/1283c0f5b99a2961673249fa77c6b986efb5086c/src/renderer/atlas/dwrite.cpp
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-#[allow(dead_code)]
-pub(crate) fn get_gamma_correction_ratios(gamma: f32) -> [f32; 4] {
+/// Compute gamma correction ratios for subpixel text rendering.
+pub fn get_gamma_correction_ratios(gamma: f32) -> [f32; 4] {
     const GAMMA_INCORRECT_TARGET_RATIOS: [[f32; 4]; 13] = [
         [0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0, 0.0000 / 4.0], // gamma = 1.0
         [0.0166 / 4.0, -0.0807 / 4.0, 0.2227 / 4.0, -0.0751 / 4.0], // gamma = 1.1
@@ -1219,7 +1238,8 @@ pub(crate) fn get_gamma_correction_ratios(gamma: f32) -> [f32; 4] {
 }
 
 #[derive(PartialEq, Eq, Hash, Clone)]
-pub(crate) enum AtlasKey {
+#[expect(missing_docs)]
+pub enum AtlasKey {
     Glyph(RenderGlyphParams),
     Svg(RenderSvgParams),
     Image(RenderImageParams),
@@ -1233,7 +1253,8 @@ impl AtlasKey {
         ),
         allow(dead_code)
     )]
-    pub(crate) fn texture_kind(&self) -> AtlasTextureKind {
+    /// Returns the texture kind for this atlas key.
+    pub fn texture_kind(&self) -> AtlasTextureKind {
         match self {
             AtlasKey::Glyph(params) => {
                 if params.is_emoji {
@@ -1268,7 +1289,8 @@ impl From<RenderImageParams> for AtlasKey {
     }
 }
 
-pub(crate) trait PlatformAtlas: Send + Sync {
+#[expect(missing_docs)]
+pub trait PlatformAtlas: Send + Sync {
     fn get_or_insert_with<'a>(
         &self,
         key: &AtlasKey,
@@ -1277,9 +1299,10 @@ pub(crate) trait PlatformAtlas: Send + Sync {
     fn remove(&self, key: &AtlasKey);
 }
 
-struct AtlasTextureList<T> {
-    textures: Vec<Option<T>>,
-    free_list: Vec<usize>,
+#[doc(hidden)]
+pub struct AtlasTextureList<T> {
+    pub textures: Vec<Option<T>>,
+    pub free_list: Vec<usize>,
 }
 
 impl<T> Default for AtlasTextureList<T> {
@@ -1301,32 +1324,72 @@ impl<T> ops::Index<usize> for AtlasTextureList<T> {
 
 impl<T> AtlasTextureList<T> {
     #[allow(unused)]
-    fn drain(&mut self) -> std::vec::Drain<'_, Option<T>> {
+    pub fn drain(&mut self) -> std::vec::Drain<'_, Option<T>> {
         self.free_list.clear();
         self.textures.drain(..)
     }
 
-    #[allow(dead_code)]
-    fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
+    pub fn iter_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut T> {
         self.textures.iter_mut().flatten()
+    }
+}
+
+impl From<Size<DevicePixels>> for etagere::Size {
+    fn from(size: Size<DevicePixels>) -> Self {
+        etagere::Size::new(size.width.into(), size.height.into())
+    }
+}
+
+impl From<etagere::Point> for Point<DevicePixels> {
+    fn from(value: etagere::Point) -> Self {
+        Point {
+            x: DevicePixels::from(value.x),
+            y: DevicePixels::from(value.y),
+        }
+    }
+}
+
+impl From<etagere::Size> for Size<DevicePixels> {
+    fn from(size: etagere::Size) -> Self {
+        Size {
+            width: DevicePixels::from(size.width),
+            height: DevicePixels::from(size.height),
+        }
+    }
+}
+
+impl From<etagere::Rectangle> for Bounds<DevicePixels> {
+    fn from(rectangle: etagere::Rectangle) -> Self {
+        Bounds {
+            origin: rectangle.min.into(),
+            size: rectangle.size().into(),
+        }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(C)]
-pub(crate) struct AtlasTile {
-    pub(crate) texture_id: AtlasTextureId,
-    pub(crate) tile_id: TileId,
-    pub(crate) padding: u32,
-    pub(crate) bounds: Bounds<DevicePixels>,
+#[expect(missing_docs)]
+pub struct AtlasTile {
+    /// The texture this tile belongs to.
+    pub texture_id: AtlasTextureId,
+    /// The unique ID of this tile within its texture.
+    pub tile_id: TileId,
+    /// Padding around the tile content in pixels.
+    pub padding: u32,
+    /// The bounds of this tile within the texture.
+    pub bounds: Bounds<DevicePixels>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
-pub(crate) struct AtlasTextureId {
+#[expect(missing_docs)]
+pub struct AtlasTextureId {
     // We use u32 instead of usize for Metal Shader Language compatibility
-    pub(crate) index: u32,
-    pub(crate) kind: AtlasTextureKind,
+    /// The index of this texture in the atlas.
+    pub index: u32,
+    /// The kind of content stored in this texture.
+    pub kind: AtlasTextureKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1338,7 +1401,8 @@ pub(crate) struct AtlasTextureId {
     ),
     allow(dead_code)
 )]
-pub(crate) enum AtlasTextureKind {
+#[expect(missing_docs)]
+pub enum AtlasTextureKind {
     Monochrome = 0,
     Polychrome = 1,
     Subpixel = 2,
@@ -1346,7 +1410,8 @@ pub(crate) enum AtlasTextureKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(C)]
-pub(crate) struct TileId(pub(crate) u32);
+#[expect(missing_docs)]
+pub struct TileId(pub u32);
 
 impl From<etagere::AllocId> for TileId {
     fn from(id: etagere::AllocId) -> Self {
@@ -1360,11 +1425,13 @@ impl From<TileId> for etagere::AllocId {
     }
 }
 
-pub(crate) struct PlatformInputHandler {
+#[expect(missing_docs)]
+pub struct PlatformInputHandler {
     cx: AsyncWindowContext,
     handler: Box<dyn InputHandler>,
 }
 
+#[expect(missing_docs)]
 #[cfg_attr(
     all(
         any(target_os = "linux", target_os = "freebsd"),
@@ -1377,7 +1444,7 @@ impl PlatformInputHandler {
         Self { cx, handler }
     }
 
-    fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<UTF16Selection> {
+    pub fn selected_text_range(&mut self, ignore_disabled_input: bool) -> Option<UTF16Selection> {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -1388,7 +1455,7 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    fn marked_text_range(&mut self) -> Option<Range<usize>> {
+    pub fn marked_text_range(&mut self) -> Option<Range<usize>> {
         self.cx
             .update(|window, cx| self.handler.marked_text_range(window, cx))
             .ok()
@@ -1399,7 +1466,7 @@ impl PlatformInputHandler {
         any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
         allow(dead_code)
     )]
-    fn text_for_range(
+    pub fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
         adjusted: &mut Option<Range<usize>>,
@@ -1413,7 +1480,7 @@ impl PlatformInputHandler {
             .flatten()
     }
 
-    fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
+    pub fn replace_text_in_range(&mut self, replacement_range: Option<Range<usize>>, text: &str) {
         self.cx
             .update(|window, cx| {
                 self.handler
@@ -1442,25 +1509,24 @@ impl PlatformInputHandler {
     }
 
     #[cfg_attr(target_os = "windows", allow(dead_code))]
-    fn unmark_text(&mut self) {
+    pub fn unmark_text(&mut self) {
         self.cx
             .update(|window, cx| self.handler.unmark_text(window, cx))
             .ok();
     }
 
-    fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
+    pub fn bounds_for_range(&mut self, range_utf16: Range<usize>) -> Option<Bounds<Pixels>> {
         self.cx
             .update(|window, cx| self.handler.bounds_for_range(range_utf16, window, cx))
             .ok()
             .flatten()
     }
 
-    #[allow(dead_code)]
-    fn apple_press_and_hold_enabled(&mut self) -> bool {
+    pub fn apple_press_and_hold_enabled(&mut self) -> bool {
         self.handler.apple_press_and_hold_enabled()
     }
 
-    pub(crate) fn dispatch_input(&mut self, input: &str, window: &mut Window, cx: &mut App) {
+    pub fn dispatch_input(&mut self, input: &str, window: &mut Window, cx: &mut App) {
         self.handler.replace_text_in_range(None, input, window, cx);
     }
 
@@ -1485,9 +1551,15 @@ impl PlatformInputHandler {
             .flatten()
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn accepts_text_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
+    pub fn accepts_text_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.handler.accepts_text_input(window, cx)
+    }
+
+    #[allow(dead_code)]
+    pub fn query_accepts_text_input(&mut self) -> bool {
+        self.cx
+            .update(|window, cx| self.handler.accepts_text_input(window, cx))
+            .unwrap_or(true)
     }
 }
 
@@ -1593,7 +1665,6 @@ pub trait InputHandler: 'static {
     /// sending these to the platform.
     /// TODO: Ideally we should be able to set ApplePressAndHoldEnabled in NSUserDefaults
     /// (which is how iTerm does it) but it doesn't seem to work for me.
-    #[allow(dead_code)]
     fn apple_press_and_hold_enabled(&mut self) -> bool {
         true
     }
@@ -1663,7 +1734,8 @@ pub struct WindowOptions {
     ),
     allow(dead_code)
 )]
-pub(crate) struct WindowParams {
+#[expect(missing_docs)]
+pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
 
     /// The titlebar configuration of the window
@@ -1918,8 +1990,8 @@ impl PromptButton {
         PromptButton::Cancel(label.into())
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_cancel(&self) -> bool {
+    /// Returns true if this button is a cancel button.
+    pub fn is_cancel(&self) -> bool {
         matches!(self, PromptButton::Cancel(_))
     }
 
@@ -2037,7 +2109,8 @@ pub enum CursorStyle {
 /// A clipboard item that should be copied to the clipboard
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardItem {
-    entries: Vec<ClipboardEntry>,
+    /// The entries in this clipboard item.
+    pub entries: Vec<ClipboardEntry>,
 }
 
 /// Either a ClipboardString or a ClipboardImage
@@ -2237,7 +2310,7 @@ pub struct Image {
     /// The raw image bytes
     pub bytes: Vec<u8>,
     /// The unique ID for the image
-    id: u64,
+    pub id: u64,
 }
 
 impl Hash for Image {
@@ -2355,8 +2428,10 @@ impl Image {
 /// A clipboard item that should be copied to the clipboard
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardString {
-    pub(crate) text: String,
-    pub(crate) metadata: Option<String>,
+    /// The text content.
+    pub text: String,
+    /// Optional metadata associated with this clipboard string.
+    pub metadata: Option<String>,
 }
 
 impl ClipboardString {
@@ -2396,7 +2471,8 @@ impl ClipboardString {
     }
 
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
-    pub(crate) fn text_hash(text: &str) -> u64 {
+    /// Compute a hash of the given text for clipboard change detection.
+    pub fn text_hash(text: &str) -> u64 {
         let mut hasher = SeaHasher::new();
         text.hash(&mut hasher);
         hasher.finish()

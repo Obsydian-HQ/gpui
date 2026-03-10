@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc, time::Duration};
 
 use gpui::{
-    Animation, AnimationExt, App, Application, Asset, AssetLogger, AssetSource, Bounds, Context,
+    Animation, AnimationExt, App, Asset, AssetLogger, AssetSource, Bounds, Context,
     Hsla, ImageAssetLoader, ImageCacheError, ImgResourceLoader, LOADING_DELAY, Length, RenderImage,
     Resource, SharedString, Window, WindowBounds, WindowOptions, black, div, img, prelude::*,
     pulsating_between, px, red, size,
@@ -193,7 +193,7 @@ impl Render for ImageLoadingExample {
 
 fn main() {
     env_logger::init();
-    Application::new()
+    gpui_platform::application()
         .with_assets(Assets {})
         .run(|cx: &mut App| {
             let options = WindowOptions {

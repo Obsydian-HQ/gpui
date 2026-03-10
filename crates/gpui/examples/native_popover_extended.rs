@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeColor, NativePopover, NativePopoverAnchor,
+    App, Bounds, Context, NativeColor, NativePopover, NativePopoverAnchor,
     NativePopoverBehavior, NativePopoverCheckbox, NativePopoverClickableRow,
     NativePopoverCloseEvent, NativePopoverColorDot, NativePopoverContentItem,
     NativePopoverProgress, NativePopoverShowEvent, NativePopoverToggle, NativeToolbar,
@@ -251,7 +251,7 @@ impl Render for ExtendedPopoverExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(780.0), px(460.0)), cx);
         cx.open_window(
             WindowOptions {

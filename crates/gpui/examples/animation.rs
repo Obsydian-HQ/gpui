@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use gpui::{
-    Animation, AnimationExt as _, App, Application, AssetSource, Bounds, Context, SharedString,
+    Animation, AnimationExt as _, App, AssetSource, Bounds, Context, SharedString,
     Transformation, Window, WindowBounds, WindowOptions, bounce, div, ease_in_out, percentage,
     prelude::*, px, size, svg,
 };
@@ -101,7 +101,7 @@ impl Render for AnimationExample {
 }
 
 fn main() {
-    Application::new()
+    gpui_platform::application()
         .with_assets(Assets {})
         .run(|cx: &mut App| {
             let options = WindowOptions {

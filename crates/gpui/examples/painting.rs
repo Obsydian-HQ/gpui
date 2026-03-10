@@ -1,5 +1,5 @@
 use gpui::{
-    Application, Background, Bounds, ColorSpace, Context, MouseDownEvent, Path, PathBuilder,
+    Background, Bounds, ColorSpace, Context, MouseDownEvent, Path, PathBuilder,
     PathStyle, Pixels, Point, Render, StrokeOptions, Window, WindowOptions, canvas, div,
     linear_color_stop, linear_gradient, point, prelude::*, px, quad, rgb, size,
 };
@@ -445,7 +445,7 @@ impl Render for PaintingViewer {
 }
 
 fn main() {
-    Application::new().run(|cx| {
+    gpui_platform::application().run(|cx| {
         cx.open_window(
             WindowOptions {
                 focus: true,

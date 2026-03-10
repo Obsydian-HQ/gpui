@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeSegmentedShape, NativeSegmentedSize,
+    App, Bounds, Context, NativeSegmentedShape, NativeSegmentedSize,
     SegmentSelectEvent, Window, WindowAppearance, WindowBounds, WindowOptions, div,
     native_toggle_group, prelude::*, px, rgb, size,
 };
@@ -181,7 +181,7 @@ impl Render for ToggleGroupExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(650.), px(450.)), cx);
         cx.open_window(
             WindowOptions {

@@ -1,90 +1,82 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{NativeControlState, SegmentedControlConfig};
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
+    px, AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
-    StyleRefinement, Styled, Window, px,
+    StyleRefinement, Styled, Window,
 };
 
 use super::native_element_helpers::schedule_native_callback;
 
-// =============================================================================
-// Event type
-// =============================================================================
-
-/// Event emitted when a segment is selected in a NativeToggleGroup.
 #[derive(Clone, Debug)]
 pub struct SegmentSelectEvent {
-    /// The index of the selected segment.
     pub index: usize,
 }
 
-// =============================================================================
-// Shape & size enums (macOS 26+ / NSControlBorderShape / NSControlSize)
-// =============================================================================
-
-/// Border shape for the segmented control (maps to `NSControlBorderShape`, macOS 26+).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeSegmentedShape {
-    /// System decides based on control size and context.
     #[default]
     Automatic,
-    /// Capsule (pill) shape.
     Capsule,
-    /// Rounded rectangle.
     RoundedRectangle,
-    /// Circle.
     Circle,
 }
 
 impl NativeSegmentedShape {
-    fn to_ns_border_shape(self) -> i64 {
+    fn to_raw(self) -> i64 {
         match self {
-            NativeSegmentedShape::Automatic => 0,     // NSControlBorderShapeAutomatic
-            NativeSegmentedShape::Capsule => 1,        // NSControlBorderShapeCapsule
-            NativeSegmentedShape::RoundedRectangle => 2, // NSControlBorderShapeRoundedRectangle
-            NativeSegmentedShape::Circle => 3,         // NSControlBorderShapeCircle
+            NativeSegmentedShape::Automatic => 0,
+            NativeSegmentedShape::Capsule => 1,
+            NativeSegmentedShape::RoundedRectangle => 2,
+            NativeSegmentedShape::Circle => 3,
         }
     }
 }
 
-/// Control size for the segmented control (maps to `NSControlSize`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NativeSegmentedStyle {
+    #[default]
+    Automatic,
+    Capsule,
+    RoundRect,
+    Circle,
+}
+
+impl From<NativeSegmentedStyle> for NativeSegmentedShape {
+    fn from(style: NativeSegmentedStyle) -> Self {
+        match style {
+            NativeSegmentedStyle::Automatic => NativeSegmentedShape::Automatic,
+            NativeSegmentedStyle::Capsule => NativeSegmentedShape::Capsule,
+            NativeSegmentedStyle::RoundRect => NativeSegmentedShape::RoundedRectangle,
+            NativeSegmentedStyle::Circle => NativeSegmentedShape::Circle,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NativeSegmentedSize {
-    /// Mini size.
     Mini,
-    /// Small size.
     Small,
-    /// Regular size (default).
     #[default]
     Regular,
-    /// Large size.
     Large,
-    /// Extra-large size (macOS 26+).
     ExtraLarge,
 }
 
 impl NativeSegmentedSize {
-    fn to_ns_control_size(self) -> u64 {
+    fn to_raw(self) -> u64 {
         match self {
-            NativeSegmentedSize::Mini => 2,       // NSControlSizeMini
-            NativeSegmentedSize::Small => 1,      // NSControlSizeSmall
-            NativeSegmentedSize::Regular => 0,    // NSControlSizeRegular
-            NativeSegmentedSize::Large => 3,      // NSControlSizeLarge
-            NativeSegmentedSize::ExtraLarge => 4, // NSControlSizeExtraLarge
+            NativeSegmentedSize::Mini => 2,
+            NativeSegmentedSize::Small => 1,
+            NativeSegmentedSize::Regular => 0,
+            NativeSegmentedSize::Large => 3,
+            NativeSegmentedSize::ExtraLarge => 4,
         }
     }
 }
 
-// =============================================================================
-// Public constructor
-// =============================================================================
-
-/// Creates a native segmented control (NSSegmentedControl on macOS).
-///
-/// Each label becomes a segment. The control participates in GPUI's Taffy layout.
 pub fn native_toggle_group(
     id: impl Into<ElementId>,
     labels: &[impl AsRef<str>],
@@ -104,11 +96,6 @@ pub fn native_toggle_group(
     }
 }
 
-// =============================================================================
-// Element struct
-// =============================================================================
-
-/// A native segmented control (NSSegmentedControl) positioned by GPUI's Taffy layout.
 pub struct NativeToggleGroup {
     id: ElementId,
     labels: Vec<SharedString>,
@@ -121,14 +108,11 @@ pub struct NativeToggleGroup {
 }
 
 impl NativeToggleGroup {
-    /// Set which segment is initially selected.
     pub fn selected_index(mut self, index: usize) -> Self {
         self.selected_index = Some(index);
         self
     }
 
-    /// Register a callback invoked when a segment is selected.
-    /// The event contains the newly selected index.
     pub fn on_select(
         mut self,
         listener: impl Fn(&SegmentSelectEvent, &mut Window, &mut App) + 'static,
@@ -137,20 +121,21 @@ impl NativeToggleGroup {
         self
     }
 
-    /// Set the border shape of the segmented control (macOS 26+).
     pub fn border_shape(mut self, shape: NativeSegmentedShape) -> Self {
         self.border_shape = shape;
         self
     }
 
-    /// Set the control size of the segmented control.
+    pub fn segment_style(mut self, style: NativeSegmentedStyle) -> Self {
+        self.border_shape = style.into();
+        self
+    }
+
     pub fn control_size(mut self, size: NativeSegmentedSize) -> Self {
         self.control_size = size;
         self
     }
 
-    /// Set SF Symbol names for each segment, replacing text labels with icons.
-    /// The number of symbols should match the number of labels.
     pub fn sf_symbols(mut self, symbols: &[impl AsRef<str>]) -> Self {
         self.symbols = Some(
             symbols
@@ -161,57 +146,6 @@ impl NativeToggleGroup {
         self
     }
 }
-
-// =============================================================================
-// Persisted element state
-// =============================================================================
-
-struct NativeToggleGroupState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_selected: Option<usize>,
-    current_symbols: Option<Vec<SharedString>>,
-    current_border_shape: NativeSegmentedShape,
-    current_control_size: NativeSegmentedSize,
-    attached: bool,
-}
-
-impl Drop for NativeToggleGroupState {
-    fn drop(&mut self) {
-        log::info!(
-            "NativeToggleGroupState::drop: control_ptr={:?}, attached={}",
-            self.control_ptr, self.attached,
-        );
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_segmented_target,
-                    native_controls::release_native_segmented_control,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_segmented_target,
-                    native_controls::release_native_segmented_control,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeToggleGroupState {}
-
-// =============================================================================
-// Element trait impl
-// =============================================================================
 
 impl IntoElement for NativeToggleGroup {
     type Element = Self;
@@ -280,335 +214,66 @@ impl Element for NativeToggleGroup {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
+        }
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let on_select = self.on_select.take();
+        let labels = self.labels.clone();
+        let symbols = self.symbols.clone();
+        let selected_index = self.selected_index;
+        let border_shape = self.border_shape;
+        let control_size = self.control_size;
 
-            let on_select = self.on_select.take();
-            let labels = self.labels.clone();
-            let symbols = self.symbols.clone();
-            let selected_index = self.selected_index;
-            let border_shape = self.border_shape;
-            let control_size = self.control_size;
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeToggleGroupState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        // Update existing control
-                        let control = state.control_ptr as cocoa::base::id;
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                            if state.current_selected != selected_index {
-                                native_controls::set_native_segmented_selected(
-                                    control,
-                                    selected_index,
-                                );
-                                state.current_selected = selected_index;
-                            }
-                            if state.current_border_shape != border_shape {
-                                native_controls::set_native_segmented_border_shape(
-                                    control,
-                                    border_shape.to_ns_border_shape(),
-                                );
-                                state.current_border_shape = border_shape;
-                            }
-                            if state.current_control_size != control_size {
-                                native_controls::set_native_segmented_control_size(
-                                    control,
-                                    control_size.to_ns_control_size(),
-                                );
-                                state.current_control_size = control_size;
-                            }
-                            if state.current_symbols != symbols {
-                                if let Some(ref syms) = symbols {
-                                    for (i, sym) in syms.iter().enumerate() {
-                                        if !sym.is_empty() {
-                                            native_controls::set_native_segmented_image(
-                                                control,
-                                                i,
-                                                sym.as_ref(),
-                                            );
-                                        }
-                                    }
-                                }
-                                state.current_symbols = symbols.clone();
-                            }
-                        }
+            let on_select_fn = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |index| SegmentSelectEvent { index },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-                        // Update callback
-                        if let Some(on_select) = on_select {
-                            unsafe {
-                                native_controls::release_native_segmented_target(state.target_ptr);
-                            }
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let on_select = Rc::new(on_select);
-                            let callback = schedule_native_callback(
-                                on_select,
-                                |index| SegmentSelectEvent { index },
-                                nfc,
-                                inv,
-                            );
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_segmented_action(
-                                    control,
-                                    callback,
-                                );
-                            }
-                        }
+            let label_strs: Vec<&str> = labels.iter().map(|s| s.as_ref()).collect();
+            let image_pairs: Vec<(usize, &str)> = symbols
+                .as_ref()
+                .map(|syms| {
+                    syms.iter()
+                        .enumerate()
+                        .filter(|(_, s)| !s.is_empty())
+                        .map(|(i, s)| (i, s.as_ref()))
+                        .collect()
+                })
+                .unwrap_or_default();
 
-                        state
-                    } else {
-                        log::info!(
-                            "NativeToggleGroup: CREATING new control, id={:?}, parent_view={:?}",
-                            id, native_view,
-                        );
-                        // Creation path
-                        let (control_ptr, target_ptr) = unsafe {
-                            let label_strs: Vec<&str> = labels.iter().map(|s| s.as_ref()).collect();
-                            let control = native_controls::create_native_segmented_control(
-                                &label_strs,
-                                selected_index,
-                            );
-
-                            native_controls::set_native_segmented_border_shape(
-                                control,
-                                border_shape.to_ns_border_shape(),
-                            );
-                            native_controls::set_native_segmented_control_size(
-                                control,
-                                control_size.to_ns_control_size(),
-                            );
-
-                            if let Some(ref syms) = symbols {
-                                for (i, sym) in syms.iter().enumerate() {
-                                    if !sym.is_empty() {
-                                        native_controls::set_native_segmented_image(
-                                            control, i, sym.as_ref(),
-                                        );
-                                    }
-                                }
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            let target = if let Some(on_select) = on_select {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let on_select = Rc::new(on_select);
-                                let callback = schedule_native_callback(
-                                    on_select,
-                                    |index| SegmentSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                );
-                                native_controls::set_native_segmented_action(control, callback)
-                            } else {
-                                std::ptr::null_mut()
-                            };
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeToggleGroupState {
-                            control_ptr,
-                            target_ptr,
-                            current_selected: selected_index,
-                            current_symbols: symbols,
-                            current_border_shape: border_shape,
-                            current_control_size: control_size,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_segmented_control(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                SegmentedControlConfig {
+                    labels: &label_strs,
+                    selected_index,
+                    border_shape: border_shape.to_raw(),
+                    control_size: control_size.to_raw(),
+                    images: &image_pairs,
+                    enabled: true,
+                    on_select: on_select_fn,
                 },
             );
-        }
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let on_select = self.on_select.take();
-            let labels = self.labels.clone();
-            let symbols = self.symbols.clone();
-            let selected_index = self.selected_index;
-            let border_shape = self.border_shape;
-            let control_size = self.control_size;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeToggleGroupState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        let control = state.control_ptr as native_controls::id;
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                            if state.current_selected != selected_index {
-                                native_controls::set_native_segmented_selected(
-                                    control,
-                                    selected_index,
-                                );
-                                state.current_selected = selected_index;
-                            }
-                            if state.current_border_shape != border_shape {
-                                native_controls::set_native_segmented_border_shape(
-                                    control,
-                                    border_shape.to_ns_border_shape(),
-                                );
-                                state.current_border_shape = border_shape;
-                            }
-                            if state.current_control_size != control_size {
-                                native_controls::set_native_segmented_control_size(
-                                    control,
-                                    control_size.to_ns_control_size(),
-                                );
-                                state.current_control_size = control_size;
-                            }
-                            if state.current_symbols != symbols {
-                                if let Some(ref syms) = symbols {
-                                    for (i, sym) in syms.iter().enumerate() {
-                                        if !sym.is_empty() {
-                                            native_controls::set_native_segmented_image(
-                                                control,
-                                                i,
-                                                sym.as_ref(),
-                                            );
-                                        }
-                                    }
-                                }
-                                state.current_symbols = symbols.clone();
-                            }
-                        }
-
-                        if let Some(on_select) = on_select {
-                            unsafe {
-                                native_controls::release_native_segmented_target(state.target_ptr);
-                            }
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let on_select = Rc::new(on_select);
-                            let callback = schedule_native_callback(
-                                on_select,
-                                |index| SegmentSelectEvent { index },
-                                nfc,
-                                inv,
-                            );
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_segmented_action(
-                                    control,
-                                    callback,
-                                );
-                            }
-                        }
-
-                        state
-                    } else {
-                        let (control_ptr, target_ptr) = unsafe {
-                            let label_strs: Vec<&str> = labels.iter().map(|s| s.as_ref()).collect();
-                            let control = native_controls::create_native_segmented_control(
-                                &label_strs,
-                                selected_index,
-                            );
-
-                            native_controls::set_native_segmented_border_shape(
-                                control,
-                                border_shape.to_ns_border_shape(),
-                            );
-                            native_controls::set_native_segmented_control_size(
-                                control,
-                                control_size.to_ns_control_size(),
-                            );
-
-                            if let Some(ref syms) = symbols {
-                                for (i, sym) in syms.iter().enumerate() {
-                                    if !sym.is_empty() {
-                                        native_controls::set_native_segmented_image(
-                                            control, i, sym.as_ref(),
-                                        );
-                                    }
-                                }
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            let target = if let Some(on_select) = on_select {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let on_select = Rc::new(on_select);
-                                let callback = schedule_native_callback(
-                                    on_select,
-                                    |index| SegmentSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                );
-                                native_controls::set_native_segmented_action(control, callback)
-                            } else {
-                                std::ptr::null_mut()
-                            };
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeToggleGroupState {
-                            control_ptr,
-                            target_ptr,
-                            current_selected: selected_index,
-                            current_symbols: symbols,
-                            current_border_shape: border_shape,
-                            current_control_size: control_size,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
-        }
+            ((), Some(state))
+        });
     }
 }
 

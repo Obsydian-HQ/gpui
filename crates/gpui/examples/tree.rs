@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 
 use gpui::{
-    App, Application, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
+    App, Bounds, Context, Window, WindowBounds, WindowOptions, div, prelude::*, px,
     size,
 };
 
@@ -32,7 +32,7 @@ impl Render for Tree {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(300.0), px(300.0)), cx);
         cx.open_window(
             WindowOptions {

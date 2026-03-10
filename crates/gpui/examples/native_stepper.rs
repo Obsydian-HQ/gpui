@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, StepperChangeEvent, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, StepperChangeEvent, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_stepper, prelude::*, px, rgb, size,
 };
 
@@ -74,7 +74,7 @@ impl Render for StepperExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(560.), px(320.)), cx);
         cx.open_window(
             WindowOptions {

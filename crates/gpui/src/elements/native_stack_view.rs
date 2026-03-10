@@ -1,6 +1,6 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 
+use crate::platform::native_controls::{NativeControlState, StackViewConfig};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, Style, StyleRefinement, Styled,
@@ -100,6 +100,7 @@ pub fn native_stack_view(
         distribution: NativeStackDistribution::default(),
         alignment: NativeStackAlignment::default(),
         edge_insets: None,
+        detach_hidden: false,
         style: StyleRefinement::default(),
     }
 }
@@ -115,6 +116,7 @@ pub struct NativeStackView {
     distribution: NativeStackDistribution,
     alignment: NativeStackAlignment,
     edge_insets: Option<(f64, f64, f64, f64)>,
+    detach_hidden: bool,
     style: StyleRefinement,
 }
 
@@ -143,42 +145,18 @@ impl NativeStackView {
         self
     }
 
+    /// Sets whether hidden subviews should be detached from the stack.
+    pub fn detach_hidden(mut self, detach: bool) -> Self {
+        self.detach_hidden = detach;
+        self
+    }
+
     /// Returns a pointer to the underlying NSStackView, if it has been created.
     /// This allows adding native subviews via the FFI layer.
-    pub fn raw_view_ptr(&self) -> *mut c_void {
+    pub fn raw_view_ptr(&self) -> *mut std::ffi::c_void {
         std::ptr::null_mut()
     }
 }
-
-struct NativeStackViewState {
-    view_ptr: *mut c_void,
-    current_spacing: Option<f64>,
-    current_distribution: NativeStackDistribution,
-    current_alignment: NativeStackAlignment,
-    current_edge_insets: Option<(f64, f64, f64, f64)>,
-    attached: bool,
-}
-
-impl Drop for NativeStackViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_stack_view(self.view_ptr as cocoa::base::id);
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_stack_view(
-                    self.view_ptr as native_controls::id,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeStackViewState {}
 
 impl IntoElement for NativeStackView {
     type Element = Self;
@@ -245,239 +223,41 @@ impl Element for NativeStackView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let orientation = self.orientation;
-            let spacing = self.spacing;
-            let distribution = self.distribution;
-            let alignment = self.alignment;
-            let edge_insets = self.edge_insets;
-
-            window.with_optional_element_state::<NativeStackViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_spacing != spacing {
-                                if let Some(s) = spacing {
-                                    native_controls::set_native_stack_view_spacing(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        s,
-                                    );
-                                }
-                                element_state.current_spacing = spacing;
-                            }
-
-                            if element_state.current_distribution != distribution {
-                                native_controls::set_native_stack_view_distribution(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    distribution.to_raw(),
-                                );
-                                element_state.current_distribution = distribution;
-                            }
-
-                            if element_state.current_alignment != alignment {
-                                native_controls::set_native_stack_view_alignment(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    alignment.to_raw(),
-                                );
-                                element_state.current_alignment = alignment;
-                            }
-
-                            if element_state.current_edge_insets != edge_insets {
-                                if let Some((top, left, bottom, right)) = edge_insets {
-                                    native_controls::set_native_stack_view_edge_insets(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        top,
-                                        left,
-                                        bottom,
-                                        right,
-                                    );
-                                }
-                                element_state.current_edge_insets = edge_insets;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view =
-                                native_controls::create_native_stack_view(orientation.to_raw());
-
-                            if let Some(s) = spacing {
-                                native_controls::set_native_stack_view_spacing(view, s);
-                            }
-                            native_controls::set_native_stack_view_distribution(
-                                view,
-                                distribution.to_raw(),
-                            );
-                            native_controls::set_native_stack_view_alignment(
-                                view,
-                                alignment.to_raw(),
-                            );
-                            if let Some((top, left, bottom, right)) = edge_insets {
-                                native_controls::set_native_stack_view_edge_insets(
-                                    view, top, left, bottom, right,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeStackViewState {
-                                view_ptr: view as *mut c_void,
-                                current_spacing: spacing,
-                                current_distribution: distribution,
-                                current_alignment: alignment,
-                                current_edge_insets: edge_insets,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let orientation = self.orientation;
+        let spacing = self.spacing;
+        let distribution = self.distribution;
+        let alignment = self.alignment;
+        let edge_insets = self.edge_insets;
+        let detach_hidden = self.detach_hidden;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            let orientation = self.orientation;
-            let spacing = self.spacing;
-            let distribution = self.distribution;
-            let alignment = self.alignment;
-            let edge_insets = self.edge_insets;
-
-            window.with_optional_element_state::<NativeStackViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_spacing != spacing {
-                                if let Some(s) = spacing {
-                                    native_controls::set_native_stack_view_spacing(
-                                        element_state.view_ptr as native_controls::id,
-                                        s,
-                                    );
-                                }
-                                element_state.current_spacing = spacing;
-                            }
-
-                            if element_state.current_distribution != distribution {
-                                native_controls::set_native_stack_view_distribution(
-                                    element_state.view_ptr as native_controls::id,
-                                    distribution.to_raw(),
-                                );
-                                element_state.current_distribution = distribution;
-                            }
-
-                            if element_state.current_alignment != alignment {
-                                native_controls::set_native_stack_view_alignment(
-                                    element_state.view_ptr as native_controls::id,
-                                    alignment.to_raw(),
-                                );
-                                element_state.current_alignment = alignment;
-                            }
-
-                            if element_state.current_edge_insets != edge_insets {
-                                if let Some((top, left, bottom, right)) = edge_insets {
-                                    native_controls::set_native_stack_view_edge_insets(
-                                        element_state.view_ptr as native_controls::id,
-                                        top,
-                                        left,
-                                        bottom,
-                                        right,
-                                    );
-                                }
-                                element_state.current_edge_insets = edge_insets;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view =
-                                native_controls::create_native_stack_view(orientation.to_raw());
-
-                            if let Some(s) = spacing {
-                                native_controls::set_native_stack_view_spacing(view, s);
-                            }
-                            native_controls::set_native_stack_view_distribution(
-                                view,
-                                distribution.to_raw(),
-                            );
-                            native_controls::set_native_stack_view_alignment(
-                                view,
-                                alignment.to_raw(),
-                            );
-                            if let Some((top, left, bottom, right)) = edge_insets {
-                                native_controls::set_native_stack_view_edge_insets(
-                                    view, top, left, bottom, right,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeStackViewState {
-                                view_ptr: view as *mut c_void,
-                                current_spacing: spacing,
-                                current_distribution: distribution,
-                                current_alignment: alignment,
-                                current_edge_insets: edge_insets,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_stack_view(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                StackViewConfig {
+                    orientation: orientation.to_raw(),
+                    spacing: spacing.unwrap_or(0.0),
+                    alignment: alignment.to_raw(),
+                    distribution: distribution.to_raw(),
+                    edge_insets: edge_insets.unwrap_or((0.0, 0.0, 0.0, 0.0)),
+                    detach_hidden,
+                    children: Vec::new(),
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

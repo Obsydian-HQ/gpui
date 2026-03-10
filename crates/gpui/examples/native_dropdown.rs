@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, DropdownSelectEvent, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, DropdownSelectEvent, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_dropdown, prelude::*, px, rgb, size,
 };
 
@@ -69,7 +69,7 @@ impl Render for DropdownExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(560.), px(320.)), cx);
         cx.open_window(
             WindowOptions {

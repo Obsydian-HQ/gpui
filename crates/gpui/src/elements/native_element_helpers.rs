@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::ffi::c_void;
 use std::rc::Rc;
 
 use crate::{App, Window, WindowInvalidator};
@@ -60,60 +59,3 @@ pub(super) fn schedule_native_focus_callback(
     })
 }
 
-/// Cleans up a native control by removing it from its parent view, releasing the
-/// target/delegate, and releasing the control itself.
-///
-/// # Safety
-/// Both pointers must be valid ObjC objects (or null for target_ptr).
-#[cfg(target_os = "macos")]
-pub(super) unsafe fn cleanup_native_control(
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    release_target_fn: unsafe fn(*mut c_void),
-    release_control_fn: unsafe fn(cocoa::base::id),
-) {
-    unsafe {
-        crate::platform::native_controls::remove_native_view_from_parent(
-            control_ptr as cocoa::base::id,
-        );
-        release_target_fn(target_ptr);
-        release_control_fn(control_ptr as cocoa::base::id);
-    }
-}
-
-/// iOS cleanup — removes from superview, releases target and control.
-///
-/// # Safety
-/// Both pointers must be valid ObjC objects (or null for target_ptr).
-#[cfg(target_os = "ios")]
-pub(super) unsafe fn cleanup_native_control(
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    release_target_fn: unsafe fn(*mut c_void),
-    release_control_fn: unsafe fn(crate::platform::native_controls::id),
-) {
-    unsafe {
-        crate::platform::native_controls::remove_native_view_from_parent(
-            control_ptr as crate::platform::native_controls::id,
-        );
-        release_target_fn(target_ptr);
-        release_control_fn(control_ptr as crate::platform::native_controls::id);
-    }
-}
-
-/// Unsupported platform fallback — no-op.
-///
-/// # Safety
-/// The release callbacks must accept null pointers.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub(super) unsafe fn cleanup_native_control(
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    release_target_fn: unsafe fn(*mut c_void),
-    _release_control_fn: unsafe fn(*mut c_void),
-) {
-    unsafe {
-        release_target_fn(target_ptr);
-        let _ = control_ptr;
-    }
-}

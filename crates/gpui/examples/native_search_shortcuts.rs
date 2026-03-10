@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
+    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
     NativeSearchFieldTarget, NativeToolbar, NativeToolbarButton, NativeToolbarClickEvent,
     NativeToolbarDisplayMode, NativeToolbarItem, NativeToolbarSearchEvent,
     NativeToolbarSearchField, NativeToolbarSizeMode, SearchChangeEvent, SearchSubmitEvent, Window,
@@ -216,7 +216,7 @@ impl Focusable for NativeSearchShortcutsExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("cmd-l", FocusToolbarSearch, None),
             KeyBinding::new("cmd-shift-l", FocusContentSearch, None),

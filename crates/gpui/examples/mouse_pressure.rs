@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, MousePressureEvent, PressureStage, Window, WindowBounds,
+    App, Bounds, Context, MousePressureEvent, PressureStage, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size,
 };
 
@@ -44,7 +44,7 @@ impl MousePressureExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 
         cx.open_window(

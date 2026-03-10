@@ -1,6 +1,7 @@
 use refineable::Refineable as _;
-use std::{ffi::c_void, fs, future::Future, io, sync::Arc};
+use std::{fs, future::Future, io, sync::Arc};
 
+use crate::platform::native_controls::{ImageViewConfig, NativeControlState};
 use crate::{
     AbsoluteLength, App, Asset, AssetLogger, Bounds, DefiniteLength, Element, ElementId,
     GlobalElementId, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Resource,
@@ -188,42 +189,6 @@ impl NativeImageView {
     }
 }
 
-struct NativeImageViewState {
-    view_ptr: *mut c_void,
-    current_source: Option<NativeImageSource>,
-    current_scaling: NativeImageScaling,
-    current_tint: Option<(f64, f64, f64, f64)>,
-    attached: bool,
-}
-
-impl Drop for NativeImageViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_image_view(self.view_ptr as cocoa::base::id);
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_image_view(
-                    self.view_ptr as native_controls::id,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeImageViewState {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeImageApplyState {
-    Applied,
-    Pending,
-    Failed,
-}
-
 type NativeImageResourceLoader = AssetLogger<NativeImageAssetLoader>;
 
 #[derive(Clone)]
@@ -304,108 +269,38 @@ impl From<io::Error> for NativeImageLoadError {
     }
 }
 
-#[cfg(target_os = "macos")]
-unsafe fn apply_image_source(
-    view: cocoa::base::id,
-    source: &NativeImageSource,
+/// Resolves the image source into the data needed for `ImageViewConfig`.
+/// Returns `(sf_symbol, sf_symbol_config, image_data)` plus whether the resource is still loading.
+fn resolve_image_source(
+    source: &Option<NativeImageSource>,
     window: &mut Window,
     cx: &mut App,
-) -> NativeImageApplyState {
-    unsafe {
-        use crate::platform::native_controls;
-        match source {
-            NativeImageSource::SfSymbol {
-                name,
-                point_size,
-                weight,
-            } => {
-                if let Some(pt) = point_size {
-                    native_controls::set_native_image_view_sf_symbol_config(
-                        view,
-                        name.as_ref(),
-                        *pt,
-                        weight.to_raw(),
-                    );
-                } else {
-                    native_controls::set_native_image_view_sf_symbol(view, name.as_ref());
-                }
-                NativeImageApplyState::Applied
-            }
-            NativeImageSource::Data(data) => {
-                native_controls::set_native_image_view_image_from_data(view, data);
-                NativeImageApplyState::Applied
-            }
-            NativeImageSource::Resource(resource) => {
-                match window.use_asset::<NativeImageResourceLoader>(resource, cx) {
-                    Some(Ok(data)) => {
-                        native_controls::set_native_image_view_image_from_data(
-                            view,
-                            data.as_ref().as_slice(),
-                        );
-                        NativeImageApplyState::Applied
-                    }
-                    Some(Err(_)) => {
-                        native_controls::clear_native_image_view_image(view);
-                        NativeImageApplyState::Failed
-                    }
-                    None => {
-                        native_controls::clear_native_image_view_image(view);
-                        NativeImageApplyState::Pending
-                    }
-                }
+) -> (Option<String>, Option<(String, f64, i64)>, Option<Vec<u8>>, bool) {
+    let Some(src) = source else {
+        return (None, None, None, false);
+    };
+    match src {
+        NativeImageSource::SfSymbol { name, point_size, weight } => {
+            if let Some(pt) = point_size {
+                (None, Some((name.to_string(), *pt, weight.to_raw())), None, false)
+            } else {
+                (Some(name.to_string()), None, None, false)
             }
         }
-    }
-}
-
-#[cfg(target_os = "ios")]
-unsafe fn apply_image_source(
-    view: crate::platform::native_controls::id,
-    source: &NativeImageSource,
-    window: &mut Window,
-    cx: &mut App,
-) -> NativeImageApplyState {
-    unsafe {
-        use crate::platform::native_controls;
-        match source {
-            NativeImageSource::SfSymbol {
-                name,
-                point_size,
-                weight,
-            } => {
-                if let Some(pt) = point_size {
-                    native_controls::set_native_image_view_sf_symbol_config(
-                        view,
-                        name.as_ref(),
-                        *pt,
-                        weight.to_raw(),
-                    );
-                } else {
-                    native_controls::set_native_image_view_sf_symbol(view, name.as_ref());
+        NativeImageSource::Data(data) => {
+            (None, None, Some(data.clone()), false)
+        }
+        NativeImageSource::Resource(resource) => {
+            match window.use_asset::<NativeImageResourceLoader>(resource, cx) {
+                Some(Ok(data)) => {
+                    (None, None, Some(data.as_ref().clone()), false)
                 }
-                NativeImageApplyState::Applied
-            }
-            NativeImageSource::Data(data) => {
-                native_controls::set_native_image_view_image_from_data(view, data);
-                NativeImageApplyState::Applied
-            }
-            NativeImageSource::Resource(resource) => {
-                match window.use_asset::<NativeImageResourceLoader>(resource, cx) {
-                    Some(Ok(data)) => {
-                        native_controls::set_native_image_view_image_from_data(
-                            view,
-                            data.as_ref().as_slice(),
-                        );
-                        NativeImageApplyState::Applied
-                    }
-                    Some(Err(_)) => {
-                        native_controls::clear_native_image_view_image(view);
-                        NativeImageApplyState::Failed
-                    }
-                    None => {
-                        native_controls::clear_native_image_view_image(view);
-                        NativeImageApplyState::Pending
-                    }
+                Some(Err(_)) => {
+                    (None, None, None, false)
+                }
+                None => {
+                    // Still loading — signal pending so we don't cache this source
+                    (None, None, None, true)
                 }
             }
         }
@@ -477,242 +372,47 @@ impl Element for NativeImageView {
         window: &mut Window,
         cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
+        }
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let source = self.source.take();
+        let scaling = self.scaling;
+        let tint_color = self.tint_color;
 
-            let source = self.source.take();
-            let scaling = self.scaling;
-            let tint_color = self.tint_color;
+        let (sf_symbol, sf_symbol_config, image_data, _pending) =
+            resolve_image_source(&source, window, cx);
 
-            window.with_optional_element_state::<NativeImageViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-                            if element_state.current_source != source {
-                                let source_state = if let Some(ref src) = source {
-                                    apply_image_source(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        src,
-                                        window,
-                                        cx,
-                                    )
-                                } else {
-                                    native_controls::clear_native_image_view_image(
-                                        element_state.view_ptr as cocoa::base::id,
-                                    );
-                                    NativeImageApplyState::Applied
-                                };
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
 
-                                match source_state {
-                                    NativeImageApplyState::Applied
-                                    | NativeImageApplyState::Failed => {
-                                        element_state.current_source = source;
-                                    }
-                                    NativeImageApplyState::Pending => {
-                                        element_state.current_source = None;
-                                    }
-                                }
-                            }
+            let sf_symbol_ref = sf_symbol.as_deref();
+            let sf_symbol_config_ref = sf_symbol_config
+                .as_ref()
+                .map(|(name, pt, w)| (name.as_str(), *pt, *w));
+            let image_data_ref = image_data.as_deref();
 
-                            if element_state.current_scaling != scaling {
-                                native_controls::set_native_image_view_scaling(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    scaling.to_raw(),
-                                );
-                                element_state.current_scaling = scaling;
-                            }
-
-                            if element_state.current_tint != tint_color {
-                                if let Some((r, g, b, a)) = tint_color {
-                                    native_controls::set_native_image_view_content_tint_color(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        r,
-                                        g,
-                                        b,
-                                        a,
-                                    );
-                                }
-                                element_state.current_tint = tint_color;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_image_view();
-                            let current_source = if let Some(ref src) = source {
-                                match apply_image_source(view, src, window, cx) {
-                                    NativeImageApplyState::Applied
-                                    | NativeImageApplyState::Failed => source.clone(),
-                                    NativeImageApplyState::Pending => None,
-                                }
-                            } else {
-                                None
-                            };
-                            native_controls::set_native_image_view_scaling(view, scaling.to_raw());
-                            if let Some((r, g, b, a)) = tint_color {
-                                native_controls::set_native_image_view_content_tint_color(
-                                    view, r, g, b, a,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeImageViewState {
-                                view_ptr: view as *mut c_void,
-                                current_source,
-                                current_scaling: scaling,
-                                current_tint: tint_color,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state))
+            nc.update_image_view(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                ImageViewConfig {
+                    sf_symbol: sf_symbol_ref,
+                    sf_symbol_config: sf_symbol_config_ref,
+                    image_data: image_data_ref,
+                    scaling: Some(scaling.to_raw()),
+                    tint_color,
+                    enabled: true,
                 },
             );
-        }
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let source = self.source.take();
-            let scaling = self.scaling;
-            let tint_color = self.tint_color;
-
-            window.with_optional_element_state::<NativeImageViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_source != source {
-                                let source_state = if let Some(ref src) = source {
-                                    apply_image_source(
-                                        element_state.view_ptr as native_controls::id,
-                                        src,
-                                        window,
-                                        cx,
-                                    )
-                                } else {
-                                    native_controls::clear_native_image_view_image(
-                                        element_state.view_ptr as native_controls::id,
-                                    );
-                                    NativeImageApplyState::Applied
-                                };
-
-                                match source_state {
-                                    NativeImageApplyState::Applied
-                                    | NativeImageApplyState::Failed => {
-                                        element_state.current_source = source;
-                                    }
-                                    NativeImageApplyState::Pending => {
-                                        element_state.current_source = None;
-                                    }
-                                }
-                            }
-
-                            if element_state.current_scaling != scaling {
-                                native_controls::set_native_image_view_scaling(
-                                    element_state.view_ptr as native_controls::id,
-                                    scaling.to_raw(),
-                                );
-                                element_state.current_scaling = scaling;
-                            }
-
-                            if element_state.current_tint != tint_color {
-                                if let Some((r, g, b, a)) = tint_color {
-                                    native_controls::set_native_image_view_content_tint_color(
-                                        element_state.view_ptr as native_controls::id,
-                                        r,
-                                        g,
-                                        b,
-                                        a,
-                                    );
-                                }
-                                element_state.current_tint = tint_color;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_image_view();
-                            let current_source = if let Some(ref src) = source {
-                                match apply_image_source(view, src, window, cx) {
-                                    NativeImageApplyState::Applied
-                                    | NativeImageApplyState::Failed => source.clone(),
-                                    NativeImageApplyState::Pending => None,
-                                }
-                            } else {
-                                None
-                            };
-                            native_controls::set_native_image_view_scaling(view, scaling.to_raw());
-                            if let Some((r, g, b, a)) = tint_color {
-                                native_controls::set_native_image_view_content_tint_color(
-                                    view, r, g, b, a,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeImageViewState {
-                                view_ptr: view as *mut c_void,
-                                current_source,
-                                current_scaling: scaling,
-                                current_tint: tint_color,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
-        }
+            ((), Some(state))
+        });
     }
 }
 

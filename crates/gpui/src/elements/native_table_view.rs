@@ -1,7 +1,7 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{NativeControlState, TableViewConfig};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
@@ -237,52 +237,6 @@ impl NativeTableView {
     }
 }
 
-struct NativeTableViewState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_items: Vec<SharedString>,
-    current_selected: Option<usize>,
-    current_row_height: f64,
-    current_column_title: SharedString,
-    current_show_header: bool,
-    current_alternating_rows: bool,
-    current_allows_multiple_selection: bool,
-    current_table_style: NativeTableStyle,
-    current_row_size_style: NativeTableRowSizeStyle,
-    current_selection_highlight_style: NativeTableSelectionHighlightStyle,
-    current_grid_mask: NativeTableGridMask,
-    attached: bool,
-}
-
-impl Drop for NativeTableViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_table_target,
-                    native_controls::release_native_table_view,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_table_target,
-                    native_controls::release_native_table_view,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeTableViewState {}
-
 impl IntoElement for NativeTableView {
     type Element = Self;
 
@@ -348,398 +302,67 @@ impl Element for NativeTableView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let mut on_select = self.on_select.take();
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let row_height = self.row_height;
-            let column_title = self.column_title.clone();
-            let show_header = self.show_header;
-            let alternating_rows = self.alternating_rows;
-            let allows_multiple_selection = self.allows_multiple_selection;
-            let table_style = self.table_style;
-            let row_size_style = self.row_size_style;
-            let selection_highlight_style = self.selection_highlight_style;
-            let grid_mask = self.grid_mask;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeTableViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                            native_controls::set_native_table_column_width(
-                                state.control_ptr as cocoa::base::id,
-                                bounds.size.width.0 as f64,
-                            );
-                        }
-
-                        if state.current_row_height != row_height {
-                            unsafe {
-                                native_controls::set_native_table_row_height(
-                                    state.control_ptr as cocoa::base::id,
-                                    row_height,
-                                );
-                            }
-                            state.current_row_height = row_height;
-                        }
-
-                        if state.current_row_size_style != row_size_style {
-                            unsafe {
-                                native_controls::set_native_table_row_size_style(
-                                    state.control_ptr as cocoa::base::id,
-                                    row_size_style.to_ns_style(),
-                                );
-                            }
-                            state.current_row_size_style = row_size_style;
-                        }
-
-                        if state.current_table_style != table_style {
-                            unsafe {
-                                native_controls::set_native_table_style(
-                                    state.control_ptr as cocoa::base::id,
-                                    table_style.to_ns_style(),
-                                );
-                            }
-                            state.current_table_style = table_style;
-                        }
-
-                        if state.current_selection_highlight_style != selection_highlight_style {
-                            unsafe {
-                                native_controls::set_native_table_selection_highlight_style(
-                                    state.control_ptr as cocoa::base::id,
-                                    selection_highlight_style.to_ns_style(),
-                                );
-                            }
-                            state.current_selection_highlight_style = selection_highlight_style;
-                        }
-
-                        if state.current_grid_mask != grid_mask {
-                            unsafe {
-                                native_controls::set_native_table_grid_style(
-                                    state.control_ptr as cocoa::base::id,
-                                    grid_mask.bits(),
-                                );
-                            }
-                            state.current_grid_mask = grid_mask;
-                        }
-
-                        if state.current_alternating_rows != alternating_rows {
-                            unsafe {
-                                native_controls::set_native_table_uses_alternating_rows(
-                                    state.control_ptr as cocoa::base::id,
-                                    alternating_rows,
-                                );
-                            }
-                            state.current_alternating_rows = alternating_rows;
-                        }
-
-                        if state.current_show_header != show_header {
-                            unsafe {
-                                native_controls::set_native_table_show_header(
-                                    state.control_ptr as cocoa::base::id,
-                                    show_header,
-                                );
-                            }
-                            state.current_show_header = show_header;
-                        }
-
-                        if state.current_allows_multiple_selection != allows_multiple_selection {
-                            unsafe {
-                                native_controls::set_native_table_allows_multiple_selection(
-                                    state.control_ptr as cocoa::base::id,
-                                    allows_multiple_selection,
-                                );
-                            }
-                            state.current_allows_multiple_selection = allows_multiple_selection;
-                        }
-
-                        if state.current_column_title != column_title {
-                            unsafe {
-                                native_controls::set_native_table_column_title(
-                                    state.control_ptr as cocoa::base::id,
-                                    &column_title,
-                                );
-                            }
-                            state.current_column_title = column_title.clone();
-                        }
-
-                        let needs_rebind = state.current_items != items
-                            || state.current_selected != selected_index
-                            || on_select.is_some();
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_table_target(state.target_ptr);
-                            }
-
-                            let callback = on_select.take().map(|handler| {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let handler = Rc::new(handler);
-                                schedule_native_callback(
-                                    handler,
-                                    |index| TableRowSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                )
-                            });
-
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_table_items(
-                                    state.control_ptr as cocoa::base::id,
-                                    &item_strs,
-                                    selected_index,
-                                    callback,
-                                );
-                            }
-                            state.current_items = items.clone();
-                            state.current_selected = selected_index;
-                        }
-
-                        state
-                    } else {
-                        let callback = on_select.take().map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            schedule_native_callback(
-                                handler,
-                                |index| TableRowSelectEvent { index },
-                                nfc,
-                                inv,
-                            )
-                        });
-
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_table_view();
-                            native_controls::set_native_table_column_width(
-                                control,
-                                bounds.size.width.0 as f64,
-                            );
-                            native_controls::set_native_table_row_height(control, row_height);
-                            native_controls::set_native_table_row_size_style(
-                                control,
-                                row_size_style.to_ns_style(),
-                            );
-                            native_controls::set_native_table_style(
-                                control,
-                                table_style.to_ns_style(),
-                            );
-                            native_controls::set_native_table_selection_highlight_style(
-                                control,
-                                selection_highlight_style.to_ns_style(),
-                            );
-                            native_controls::set_native_table_grid_style(control, grid_mask.bits());
-                            native_controls::set_native_table_uses_alternating_rows(
-                                control,
-                                alternating_rows,
-                            );
-                            native_controls::set_native_table_show_header(control, show_header);
-                            native_controls::set_native_table_allows_multiple_selection(
-                                control,
-                                allows_multiple_selection,
-                            );
-                            native_controls::set_native_table_column_title(control, &column_title);
-
-                            let item_strs: Vec<&str> =
-                                items.iter().map(|item| item.as_ref()).collect();
-                            let target = native_controls::set_native_table_items(
-                                control,
-                                &item_strs,
-                                selected_index,
-                                callback,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeTableViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_row_height: row_height,
-                            current_column_title: column_title,
-                            current_show_header: show_header,
-                            current_alternating_rows: alternating_rows,
-                            current_allows_multiple_selection: allows_multiple_selection,
-                            current_table_style: table_style,
-                            current_row_size_style: row_size_style,
-                            current_selection_highlight_style: selection_highlight_style,
-                            current_grid_mask: grid_mask,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_select = self.on_select.take();
+        let items = self.items.clone();
+        let selected_index = self.selected_index;
+        let row_height = self.row_height;
+        let column_title = self.column_title.clone();
+        let show_header = self.show_header;
+        let alternating_rows = self.alternating_rows;
+        let allows_multiple_selection = self.allows_multiple_selection;
+        let table_style = self.table_style;
+        let row_size_style = self.row_size_style;
+        let selection_highlight_style = self.selection_highlight_style;
+        let grid_mask = self.grid_mask;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let items = self.items.clone();
-            let selected_index = self.selected_index;
-            let row_height = self.row_height;
-            let column_title = self.column_title.clone();
-            let show_header = self.show_header;
-            let alternating_rows = self.alternating_rows;
-            let allows_multiple_selection = self.allows_multiple_selection;
-            let table_style = self.table_style;
-            let row_size_style = self.row_size_style;
-            let selection_highlight_style = self.selection_highlight_style;
-            let grid_mask = self.grid_mask;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeTableViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                        }
+            let on_select_fn = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |index| TableRowSelectEvent { index },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-                        if state.current_row_height != row_height {
-                            unsafe {
-                                native_controls::set_native_table_row_height(
-                                    state.control_ptr as native_controls::id,
-                                    row_height,
-                                );
-                            }
-                            state.current_row_height = row_height;
-                        }
-
-                        if state.current_allows_multiple_selection != allows_multiple_selection {
-                            unsafe {
-                                native_controls::set_native_table_allows_multiple_selection(
-                                    state.control_ptr as native_controls::id,
-                                    allows_multiple_selection,
-                                );
-                            }
-                            state.current_allows_multiple_selection = allows_multiple_selection;
-                        }
-
-                        let needs_rebind = state.current_items != items
-                            || state.current_selected != selected_index;
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_table_target(state.target_ptr);
-                            }
-
-                            let ios_rows: Vec<native_controls::IosTableRow> = items
-                                .iter()
-                                .map(|item| native_controls::IosTableRow {
-                                    text: item.to_string(),
-                                })
-                                .collect();
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_table_items(
-                                    state.control_ptr as native_controls::id,
-                                    ios_rows,
-                                );
-                            }
-                            state.current_items = items.clone();
-                            state.current_selected = selected_index;
-                        }
-
-                        state
-                    } else {
-                        let ios_rows: Vec<native_controls::IosTableRow> = items
-                            .iter()
-                            .map(|item| native_controls::IosTableRow {
-                                text: item.to_string(),
-                            })
-                            .collect();
-
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_table_view();
-                            native_controls::set_native_table_row_height(control, row_height);
-                            native_controls::set_native_table_allows_multiple_selection(
-                                control,
-                                allows_multiple_selection,
-                            );
-
-                            let target = native_controls::set_native_table_items(
-                                control,
-                                ios_rows,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeTableViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_items: items,
-                            current_selected: selected_index,
-                            current_row_height: row_height,
-                            current_column_title: column_title,
-                            current_show_header: show_header,
-                            current_alternating_rows: alternating_rows,
-                            current_allows_multiple_selection: allows_multiple_selection,
-                            current_table_style: table_style,
-                            current_row_size_style: row_size_style,
-                            current_selection_highlight_style: selection_highlight_style,
-                            current_grid_mask: grid_mask,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let item_strs: Vec<&str> = items.iter().map(|item| item.as_ref()).collect();
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_table_view(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                TableViewConfig {
+                    column_title: Some(&column_title),
+                    column_width: Some(bounds.size.width.0 as f64),
+                    items: &item_strs,
+                    selected_index,
+                    row_height: Some(row_height),
+                    row_size_style: Some(row_size_style.to_ns_style()),
+                    style: Some(table_style.to_ns_style()),
+                    highlight_style: Some(selection_highlight_style.to_ns_style()),
+                    grid_style: Some(grid_mask.bits()),
+                    alternating_rows,
+                    multiple_selection: allows_multiple_selection,
+                    show_header,
+                    on_select: on_select_fn,
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

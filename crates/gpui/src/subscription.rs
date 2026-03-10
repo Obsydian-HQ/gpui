@@ -5,7 +5,7 @@ use std::{
     mem,
     rc::Rc,
 };
-use util::post_inc;
+use gpui_util::post_inc;
 
 pub(crate) struct SubscriberSet<EmitterKey, Callback>(
     Rc<RefCell<SubscriberSetState<EmitterKey, Callback>>>,

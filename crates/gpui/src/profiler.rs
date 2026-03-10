@@ -1,3 +1,4 @@
+use scheduler::Instant;
 use std::{
     cell::LazyCell,
     collections::HashMap,
@@ -5,7 +6,6 @@ use std::{
     hash::{DefaultHasher, Hash},
     sync::Arc,
     thread::ThreadId,
-    time::Instant,
 };
 
 use serde::{Deserialize, Serialize};
@@ -318,7 +318,6 @@ impl Drop for ThreadTimings {
 }
 
 #[doc(hidden)]
-#[allow(dead_code)] // Used by Linux and Windows dispatchers, not macOS
 pub fn add_task_timing(timing: TaskTiming) {
     THREAD_TIMINGS.with(|timings| {
         let mut timings = timings.lock();

@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use anyhow::Result;
 use gpui::{
-    App, Application, AssetSource, Bounds, BoxShadow, ClickEvent, Context, SharedString, Task,
+    App, AssetSource, Bounds, BoxShadow, ClickEvent, Context, SharedString, Task,
     Window, WindowBounds, WindowOptions, div, hsla, img, point, prelude::*, px, rgb, size, svg,
 };
 
@@ -156,7 +156,7 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-    Application::new()
+    gpui_platform::application()
         .with_assets(Assets {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"),
         })

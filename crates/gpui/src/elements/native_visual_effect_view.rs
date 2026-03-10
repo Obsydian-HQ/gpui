@@ -1,6 +1,6 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 
+use crate::platform::native_controls::{NativeControlState, VisualEffectViewConfig};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, Style, StyleRefinement, Styled,
@@ -156,39 +156,6 @@ impl NativeVisualEffectView {
     }
 }
 
-struct NativeVisualEffectViewState {
-    view_ptr: *mut c_void,
-    current_material: NativeVisualEffectMaterial,
-    current_blending_mode: NativeVisualEffectBlendingMode,
-    current_state: NativeVisualEffectState,
-    current_emphasized: bool,
-    current_corner_radius: Option<f64>,
-    attached: bool,
-}
-
-impl Drop for NativeVisualEffectViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_visual_effect_view(
-                    self.view_ptr as cocoa::base::id,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_visual_effect_view(
-                    self.view_ptr as native_controls::id,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeVisualEffectViewState {}
-
 impl IntoElement for NativeVisualEffectView {
     type Element = Self;
 
@@ -254,246 +221,38 @@ impl Element for NativeVisualEffectView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
+        }
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let material = self.material;
+        let blending_mode = self.blending_mode;
+        let state = self.state;
+        let emphasized = self.emphasized;
+        let corner_radius = self.corner_radius;
 
-            let material = self.material;
-            let blending_mode = self.blending_mode;
-            let state = self.state;
-            let emphasized = self.emphasized;
-            let corner_radius = self.corner_radius;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut control_state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeVisualEffectViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state_val = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_material != material {
-                                native_controls::set_native_visual_effect_material(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    material.to_raw(),
-                                );
-                                element_state.current_material = material;
-                            }
-
-                            if element_state.current_blending_mode != blending_mode {
-                                native_controls::set_native_visual_effect_blending_mode(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    blending_mode.to_raw(),
-                                );
-                                element_state.current_blending_mode = blending_mode;
-                            }
-
-                            if element_state.current_state != state {
-                                native_controls::set_native_visual_effect_state(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    state.to_raw(),
-                                );
-                                element_state.current_state = state;
-                            }
-
-                            if element_state.current_emphasized != emphasized {
-                                native_controls::set_native_visual_effect_emphasized(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    emphasized,
-                                );
-                                element_state.current_emphasized = emphasized;
-                            }
-
-                            if element_state.current_corner_radius != corner_radius {
-                                if let Some(radius) = corner_radius {
-                                    native_controls::set_native_visual_effect_corner_radius(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        radius,
-                                    );
-                                }
-                                element_state.current_corner_radius = corner_radius;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_visual_effect_view();
-                            native_controls::set_native_visual_effect_material(
-                                view,
-                                material.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_blending_mode(
-                                view,
-                                blending_mode.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_state(
-                                view,
-                                state.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_emphasized(view, emphasized);
-                            if let Some(radius) = corner_radius {
-                                native_controls::set_native_visual_effect_corner_radius(
-                                    view, radius,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeVisualEffectViewState {
-                                view_ptr: view as *mut c_void,
-                                current_material: material,
-                                current_blending_mode: blending_mode,
-                                current_state: state,
-                                current_emphasized: emphasized,
-                                current_corner_radius: corner_radius,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state_val))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_visual_effect_view(
+                &mut control_state,
+                parent,
+                bounds,
+                scale,
+                VisualEffectViewConfig {
+                    material: material.to_raw(),
+                    blending_mode: blending_mode.to_raw(),
+                    state: state.to_raw(),
+                    emphasized,
+                    corner_radius: corner_radius.unwrap_or(0.0),
                 },
             );
-        }
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let material = self.material;
-            let blending_mode = self.blending_mode;
-            let state = self.state;
-            let emphasized = self.emphasized;
-            let corner_radius = self.corner_radius;
-
-            window.with_optional_element_state::<NativeVisualEffectViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state_val = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_material != material {
-                                native_controls::set_native_visual_effect_material(
-                                    element_state.view_ptr as native_controls::id,
-                                    material.to_raw(),
-                                );
-                                element_state.current_material = material;
-                            }
-
-                            if element_state.current_blending_mode != blending_mode {
-                                native_controls::set_native_visual_effect_blending_mode(
-                                    element_state.view_ptr as native_controls::id,
-                                    blending_mode.to_raw(),
-                                );
-                                element_state.current_blending_mode = blending_mode;
-                            }
-
-                            if element_state.current_state != state {
-                                native_controls::set_native_visual_effect_state(
-                                    element_state.view_ptr as native_controls::id,
-                                    state.to_raw(),
-                                );
-                                element_state.current_state = state;
-                            }
-
-                            if element_state.current_emphasized != emphasized {
-                                native_controls::set_native_visual_effect_emphasized(
-                                    element_state.view_ptr as native_controls::id,
-                                    emphasized,
-                                );
-                                element_state.current_emphasized = emphasized;
-                            }
-
-                            if element_state.current_corner_radius != corner_radius {
-                                if let Some(radius) = corner_radius {
-                                    native_controls::set_native_visual_effect_corner_radius(
-                                        element_state.view_ptr as native_controls::id,
-                                        radius,
-                                    );
-                                }
-                                element_state.current_corner_radius = corner_radius;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_visual_effect_view();
-                            native_controls::set_native_visual_effect_material(
-                                view,
-                                material.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_blending_mode(
-                                view,
-                                blending_mode.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_state(
-                                view,
-                                state.to_raw(),
-                            );
-                            native_controls::set_native_visual_effect_emphasized(view, emphasized);
-                            if let Some(radius) = corner_radius {
-                                native_controls::set_native_visual_effect_corner_radius(
-                                    view, radius,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeVisualEffectViewState {
-                                view_ptr: view as *mut c_void,
-                                current_material: material,
-                                current_blending_mode: blending_mode,
-                                current_state: state,
-                                current_emphasized: emphasized,
-                                current_corner_radius: corner_radius,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state_val))
-                },
-            );
-        }
+            ((), Some(control_state))
+        });
     }
 }
 

@@ -1,24 +1,15 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{MenuButtonConfig, NativeControlState, NativeMenuItemData};
 use crate::{
-    AbsoluteLength, AnyWindowHandle, App, AsyncApp, Bounds, DefiniteLength, Element, ElementId,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Point,
-    SharedString, Style, StyleRefinement, Styled, Window, px,
+    px, AbsoluteLength, AnyWindowHandle, App, AsyncApp, Bounds, DefiniteLength, Element,
+    ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId, Length, Pixels, Point,
+    SharedString, Style, StyleRefinement, Styled, Window,
 };
 
 use super::native_element_helpers::schedule_native_callback;
 
-/// Shows a native popup context menu at the given position (in GPUI pixels from
-/// the window content top-left).
-///
-/// The menu is displayed asynchronously (deferred to the next main-queue
-/// iteration) to avoid conflicting with GPUI's active borrows. When the user
-/// selects an action item, `on_select` is called with the zero-based action
-/// index and fresh `&mut Window` / `&mut App` borrows.
-///
-/// Call this from inside a GPUI event handler (e.g. `on_mouse_down`).
 pub fn show_native_popup_menu(
     items: &[NativeMenuItem],
     position: Point<Pixels>,
@@ -26,38 +17,29 @@ pub fn show_native_popup_menu(
     cx: &App,
     on_select: impl FnOnce(usize, &mut Window, &mut App) + 'static,
 ) {
-    #[cfg(target_os = "macos")]
-    {
-        let native_view = window.raw_native_view_ptr();
-        if native_view.is_null() {
-            return;
-        }
-
-        let mapped = map_items(items);
-        let async_app = cx.to_async();
-        let window_handle = window.window_handle();
-
-        unsafe {
-            crate::platform::native_controls::show_popup_menu_deferred(
-                &mapped,
-                native_view as cocoa::base::id,
-                position.x.0 as f64,
-                position.y.0 as f64,
-                Box::new(move |result| {
-                    if let Some(index) = result {
-                        deferred_update(async_app, window_handle, move |window, cx| {
-                            on_select(index, window, cx);
-                        });
-                    }
-                }),
-            );
-        }
+    let native_view = window.raw_native_view_ptr();
+    if native_view.is_null() {
+        return;
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (items, position, window, cx, on_select);
-    }
+    let nc = window.native_controls();
+    let mapped = map_items(items);
+    let async_app = cx.to_async();
+    let window_handle = window.window_handle();
+
+    nc.show_context_menu(
+        &mapped,
+        native_view,
+        position.x.0 as f64,
+        position.y.0 as f64,
+        Box::new(move |result| {
+            if let Some(index) = result {
+                deferred_update(async_app, window_handle, move |window, cx| {
+                    on_select(index, window, cx);
+                });
+            }
+        }),
+    );
 }
 
 fn deferred_update(
@@ -72,31 +54,21 @@ fn deferred_update(
     });
 }
 
-/// A declarative native menu item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeMenuItem {
-    /// A clickable action item.
     Action {
-        /// Visible title.
         title: SharedString,
-        /// Whether this item is enabled.
         enabled: bool,
     },
-    /// A submenu containing more menu items.
     Submenu {
-        /// Visible title.
         title: SharedString,
-        /// Whether this submenu is enabled.
         enabled: bool,
-        /// Nested menu items.
         items: Vec<NativeMenuItem>,
     },
-    /// A visual separator.
     Separator,
 }
 
 impl NativeMenuItem {
-    /// Creates an enabled action item.
     pub fn action(title: impl Into<SharedString>) -> Self {
         Self::Action {
             title: title.into(),
@@ -104,7 +76,6 @@ impl NativeMenuItem {
         }
     }
 
-    /// Creates an enabled submenu.
     pub fn submenu(title: impl Into<SharedString>, items: Vec<NativeMenuItem>) -> Self {
         Self::Submenu {
             title: title.into(),
@@ -113,12 +84,10 @@ impl NativeMenuItem {
         }
     }
 
-    /// Creates a separator item.
     pub fn separator() -> Self {
         Self::Separator
     }
 
-    /// Sets enabled state on action and submenu items.
     pub fn enabled(self, enabled: bool) -> Self {
         match self {
             Self::Action { title, .. } => Self::Action { title, enabled },
@@ -132,10 +101,8 @@ impl NativeMenuItem {
     }
 }
 
-/// Event emitted when a menu action item is selected.
 #[derive(Clone, Debug)]
 pub struct MenuItemSelectEvent {
-    /// Zero-based action index across all action items (depth-first order).
     pub index: usize,
 }
 
@@ -145,7 +112,6 @@ enum NativeMenuKind {
     Context,
 }
 
-/// Creates a native menu button (NSButton + NSMenu/NSMenuItem).
 pub fn native_menu_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -162,9 +128,6 @@ pub fn native_menu_button(
     }
 }
 
-/// Creates a native context-menu trigger button.
-///
-/// The menu opens on left click and right click.
 pub fn native_context_menu(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -181,7 +144,6 @@ pub fn native_context_menu(
     }
 }
 
-/// A native menu button/context menu element.
 pub struct NativeMenuButton {
     id: ElementId,
     label: SharedString,
@@ -193,7 +155,6 @@ pub struct NativeMenuButton {
 }
 
 impl NativeMenuButton {
-    /// Registers a callback for action item selection.
     pub fn on_select(
         mut self,
         listener: impl Fn(&MenuItemSelectEvent, &mut Window, &mut App) + 'static,
@@ -202,101 +163,35 @@ impl NativeMenuButton {
         self
     }
 
-    /// Sets whether the trigger control is disabled.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 }
 
-struct NativeMenuButtonState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_label: SharedString,
-    current_items: Vec<NativeMenuItem>,
-    attached: bool,
-}
-
-impl Drop for NativeMenuButtonState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_menu_button_target,
-                    native_controls::release_native_menu_button,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_menu_button_target,
-                    native_controls::release_native_menu_button,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeMenuButtonState {}
-
-#[cfg(target_os = "macos")]
-fn map_items(
-    items: &[NativeMenuItem],
-) -> Vec<crate::platform::native_controls::NativeMenuItemData> {
-    fn convert(item: &NativeMenuItem) -> crate::platform::native_controls::NativeMenuItemData {
+fn map_items(items: &[NativeMenuItem]) -> Vec<NativeMenuItemData> {
+    fn convert(item: &NativeMenuItem) -> NativeMenuItemData {
         match item {
-            NativeMenuItem::Action { title, enabled } => {
-                crate::platform::native_controls::NativeMenuItemData::Action {
-                    title: title.to_string(),
-                    enabled: *enabled,
-                    icon: None,
-                }
-            }
+            NativeMenuItem::Action { title, enabled } => NativeMenuItemData::Action {
+                title: title.to_string(),
+                enabled: *enabled,
+                icon: None,
+            },
             NativeMenuItem::Submenu {
                 title,
                 enabled,
                 items,
-            } => crate::platform::native_controls::NativeMenuItemData::Submenu {
+            } => NativeMenuItemData::Submenu {
                 title: title.to_string(),
                 enabled: *enabled,
                 icon: None,
                 items: items.iter().map(convert).collect(),
             },
-            NativeMenuItem::Separator => {
-                crate::platform::native_controls::NativeMenuItemData::Separator
-            }
+            NativeMenuItem::Separator => NativeMenuItemData::Separator,
         }
     }
 
     items.iter().map(convert).collect()
-}
-
-#[cfg(target_os = "ios")]
-fn flatten_menu_titles(items: &[NativeMenuItem]) -> Vec<String> {
-    fn collect(item: &NativeMenuItem, out: &mut Vec<String>) {
-        match item {
-            NativeMenuItem::Action { title, .. } => out.push(title.to_string()),
-            NativeMenuItem::Submenu { title, items, .. } => {
-                out.push(title.to_string());
-                for child in items {
-                    collect(child, out);
-                }
-            }
-            NativeMenuItem::Separator => {}
-        }
-    }
-    let mut out = Vec::new();
-    for item in items {
-        collect(item, &mut out);
-    }
-    out
 }
 
 impl IntoElement for NativeMenuButton {
@@ -365,243 +260,53 @@ impl Element for NativeMenuButton {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let mut on_select = self.on_select.take();
-            let label = self.label.clone();
-            let items = self.items.clone();
-            let disabled = self.disabled;
-            let kind = self.kind;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeMenuButtonState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            native_controls::set_native_control_enabled(
-                                state.control_ptr as cocoa::base::id,
-                                !disabled,
-                            );
-                        }
-
-                        if state.current_label != label {
-                            unsafe {
-                                native_controls::set_native_menu_button_title(
-                                    state.control_ptr as cocoa::base::id,
-                                    &label,
-                                );
-                            }
-                            state.current_label = label.clone();
-                        }
-
-                        if state.current_items != items || on_select.is_some() {
-                            unsafe {
-                                native_controls::release_native_menu_button_target(
-                                    state.target_ptr,
-                                );
-                            }
-
-                            let callback = on_select.take().map(|handler| {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let handler = Rc::new(handler);
-                                schedule_native_callback(
-                                    handler,
-                                    |index| MenuItemSelectEvent { index },
-                                    nfc,
-                                    inv,
-                                )
-                            });
-
-                            let mapped = map_items(&items);
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_menu_button_items(
-                                    state.control_ptr as cocoa::base::id,
-                                    &mapped,
-                                    callback,
-                                );
-                            }
-                            state.current_items = items.clone();
-                        }
-
-                        state
-                    } else {
-                        let callback = on_select.take().map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            schedule_native_callback(
-                                handler,
-                                |index| MenuItemSelectEvent { index },
-                                nfc,
-                                inv,
-                            )
-                        });
-
-                        let mapped = map_items(&items);
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = match kind {
-                                NativeMenuKind::Button => {
-                                    native_controls::create_native_menu_button(&label)
-                                }
-                                NativeMenuKind::Context => {
-                                    native_controls::create_native_context_menu_button(&label)
-                                }
-                            };
-
-                            native_controls::set_native_control_enabled(control, !disabled);
-                            let target = native_controls::set_native_menu_button_items(
-                                control, &mapped, callback,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeMenuButtonState {
-                            control_ptr,
-                            target_ptr,
-                            current_label: label,
-                            current_items: items,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_select = self.on_select.take();
+        let label = self.label.clone();
+        let items = self.items.clone();
+        let disabled = self.disabled;
+        let kind = self.kind;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let nfc = window.next_frame_callbacks.clone();
+        let inv = window.invalidator.clone();
 
-            let label = self.label.clone();
-            let items = self.items.clone();
-            let disabled = self.disabled;
-            let kind = self.kind;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeMenuButtonState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
+            let on_select_fn = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |index| MenuItemSelectEvent { index },
+                    nfc.clone(),
+                    inv.clone(),
+                )
+            });
 
-                            native_controls::set_native_control_enabled(
-                                state.control_ptr as native_controls::id,
-                                !disabled,
-                            );
-                        }
+            let mapped = map_items(&items);
 
-                        if state.current_label != label {
-                            unsafe {
-                                native_controls::set_native_menu_button_title(
-                                    state.control_ptr as native_controls::id,
-                                    &label,
-                                );
-                            }
-                            state.current_label = label.clone();
-                        }
-
-                        if state.current_items != items {
-                            let titles = flatten_menu_titles(&items);
-                            let title_refs: Vec<&str> =
-                                titles.iter().map(|s| s.as_str()).collect();
-                            unsafe {
-                                native_controls::set_native_menu_button_items(
-                                    state.control_ptr as native_controls::id,
-                                    &title_refs,
-                                );
-                            }
-                            state.current_items = items.clone();
-                        }
-
-                        state
-                    } else {
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = match kind {
-                                NativeMenuKind::Button => {
-                                    native_controls::create_native_menu_button(&label)
-                                }
-                                NativeMenuKind::Context => {
-                                    native_controls::create_native_context_menu_button(&label)
-                                }
-                            };
-
-                            native_controls::set_native_control_enabled(control, !disabled);
-
-                            let titles = flatten_menu_titles(&items);
-                            let title_refs: Vec<&str> =
-                                titles.iter().map(|s| s.as_str()).collect();
-                            native_controls::set_native_menu_button_items(
-                                control, &title_refs,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            (control as *mut c_void, std::ptr::null_mut())
-                        };
-
-                        NativeMenuButtonState {
-                            control_ptr,
-                            target_ptr,
-                            current_label: label,
-                            current_items: items,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_menu_button(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                MenuButtonConfig {
+                    title: &label,
+                    context_menu: kind == NativeMenuKind::Context,
+                    items: &mapped,
+                    enabled: !disabled,
+                    on_select: on_select_fn,
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

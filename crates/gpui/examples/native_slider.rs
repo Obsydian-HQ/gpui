@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, SliderChangeEvent, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, SliderChangeEvent, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_slider, prelude::*, px, rgb, size,
 };
 
@@ -77,7 +77,7 @@ impl Render for SliderExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(560.), px(360.)), cx);
         cx.open_window(
             WindowOptions {

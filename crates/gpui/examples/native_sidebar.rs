@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
+    App, Bounds, Context, FocusHandle, Focusable, KeyBinding, Menu, MenuItem,
     NativeSidebarHeaderButton, Window, WindowBounds, WindowOptions, actions, div, native_sidebar,
     prelude::*, px, size,
 };
@@ -75,7 +75,7 @@ impl Focusable for SidebarExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([KeyBinding::new("cmd-alt-s", ToggleSidebar, None)]);
         cx.set_menus(vec![Menu {
             name: "View".into(),

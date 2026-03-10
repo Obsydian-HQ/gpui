@@ -1,7 +1,7 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{NativeControlState, NativeOutlineNodeData, OutlineViewConfig};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, SharedString, Style,
@@ -132,54 +132,9 @@ impl NativeOutlineView {
     }
 }
 
-struct NativeOutlineViewState {
-    control_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_nodes: Vec<NativeOutlineNode>,
-    current_selected_row: Option<usize>,
-    current_row_height: f64,
-    current_expand_all: bool,
-    current_highlight: NativeOutlineHighlight,
-    attached: bool,
-}
-
-impl Drop for NativeOutlineViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_outline_target,
-                    native_controls::release_native_outline_view,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.control_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_outline_target,
-                    native_controls::release_native_outline_view,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeOutlineViewState {}
-
-#[cfg(target_os = "macos")]
-fn map_nodes(
-    nodes: &[NativeOutlineNode],
-) -> Vec<crate::platform::native_controls::NativeOutlineNodeData> {
-    fn convert(
-        node: &NativeOutlineNode,
-    ) -> crate::platform::native_controls::NativeOutlineNodeData {
-        crate::platform::native_controls::NativeOutlineNodeData {
+fn map_nodes(nodes: &[NativeOutlineNode]) -> Vec<NativeOutlineNodeData> {
+    fn convert(node: &NativeOutlineNode) -> NativeOutlineNodeData {
+        NativeOutlineNodeData {
             title: node.title.to_string(),
             children: node.children.iter().map(convert).collect(),
         }
@@ -249,283 +204,57 @@ impl Element for NativeOutlineView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let mut on_select = self.on_select.take();
-            let nodes = self.nodes.clone();
-            let selected_row = self.selected_row;
-            let row_height = self.row_height;
-            let expand_all = self.expand_all;
-            let highlight = self.highlight;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeOutlineViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                            native_controls::sync_native_outline_column_width(
-                                state.control_ptr as cocoa::base::id,
-                            );
-                        }
-
-                        if state.current_row_height != row_height {
-                            unsafe {
-                                native_controls::set_native_outline_row_height(
-                                    state.control_ptr as cocoa::base::id,
-                                    row_height,
-                                );
-                            }
-                            state.current_row_height = row_height;
-                        }
-
-                        if state.current_highlight != highlight {
-                            unsafe {
-                                native_controls::set_native_outline_highlight_style(
-                                    state.control_ptr as cocoa::base::id,
-                                    highlight.to_ns_style(),
-                                );
-                            }
-                            state.current_highlight = highlight;
-                        }
-
-                        let needs_rebind = state.current_nodes != nodes
-                            || state.current_selected_row != selected_row
-                            || state.current_expand_all != expand_all
-                            || on_select.is_some();
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_outline_target(state.target_ptr);
-                            }
-
-                            let callback = on_select.take().map(|handler| {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let handler = Rc::new(handler);
-                                schedule_native_callback(
-                                    handler,
-                                    |(index, title): (usize, String)| OutlineRowSelectEvent {
-                                        index,
-                                        title: SharedString::from(title),
-                                    },
-                                    nfc,
-                                    inv,
-                                )
-                            });
-
-                            let mapped = map_nodes(&nodes);
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_outline_items(
-                                    state.control_ptr as cocoa::base::id,
-                                    &mapped,
-                                    selected_row,
-                                    expand_all,
-                                    callback,
-                                );
-                            }
-
-                            state.current_nodes = nodes.clone();
-                            state.current_selected_row = selected_row;
-                            state.current_expand_all = expand_all;
-                        }
-
-                        state
-                    } else {
-                        let callback = on_select.take().map(|handler| {
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let handler = Rc::new(handler);
-                            schedule_native_callback(
-                                handler,
-                                |(index, title): (usize, String)| OutlineRowSelectEvent {
-                                    index,
-                                    title: SharedString::from(title),
-                                },
-                                nfc,
-                                inv,
-                            )
-                        });
-
-                        let mapped = map_nodes(&nodes);
-
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_outline_view();
-                            native_controls::set_native_outline_row_height(control, row_height);
-                            native_controls::set_native_outline_highlight_style(
-                                control,
-                                highlight.to_ns_style(),
-                            );
-
-                            let target = native_controls::set_native_outline_items(
-                                control,
-                                &mapped,
-                                selected_row,
-                                expand_all,
-                                callback,
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                            native_controls::sync_native_outline_column_width(
-                                control,
-                            );
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeOutlineViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_nodes: nodes,
-                            current_selected_row: selected_row,
-                            current_row_height: row_height,
-                            current_expand_all: expand_all,
-                            current_highlight: highlight,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_select = self.on_select.take();
+        let nodes = self.nodes.clone();
+        let selected_row = self.selected_row;
+        let row_height = self.row_height;
+        let expand_all = self.expand_all;
+        let highlight = self.highlight;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let nodes = self.nodes.clone();
-            let selected_row = self.selected_row;
-            let row_height = self.row_height;
-            let expand_all = self.expand_all;
-            let highlight = self.highlight;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeOutlineViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.control_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                            native_controls::sync_native_outline_column_width(
-                                state.control_ptr as native_controls::id,
-                            );
-                        }
+            let on_select_fn = on_select.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |(index, title): (usize, String)| OutlineRowSelectEvent {
+                        index,
+                        title: SharedString::from(title),
+                    },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-                        if state.current_row_height != row_height {
-                            unsafe {
-                                native_controls::set_native_outline_row_height(
-                                    state.control_ptr as native_controls::id,
-                                    row_height,
-                                );
-                            }
-                            state.current_row_height = row_height;
-                        }
-
-                        if state.current_highlight != highlight {
-                            unsafe {
-                                native_controls::set_native_outline_highlight_style(
-                                    state.control_ptr as native_controls::id,
-                                    highlight.to_ns_style(),
-                                );
-                            }
-                            state.current_highlight = highlight;
-                        }
-
-                        let needs_rebind = state.current_nodes != nodes
-                            || state.current_selected_row != selected_row
-                            || state.current_expand_all != expand_all;
-                        if needs_rebind {
-                            unsafe {
-                                native_controls::release_native_outline_target(state.target_ptr);
-                                state.target_ptr = native_controls::set_native_outline_items(
-                                    state.control_ptr as native_controls::id,
-                                    std::ptr::null_mut(),
-                                );
-                            }
-                            state.current_nodes = nodes.clone();
-                            state.current_selected_row = selected_row;
-                            state.current_expand_all = expand_all;
-                        }
-
-                        state
-                    } else {
-                        let (control_ptr, target_ptr) = unsafe {
-                            let control = native_controls::create_native_outline_view();
-                            native_controls::set_native_outline_row_height(control, row_height);
-                            native_controls::set_native_outline_highlight_style(
-                                control,
-                                highlight.to_ns_style(),
-                            );
-
-                            let target = native_controls::set_native_outline_items(
-                                control,
-                                std::ptr::null_mut(),
-                            );
-
-                            native_controls::attach_native_view_to_parent(
-                                control,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                control,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                            native_controls::sync_native_outline_column_width(control);
-
-                            (control as *mut c_void, target)
-                        };
-
-                        NativeOutlineViewState {
-                            control_ptr,
-                            target_ptr,
-                            current_nodes: nodes,
-                            current_selected_row: selected_row,
-                            current_row_height: row_height,
-                            current_expand_all: expand_all,
-                            current_highlight: highlight,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let mapped = map_nodes(&nodes);
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_outline_view(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                OutlineViewConfig {
+                    nodes: &mapped,
+                    selected_row,
+                    expand_all,
+                    highlight_style: Some(highlight.to_ns_style()),
+                    row_height: Some(row_height),
+                    on_select: on_select_fn,
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

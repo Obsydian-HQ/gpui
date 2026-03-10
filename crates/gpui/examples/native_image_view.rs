@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeImageSymbolWeight, Window, WindowAppearance,
+    App, Bounds, Context, NativeImageSymbolWeight, Window, WindowAppearance,
     WindowBounds, WindowOptions, div, native_image_view, prelude::*, px, rgb, size,
 };
 
@@ -94,7 +94,7 @@ impl Render for ImageViewExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(550.), px(350.)), cx);
         cx.open_window(
             WindowOptions {

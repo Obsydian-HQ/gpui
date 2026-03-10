@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, NativeOutlineNode, OutlineRowSelectEvent, Window,
+    App, Bounds, Context, NativeOutlineNode, OutlineRowSelectEvent, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_outline_view, prelude::*, px, rgb,
     size,
 };
@@ -86,7 +86,7 @@ impl Render for OutlineViewExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(720.), px(540.)), cx);
         cx.open_window(
             WindowOptions {

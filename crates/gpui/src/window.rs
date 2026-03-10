@@ -62,8 +62,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use util::post_inc;
-use util::{ResultExt, measure};
+use gpui_util::{ResultExt, measure, post_inc};
 use uuid::Uuid;
 
 mod prompts;
@@ -93,10 +92,17 @@ pub struct GpuiSurfaceHandle {
     pub native_view_ptr: *mut std::ffi::c_void,
 }
 
+#[cfg(target_os = "macos")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum HostedSurfaceSlot {
+    Popover,
+    Panel,
+}
+
 /// State for a registered secondary rendering surface.
 #[cfg(target_os = "macos")]
 pub(crate) struct SurfaceState {
-    pub gpui_surface: crate::platform::gpui_surface::GpuiSurface,
+    pub surface: Box<dyn crate::PlatformSurface>,
     pub root_view: AnyView,
     pub scene: Scene,
     pub layout_engine: Option<TaffyLayoutEngine>,
@@ -107,7 +113,8 @@ pub(crate) struct SurfaceState {
     pub mouse_hit_test: HitTest,
 }
 
-pub(crate) const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
+/// Default window size used when no explicit size is provided.
+pub const DEFAULT_WINDOW_SIZE: Size<Pixels> = size(px(1536.), px(864.));
 
 /// A 6:5 aspect ratio minimum window size to be used for functional,
 /// additional-to-main-Zed windows, like the settings and rules library windows.
@@ -2354,6 +2361,7 @@ pub struct NativePopover {
     on_close: Option<Box<dyn Fn(&NativePopoverCloseEvent, &mut Window, &mut App) + 'static>>,
     on_show: Option<Box<dyn Fn(&NativePopoverShowEvent, &mut Window, &mut App) + 'static>>,
     content_items: Vec<NativePopoverContentItem>,
+    hosted_view: Option<AnyView>,
 }
 
 impl NativePopover {
@@ -2366,6 +2374,7 @@ impl NativePopover {
             on_close: None,
             on_show: None,
             content_items: Vec::new(),
+            hosted_view: None,
         }
     }
 
@@ -2408,12 +2417,19 @@ impl NativePopover {
         self
     }
 
+    /// Replaces native item content with hosted GPUI content rendered into the popover.
+    pub fn content_view<V: Render>(mut self, view: Entity<V>) -> Self {
+        self.hosted_view = Some(AnyView::from(view));
+        self.content_items.clear();
+        self
+    }
+
     fn into_platform_with_anchor(
         self,
         anchor: NativePopoverAnchor,
         next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
         invalidator: WindowInvalidator,
-    ) -> (PlatformNativePopover, PlatformNativePopoverAnchor) {
+    ) -> (PlatformNativePopover, PlatformNativePopoverAnchor, Option<AnyView>) {
         let on_close = self.on_close.map(|handler| -> Box<dyn Fn()> {
             schedule_native_toolbar_callback_no_args(
                 Rc::new(handler),
@@ -2460,8 +2476,10 @@ impl NativePopover {
                 on_close,
                 on_show,
                 content_items,
+                hosted_surface_view: None,
             },
             platform_anchor,
+            self.hosted_view,
         )
     }
 }
@@ -2548,6 +2566,7 @@ pub struct NativePanel {
     material: Option<NativePanelMaterial>,
     on_close: Option<Box<dyn Fn(&NativePanelCloseEvent, &mut Window, &mut App) + 'static>>,
     content_items: Vec<NativePopoverContentItem>,
+    hosted_view: Option<AnyView>,
 }
 
 impl NativePanel {
@@ -2564,6 +2583,7 @@ impl NativePanel {
             material: None,
             on_close: None,
             content_items: Vec::new(),
+            hosted_view: None,
         }
     }
 
@@ -2627,12 +2647,19 @@ impl NativePanel {
         self
     }
 
+    /// Replaces native item content with hosted GPUI content rendered into the panel.
+    pub fn content_view<V: Render>(mut self, view: Entity<V>) -> Self {
+        self.hosted_view = Some(AnyView::from(view));
+        self.content_items.clear();
+        self
+    }
+
     fn into_platform_with_anchor(
         self,
         anchor: NativePanelAnchor,
         next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
         invalidator: WindowInvalidator,
-    ) -> (PlatformNativePanel, PlatformNativePanelAnchor) {
+    ) -> (PlatformNativePanel, PlatformNativePanelAnchor, Option<AnyView>) {
         let on_close = self.on_close.map(|handler| -> Box<dyn Fn()> {
             schedule_native_toolbar_callback_no_args(
                 Rc::new(handler),
@@ -2688,8 +2715,10 @@ impl NativePanel {
                 material,
                 on_close,
                 content_items,
+                hosted_surface_view: None,
             },
             platform_anchor,
+            self.hosted_view,
         )
     }
 }
@@ -2982,6 +3011,7 @@ pub(crate) struct DeferredDraw {
     parent_node: DispatchNodeId,
     element_id_stack: SmallVec<[ElementId; 32]>,
     text_style_stack: Vec<TextStyleRefinement>,
+    content_mask: Option<ContentMask<Pixels>>,
     rem_size: Pixels,
     element: Option<AnyElement>,
     absolute_offset: Point<Pixels>,
@@ -3218,6 +3248,10 @@ pub struct Window {
     /// Secondary GPUI rendering surfaces, each with their own Metal layer and element tree.
     #[cfg(target_os = "macos")]
     pub(crate) surfaces: FxHashMap<SurfaceId, SurfaceState>,
+    #[cfg(target_os = "macos")]
+    active_popover_surface: Option<SurfaceId>,
+    #[cfg(target_os = "macos")]
+    active_panel_surface: Option<SurfaceId>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -3498,6 +3532,7 @@ impl Window {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();
+                } else {
                 }
 
                 handle
@@ -3510,9 +3545,23 @@ impl Window {
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                let result = handle.update(&mut cx, |_, window, cx| window.bounds_changed(cx));
+                if let Err(error) = result {
+                    if error.to_string().contains("RefCell already borrowed") {
+                        let mut retry_cx = cx.clone();
+                        cx.spawn(async move |cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1))
+                                .await;
+                            handle
+                                .update(&mut retry_cx, |_, window, cx| window.bounds_changed(cx))
+                                .log_err();
+                        })
+                        .detach();
+                    } else {
+                        log::error!("{error:?}");
+                    }
+                }
             }
         }));
         platform_window.on_moved(Box::new({
@@ -3718,6 +3767,10 @@ impl Window {
             native_view_override_stack: Vec::new(),
             #[cfg(target_os = "macos")]
             surfaces: FxHashMap::default(),
+            #[cfg(target_os = "macos")]
+            active_popover_surface: None,
+            #[cfg(target_os = "macos")]
+            active_panel_surface: None,
         })
     }
 
@@ -3730,7 +3783,8 @@ impl Window {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct DispatchEventResult {
+#[expect(missing_docs)]
+pub struct DispatchEventResult {
     pub propagate: bool,
     pub default_prevented: bool,
 }
@@ -4296,6 +4350,61 @@ impl Window {
         self.client_inset
     }
 
+    #[cfg(target_os = "macos")]
+    fn hosted_surface_slot_mut(&mut self, slot: HostedSurfaceSlot) -> &mut Option<SurfaceId> {
+        match slot {
+            HostedSurfaceSlot::Popover => &mut self.active_popover_surface,
+            HostedSurfaceSlot::Panel => &mut self.active_panel_surface,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn clear_hosted_surface_slot(&mut self, slot: HostedSurfaceSlot) {
+        if let Some(surface_id) = self.hosted_surface_slot_mut(slot).take() {
+            self.unregister_surface(surface_id);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn prepare_hosted_surface(
+        &mut self,
+        slot: HostedSurfaceSlot,
+        hosted_view: Option<AnyView>,
+    ) -> Option<GpuiSurfaceHandle> {
+        self.clear_hosted_surface_slot(slot);
+        let hosted_view = hosted_view?;
+        let handle = self.register_surface(hosted_view);
+        *self.hosted_surface_slot_mut(slot) = Some(handle.id);
+        Some(handle)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn hosted_surface_cleanup_callback(&self, slot: HostedSurfaceSlot) -> Box<dyn Fn()> {
+        let next_frame_callbacks = self.next_frame_callbacks.clone();
+        let invalidator = self.invalidator.clone();
+        Box::new(move || {
+            next_frame_callbacks.borrow_mut().push(Box::new(move |window, _cx| {
+                window.clear_hosted_surface_slot(slot);
+            }));
+            invalidator.set_dirty(true);
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn chain_native_close_callbacks(
+        first: Option<Box<dyn Fn()>>,
+        second: Option<Box<dyn Fn()>>,
+    ) -> Option<Box<dyn Fn()>> {
+        match (first, second) {
+            (None, None) => None,
+            (Some(callback), None) | (None, Some(callback)) => Some(callback),
+            (Some(first), Some(second)) => Some(Box::new(move || {
+                first();
+                second();
+            })),
+        }
+    }
+
     /// Returns whether the title bar window controls need to be rendered by the application (Wayland and X11)
     pub fn window_decorations(&self) -> Decorations {
         self.platform_window.window_decorations()
@@ -4356,11 +4465,24 @@ impl Window {
     /// On macOS this creates an NSPopover with native appearance and behavior.
     /// On other platforms this is currently a no-op.
     pub fn show_native_popover(&mut self, popover: NativePopover, anchor: NativePopoverAnchor) {
-        let (platform_popover, platform_anchor) = popover.into_platform_with_anchor(
+        let (mut platform_popover, platform_anchor, hosted_view) = popover.into_platform_with_anchor(
             anchor,
             self.next_frame_callbacks.clone(),
             self.invalidator.clone(),
         );
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(handle) = self.prepare_hosted_surface(HostedSurfaceSlot::Popover, hosted_view)
+            {
+                platform_popover.hosted_surface_view = Some(handle.native_view_ptr);
+                platform_popover.on_close = Self::chain_native_close_callbacks(
+                    platform_popover.on_close.take(),
+                    Some(self.hosted_surface_cleanup_callback(HostedSurfaceSlot::Popover)),
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = hosted_view;
         self.platform_window
             .show_native_popover(platform_popover, platform_anchor);
     }
@@ -4368,6 +4490,8 @@ impl Window {
     /// Dismisses any currently shown native popover.
     pub fn dismiss_native_popover(&mut self) {
         self.platform_window.dismiss_native_popover();
+        #[cfg(target_os = "macos")]
+        self.clear_hosted_surface_slot(HostedSurfaceSlot::Popover);
     }
 
     /// Shows a native panel (NSPanel) with the given content and anchor position.
@@ -4376,11 +4500,24 @@ impl Window {
     /// inspectors, and other secondary UI. Unlike popovers, panels are standalone
     /// windows that can be positioned freely.
     pub fn show_native_panel(&mut self, panel: NativePanel, anchor: NativePanelAnchor) {
-        let (platform_panel, platform_anchor) = panel.into_platform_with_anchor(
+        let (mut platform_panel, platform_anchor, hosted_view) = panel.into_platform_with_anchor(
             anchor,
             self.next_frame_callbacks.clone(),
             self.invalidator.clone(),
         );
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(handle) = self.prepare_hosted_surface(HostedSurfaceSlot::Panel, hosted_view)
+            {
+                platform_panel.hosted_surface_view = Some(handle.native_view_ptr);
+                platform_panel.on_close = Self::chain_native_close_callbacks(
+                    platform_panel.on_close.take(),
+                    Some(self.hosted_surface_cleanup_callback(HostedSurfaceSlot::Panel)),
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = hosted_view;
         self.platform_window
             .show_native_panel(platform_panel, platform_anchor);
     }
@@ -4388,6 +4525,8 @@ impl Window {
     /// Dismisses any currently shown native panel.
     pub fn dismiss_native_panel(&mut self) {
         self.platform_window.dismiss_native_panel();
+        #[cfg(target_os = "macos")]
+        self.clear_hosted_surface_slot(HostedSurfaceSlot::Panel);
     }
 
     /// Shows a native alert dialog as a sheet attached to this window.
@@ -4445,13 +4584,43 @@ impl Window {
         }
     }
 
+    /// Returns the platform's native controls implementation for creating
+    /// and updating native UI elements (buttons, text fields, etc.).
+    pub fn native_controls(&self) -> &dyn crate::platform::native_controls::PlatformNativeControls {
+        self.platform_window
+            .native_controls()
+            .expect("native controls not available on this platform")
+    }
+
+    pub(crate) fn configure_hosted_content(
+        &self,
+        host_view: *mut std::ffi::c_void,
+        parent_view: *mut std::ffi::c_void,
+        config: crate::HostedContentConfig,
+    ) {
+        self.platform_window
+            .configure_hosted_content(host_view, parent_view, config);
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn attach_hosted_surface(
+        &self,
+        host_view: *mut std::ffi::c_void,
+        surface_view: *mut std::ffi::c_void,
+    ) {
+        self.platform_window
+            .attach_hosted_surface(host_view, surface_view);
+    }
+
     /// Push a native view override. While active, `raw_native_view_ptr()` returns
     /// this pointer instead of the main window's view. Used during surface paint.
+    #[cfg(target_os = "macos")]
     pub(crate) fn push_native_view_override(&mut self, ptr: *mut std::ffi::c_void) {
         self.native_view_override_stack.push(ptr);
     }
 
     /// Pop the most recent native view override.
+    #[cfg(target_os = "macos")]
     pub(crate) fn pop_native_view_override(&mut self) {
         self.native_view_override_stack.pop();
     }
@@ -4464,24 +4633,20 @@ impl Window {
     /// themselves to the surface's NSView.
     #[cfg(target_os = "macos")]
     pub fn register_surface(&mut self, view: AnyView) -> GpuiSurfaceHandle {
-        use crate::platform::gpui_surface::GpuiSurface;
-
         let id = SurfaceId::new();
 
-        // Get shared resources from the main renderer via the platform window
-        let shared = self.platform_window.shared_render_resources();
-
-        let mut gpui_surface = GpuiSurface::new(shared, true);
+        let mut surface = self.platform_window.create_surface()
+            .expect("platform does not support secondary surfaces");
 
         // Attach window state so the surface view can forward events
-        // through MacWindowState::surface_event_callback.
+        // through the window's surface_event_callback.
         let window_state_ptr = self.platform_window.window_state_ptr();
-        gpui_surface.set_window_state(window_state_ptr);
+        surface.set_window_state(window_state_ptr);
 
-        let native_view_ptr = gpui_surface.native_view_ptr();
+        let native_view_ptr = surface.native_view_ptr();
 
         self.surfaces.insert(id, SurfaceState {
-            gpui_surface,
+            surface,
             root_view: view,
             scene: Scene::default(),
             layout_engine: Some(TaffyLayoutEngine::new()),
@@ -4507,7 +4672,7 @@ impl Window {
     /// Get the native view pointer for a registered surface.
     #[cfg(target_os = "macos")]
     pub fn surface_native_view_ptr(&self, id: SurfaceId) -> Option<*mut std::ffi::c_void> {
-        self.surfaces.get(&id).map(|s| s.gpui_surface.native_view_ptr())
+        self.surfaces.get(&id).map(|s| s.surface.native_view_ptr())
     }
 
     /// Mark a surface as needing redraw.
@@ -4685,7 +4850,9 @@ impl Window {
         if !cx.mode.skip_drawing() {
             self.draw_roots(cx);
             #[cfg(target_os = "macos")]
-            self.draw_surfaces(cx);
+            {
+                self.draw_surfaces(cx);
+            }
         }
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();
@@ -4774,16 +4941,16 @@ impl Window {
         {
             let scale_factor = self.scale_factor;
             for surface in self.surfaces.values_mut() {
-                let content_size = surface.gpui_surface.content_size();
+                let content_size = surface.surface.content_size();
                 let device_width = (content_size.width.0 * scale_factor).ceil() as i32;
                 let device_height = (content_size.height.0 * scale_factor).ceil() as i32;
                 let device_size = crate::size(
                     crate::DevicePixels(device_width),
                     crate::DevicePixels(device_height),
                 );
-                surface.gpui_surface.set_contents_scale(scale_factor as f64);
-                surface.gpui_surface.update_drawable_size(device_size);
-                surface.gpui_surface.draw(&surface.scene);
+                surface.surface.set_contents_scale(scale_factor as f64);
+                surface.surface.update_drawable_size(device_size);
+                surface.surface.draw(&surface.scene);
             }
         }
         self.needs_present.set(false);
@@ -4895,8 +5062,8 @@ impl Window {
 
             // Grab what we need before releasing the borrow
             let root_view = surface.root_view.clone();
-            let surface_size = surface.gpui_surface.content_size();
-            let native_view_ptr = surface.gpui_surface.native_view_ptr();
+            let surface_size = surface.surface.content_size();
+            let native_view_ptr = surface.surface.native_view_ptr();
             let surface_mouse_position = surface.mouse_position;
 
             // Push native view override so native controls parent to the surface's NSView
@@ -5070,15 +5237,18 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let prepaint_start = self.prepaint_index();
+            let content_mask = deferred_draw.content_mask.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                        window.with_absolute_element_offset(
-                            deferred_draw.absolute_offset,
-                            |window| {
-                                element.prepaint(window, cx);
-                            },
-                        );
+                    window.with_content_mask(content_mask, |window| {
+                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                            window.with_absolute_element_offset(
+                                deferred_draw.absolute_offset,
+                                |window| {
+                                    element.prepaint(window, cx);
+                                },
+                            );
+                        });
                     });
                 })
             } else {
@@ -5110,10 +5280,13 @@ impl Window {
                 .set_active_node(deferred_draw.parent_node);
 
             let paint_start = self.paint_index();
+            let content_mask = deferred_draw.content_mask.clone();
             if let Some(element) = deferred_draw.element.as_mut() {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
-                    window.with_rem_size(Some(deferred_draw.rem_size), |window| {
-                        element.paint(window, cx);
+                    window.with_content_mask(content_mask, |window| {
+                        window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                            element.paint(window, cx);
+                        });
                     })
                 })
             } else {
@@ -5177,6 +5350,7 @@ impl Window {
                     parent_node: reused_subtree.refresh_node_id(deferred_draw.parent_node),
                     element_id_stack: deferred_draw.element_id_stack.clone(),
                     text_style_stack: deferred_draw.text_style_stack.clone(),
+                    content_mask: deferred_draw.content_mask.clone(),
                     rem_size: deferred_draw.rem_size,
                     priority: deferred_draw.priority,
                     element: None,
@@ -5666,6 +5840,7 @@ impl Window {
         element: AnyElement,
         absolute_offset: Point<Pixels>,
         priority: usize,
+        content_mask: Option<ContentMask<Pixels>>,
     ) {
         self.invalidator.debug_assert_prepaint();
         let parent_node = self.next_frame.dispatch_tree.active_node_id().unwrap();
@@ -5674,6 +5849,7 @@ impl Window {
             parent_node,
             element_id_stack: self.element_id_stack.clone(),
             text_style_stack: self.text_style_stack.clone(),
+            content_mask,
             rem_size: self.rem_size(),
             priority,
             element: Some(element),
@@ -6708,7 +6884,7 @@ impl Window {
     ) {
         // Find the surface that owns this native view.
         let surface_id = self.surfaces.iter().find_map(|(id, s)| {
-            if s.gpui_surface.native_view_ptr() == native_view_ptr {
+            if s.surface.native_view_ptr() == native_view_ptr {
                 Some(*id)
             } else {
                 None
@@ -6837,6 +7013,7 @@ impl Window {
                         key: key.to_string(),
                         key_char: None,
                         modifiers: Modifiers::default(),
+                        native_key_code: None,
                     });
                 }
             }

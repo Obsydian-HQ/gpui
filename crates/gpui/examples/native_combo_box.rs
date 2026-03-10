@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, ComboBoxChangeEvent, ComboBoxSelectEvent, Context, Window,
+    App, Bounds, ComboBoxChangeEvent, ComboBoxSelectEvent, Context, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_combo_box, prelude::*, px, rgb,
     size,
 };
@@ -87,7 +87,7 @@ impl Render for ComboBoxExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(680.), px(360.)), cx);
         cx.open_window(
             WindowOptions {

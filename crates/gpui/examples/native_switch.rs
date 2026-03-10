@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, SwitchChangeEvent, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, SwitchChangeEvent, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_switch, prelude::*, px, rgb, size,
 };
 
@@ -68,7 +68,7 @@ impl Render for SwitchExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(540.), px(300.)), cx);
         cx.open_window(
             WindowOptions {

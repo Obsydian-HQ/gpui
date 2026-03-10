@@ -3,7 +3,7 @@
 /// Demonstrates NSAlert presented as a sheet (non-blocking) with different styles
 /// (warning, informational, critical) and multiple buttons.
 use gpui::{
-    App, Application, Bounds, Context, NativeAlert, NativeAlertStyle, Window, WindowBounds,
+    App, Bounds, Context, NativeAlert, NativeAlertStyle, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size,
 };
 
@@ -163,7 +163,7 @@ fn make_button(
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(500.0), px(400.0)), cx);
         cx.open_window(
             WindowOptions {

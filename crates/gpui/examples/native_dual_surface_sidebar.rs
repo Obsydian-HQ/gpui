@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
+    App, Bounds, Context, Entity, FocusHandle, Focusable, KeyBinding, Menu,
     MenuItem, NativeButtonStyle, NativeButtonTint, NativeSegmentedStyle, OutlineRowSelectEvent,
     SegmentSelectEvent, TextChangeEvent, TextSubmitEvent, Window, WindowAppearance,
     WindowBounds, WindowOptions, actions, div, native_button, native_icon_button,
@@ -524,7 +524,7 @@ impl Focusable for DualSurfaceExample {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         cx.bind_keys([KeyBinding::new("cmd-alt-s", ToggleSidebar, None)]);
         cx.set_menus(vec![Menu {
             name: "View".into(),

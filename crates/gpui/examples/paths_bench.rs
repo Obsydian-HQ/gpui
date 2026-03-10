@@ -1,5 +1,5 @@
 use gpui::{
-    Application, Background, Bounds, ColorSpace, Context, Path, PathBuilder, Pixels, Render,
+    Background, Bounds, ColorSpace, Context, Path, PathBuilder, Pixels, Render,
     TitlebarOptions, Window, WindowBounds, WindowOptions, canvas, div, linear_color_stop,
     linear_gradient, point, prelude::*, px, rgb, size,
 };
@@ -69,7 +69,7 @@ impl Render for PaintingViewer {
 }
 
 fn main() {
-    Application::new().run(|cx| {
+    gpui_platform::application().run(|cx| {
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {

@@ -1,23 +1,20 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 use std::rc::Rc;
 
+use crate::platform::native_controls::{NativeControlState, StepperConfig};
 use crate::{
-    AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
+    px, AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, Style, StyleRefinement, Styled,
-    Window, px,
+    Window,
 };
 
 use super::native_element_helpers::schedule_native_callback;
 
-/// Event emitted when a native stepper value changes.
 #[derive(Clone, Debug)]
 pub struct StepperChangeEvent {
-    /// The new numeric value.
     pub value: f64,
 }
 
-/// Creates a native stepper (NSStepper on macOS).
 pub fn native_stepper(id: impl Into<ElementId>) -> NativeStepper {
     NativeStepper {
         id: id.into(),
@@ -33,7 +30,6 @@ pub fn native_stepper(id: impl Into<ElementId>) -> NativeStepper {
     }
 }
 
-/// A native stepper element positioned by GPUI's Taffy layout.
 pub struct NativeStepper {
     id: ElementId,
     min: f64,
@@ -48,50 +44,42 @@ pub struct NativeStepper {
 }
 
 impl NativeStepper {
-    /// Sets the stepper range.
     pub fn range(mut self, min: f64, max: f64) -> Self {
         self.min = min;
         self.max = max;
         self
     }
 
-    /// Sets the minimum value.
     pub fn min(mut self, min: f64) -> Self {
         self.min = min;
         self
     }
 
-    /// Sets the maximum value.
     pub fn max(mut self, max: f64) -> Self {
         self.max = max;
         self
     }
 
-    /// Sets the current value.
     pub fn value(mut self, value: f64) -> Self {
         self.value = value;
         self
     }
 
-    /// Sets the step increment.
     pub fn increment(mut self, increment: f64) -> Self {
         self.increment = increment;
         self
     }
 
-    /// Sets whether values wrap at min/max.
     pub fn wraps(mut self, wraps: bool) -> Self {
         self.wraps = wraps;
         self
     }
 
-    /// Sets whether press-and-hold auto-repeats.
     pub fn autorepeat(mut self, autorepeat: bool) -> Self {
         self.autorepeat = autorepeat;
         self
     }
 
-    /// Registers a callback invoked when the value changes.
     pub fn on_change(
         mut self,
         listener: impl Fn(&StepperChangeEvent, &mut Window, &mut App) + 'static,
@@ -100,60 +88,10 @@ impl NativeStepper {
         self
     }
 
-    /// Sets whether this stepper is disabled.
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
-}
-
-struct NativeStepperElementState {
-    stepper_ptr: *mut c_void,
-    target_ptr: *mut c_void,
-    current_min: f64,
-    current_max: f64,
-    current_value: f64,
-    current_increment: f64,
-    current_wraps: bool,
-    current_autorepeat: bool,
-    attached: bool,
-}
-
-impl Drop for NativeStepperElementState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.stepper_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_stepper_target,
-                    native_controls::release_native_stepper,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                super::native_element_helpers::cleanup_native_control(
-                    self.stepper_ptr,
-                    self.target_ptr,
-                    native_controls::release_native_stepper_target,
-                    native_controls::release_native_stepper,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeStepperElementState {}
-
-fn normalize_range(min: f64, max: f64) -> (f64, f64) {
-    if min <= max { (min, max) } else { (max, min) }
-}
-
-fn clamp_to_range(value: f64, min: f64, max: f64) -> f64 {
-    value.max(min).min(max)
 }
 
 impl IntoElement for NativeStepper {
@@ -186,20 +124,13 @@ impl Element for NativeStepper {
         let mut style = Style::default();
         style.refine(&self.style);
 
-        // UIStepper (iOS) intrinsic size: 94×29pt
-        // NSStepper (macOS) intrinsic size: 20×24pt
-        #[cfg(target_os = "ios")]
-        let (default_w, default_h) = (px(94.0), px(29.0));
-        #[cfg(not(target_os = "ios"))]
-        let (default_w, default_h) = (px(20.0), px(24.0));
-
         if matches!(style.size.width, Length::Auto) {
             style.size.width =
-                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(default_w)));
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(20.0))));
         }
         if matches!(style.size.height, Length::Auto) {
             style.size.height =
-                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(default_h)));
+                Length::Definite(DefiniteLength::Absolute(AbsoluteLength::Pixels(px(24.0))));
         }
 
         let layout_id = window.request_layout(style, [], cx);
@@ -228,315 +159,60 @@ impl Element for NativeStepper {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
-
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let on_change = self.on_change.take();
-            let (min, max) = normalize_range(self.min, self.max);
-            let value = clamp_to_range(self.value, min, max);
-            let increment = self.increment.max(f64::EPSILON);
-            let wraps = self.wraps;
-            let autorepeat = self.autorepeat;
-            let disabled = self.disabled;
-
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
-
-            window.with_optional_element_state::<NativeStepperElementState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.stepper_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-                            if state.current_min != min {
-                                native_controls::set_native_stepper_min(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    min,
-                                );
-                                state.current_min = min;
-                            }
-                            if state.current_max != max {
-                                native_controls::set_native_stepper_max(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    max,
-                                );
-                                state.current_max = max;
-                            }
-                            if state.current_value != value {
-                                native_controls::set_native_stepper_value(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    value,
-                                );
-                                state.current_value = value;
-                            }
-                            if state.current_increment != increment {
-                                native_controls::set_native_stepper_increment(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    increment,
-                                );
-                                state.current_increment = increment;
-                            }
-                            if state.current_wraps != wraps {
-                                native_controls::set_native_stepper_wraps(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    wraps,
-                                );
-                                state.current_wraps = wraps;
-                            }
-                            if state.current_autorepeat != autorepeat {
-                                native_controls::set_native_stepper_autorepeat(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    autorepeat,
-                                );
-                                state.current_autorepeat = autorepeat;
-                            }
-                            native_controls::set_native_control_enabled(
-                                state.stepper_ptr as cocoa::base::id,
-                                !disabled,
-                            );
-                        }
-
-                        if let Some(on_change) = on_change {
-                            unsafe {
-                                native_controls::release_native_stepper_target(state.target_ptr);
-                            }
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let on_change = Rc::new(on_change);
-                            let callback = schedule_native_callback(
-                                on_change,
-                                |value| StepperChangeEvent { value },
-                                nfc,
-                                inv,
-                            );
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_stepper_action(
-                                    state.stepper_ptr as cocoa::base::id,
-                                    callback,
-                                );
-                            }
-                        }
-
-                        state
-                    } else {
-                        let (stepper_ptr, target_ptr) = unsafe {
-                            let stepper =
-                                native_controls::create_native_stepper(min, max, value, increment);
-                            native_controls::set_native_stepper_wraps(stepper, wraps);
-                            native_controls::set_native_stepper_autorepeat(stepper, autorepeat);
-                            native_controls::set_native_control_enabled(stepper, !disabled);
-                            native_controls::attach_native_view_to_parent(
-                                stepper,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                stepper,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            let target = if let Some(on_change) = on_change {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let on_change = Rc::new(on_change);
-                                let callback = schedule_native_callback(
-                                    on_change,
-                                    |value| StepperChangeEvent { value },
-                                    nfc,
-                                    inv,
-                                );
-                                native_controls::set_native_stepper_action(stepper, callback)
-                            } else {
-                                std::ptr::null_mut()
-                            };
-
-                            (stepper as *mut c_void, target)
-                        };
-
-                        NativeStepperElementState {
-                            stepper_ptr,
-                            target_ptr,
-                            current_min: min,
-                            current_max: max,
-                            current_value: value,
-                            current_increment: increment,
-                            current_wraps: wraps,
-                            current_autorepeat: autorepeat,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
-                },
-            );
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
         }
 
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
+        let on_change = self.on_change.take();
+        let (min, max) = if self.min <= self.max {
+            (self.min, self.max)
+        } else {
+            (self.max, self.min)
+        };
+        let value = self.value.max(min).min(max);
+        let increment = self.increment.max(f64::EPSILON);
+        let wraps = self.wraps;
+        let autorepeat = self.autorepeat;
+        let disabled = self.disabled;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let next_frame_callbacks = window.next_frame_callbacks.clone();
+        let invalidator = window.invalidator.clone();
 
-            let on_change = self.on_change.take();
-            let (min, max) = normalize_range(self.min, self.max);
-            let value = clamp_to_range(self.value, min, max);
-            let increment = self.increment.max(f64::EPSILON);
-            let wraps = self.wraps;
-            let autorepeat = self.autorepeat;
-            let disabled = self.disabled;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut state = prev_state.flatten().unwrap_or_default();
 
-            let next_frame_callbacks = window.next_frame_callbacks.clone();
-            let invalidator = window.invalidator.clone();
+            let on_change_fn = on_change.map(|handler| {
+                let handler = Rc::new(handler);
+                schedule_native_callback(
+                    handler,
+                    |value| StepperChangeEvent { value },
+                    next_frame_callbacks.clone(),
+                    invalidator.clone(),
+                )
+            });
 
-            window.with_optional_element_state::<NativeStepperElementState, _>(
-                id,
-                |prev_state, window| {
-                    let state = if let Some(Some(mut state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                state.stepper_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-                            if state.current_min != min {
-                                native_controls::set_native_stepper_min(
-                                    state.stepper_ptr as native_controls::id,
-                                    min,
-                                );
-                                state.current_min = min;
-                            }
-                            if state.current_max != max {
-                                native_controls::set_native_stepper_max(
-                                    state.stepper_ptr as native_controls::id,
-                                    max,
-                                );
-                                state.current_max = max;
-                            }
-                            if state.current_value != value {
-                                native_controls::set_native_stepper_value(
-                                    state.stepper_ptr as native_controls::id,
-                                    value,
-                                );
-                                state.current_value = value;
-                            }
-                            if state.current_increment != increment {
-                                native_controls::set_native_stepper_increment(
-                                    state.stepper_ptr as native_controls::id,
-                                    increment,
-                                );
-                                state.current_increment = increment;
-                            }
-                            if state.current_wraps != wraps {
-                                native_controls::set_native_stepper_wraps(
-                                    state.stepper_ptr as native_controls::id,
-                                    wraps,
-                                );
-                                state.current_wraps = wraps;
-                            }
-                            if state.current_autorepeat != autorepeat {
-                                native_controls::set_native_stepper_autorepeat(
-                                    state.stepper_ptr as native_controls::id,
-                                    autorepeat,
-                                );
-                                state.current_autorepeat = autorepeat;
-                            }
-                            native_controls::set_native_control_enabled(
-                                state.stepper_ptr as native_controls::id,
-                                !disabled,
-                            );
-                        }
-
-                        if let Some(on_change) = on_change {
-                            unsafe {
-                                native_controls::release_native_stepper_target(state.target_ptr);
-                            }
-                            let nfc = next_frame_callbacks.clone();
-                            let inv = invalidator.clone();
-                            let on_change = Rc::new(on_change);
-                            let callback = schedule_native_callback(
-                                on_change,
-                                |value| StepperChangeEvent { value },
-                                nfc,
-                                inv,
-                            );
-                            unsafe {
-                                state.target_ptr = native_controls::set_native_stepper_action(
-                                    state.stepper_ptr as native_controls::id,
-                                    callback,
-                                );
-                            }
-                        }
-
-                        state
-                    } else {
-                        let (stepper_ptr, target_ptr) = unsafe {
-                            let stepper =
-                                native_controls::create_native_stepper(min, max, value, increment);
-                            native_controls::set_native_stepper_wraps(stepper, wraps);
-                            native_controls::set_native_stepper_autorepeat(stepper, autorepeat);
-                            native_controls::set_native_control_enabled(stepper, !disabled);
-                            native_controls::attach_native_view_to_parent(
-                                stepper,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                stepper,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            let target = if let Some(on_change) = on_change {
-                                let nfc = next_frame_callbacks.clone();
-                                let inv = invalidator.clone();
-                                let on_change = Rc::new(on_change);
-                                let callback = schedule_native_callback(
-                                    on_change,
-                                    |value| StepperChangeEvent { value },
-                                    nfc,
-                                    inv,
-                                );
-                                native_controls::set_native_stepper_action(stepper, callback)
-                            } else {
-                                std::ptr::null_mut()
-                            };
-
-                            (stepper as *mut c_void, target)
-                        };
-
-                        NativeStepperElementState {
-                            stepper_ptr,
-                            target_ptr,
-                            current_min: min,
-                            current_max: max,
-                            current_value: value,
-                            current_increment: increment,
-                            current_wraps: wraps,
-                            current_autorepeat: autorepeat,
-                            attached: true,
-                        }
-                    };
-
-                    ((), Some(state))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_stepper(
+                &mut state,
+                parent,
+                bounds,
+                scale,
+                StepperConfig {
+                    min,
+                    max,
+                    value,
+                    increment,
+                    wraps,
+                    autorepeat,
+                    enabled: !disabled,
+                    on_change: on_change_fn,
                 },
             );
-        }
+
+            ((), Some(state))
+        });
     }
 }
 

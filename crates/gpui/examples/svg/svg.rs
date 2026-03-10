@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use gpui::{
-    App, Application, AssetSource, Bounds, Context, SharedString, Window, WindowBounds,
+    App, AssetSource, Bounds, Context, SharedString, Window, WindowBounds,
     WindowOptions, div, prelude::*, px, rgb, size, svg,
 };
 
@@ -68,7 +68,7 @@ impl Render for SvgExample {
 }
 
 fn main() {
-    Application::new()
+    gpui_platform::application()
         .with_assets(Assets {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"),
         })

@@ -9,7 +9,7 @@
 /// - Adaptive dark/light appearance
 /// - SF Symbol icons per category
 use gpui::{
-    App, Application, Bounds, Context, NativePanel, NativePanelAnchor, NativePanelLevel,
+    App, Bounds, Context, NativePanel, NativePanelAnchor, NativePanelLevel,
     NativePanelMaterial, NativePanelStyle, NativePopoverClickableRow, NativePopoverContentItem,
     NativeToolbar, NativeToolbarButton, NativeToolbarClickEvent, NativeToolbarDisplayMode,
     NativeToolbarItem, NativeToolbarSearchEvent, NativeToolbarSearchField, NativeToolbarSizeMode,
@@ -549,7 +549,7 @@ fn show_suggestion_panel(query: &str, selected_index: Option<usize>, window: &mu
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.0), px(600.0)), cx);
         cx.open_window(
             WindowOptions {

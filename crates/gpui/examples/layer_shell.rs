@@ -11,7 +11,7 @@ mod example {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use gpui::{
-        App, Application, Bounds, Context, FontWeight, Size, Window, WindowBackgroundAppearance,
+        App, Bounds, Context, FontWeight, Size, Window, WindowBackgroundAppearance,
         WindowBounds, WindowKind, WindowOptions, div, layer_shell::*, point, prelude::*, px, rems,
         rgba, white,
     };
@@ -60,7 +60,7 @@ mod example {
     }
 
     pub fn main() {
-        Application::new().run(|cx: &mut App| {
+        gpui_platform::application().run(|cx: &mut App| {
             cx.open_window(
                 WindowOptions {
                     titlebar: None,

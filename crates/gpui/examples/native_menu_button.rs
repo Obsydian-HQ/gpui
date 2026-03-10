@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, MenuItemSelectEvent, NativeMenuItem, Window,
+    App, Bounds, Context, MenuItemSelectEvent, NativeMenuItem, Window,
     WindowAppearance, WindowBounds, WindowOptions, div, native_context_menu, native_menu_button,
     prelude::*, px, rgb, size,
 };
@@ -78,7 +78,7 @@ impl Render for MenuExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(560.), px(360.)), cx);
         cx.open_window(
             WindowOptions {

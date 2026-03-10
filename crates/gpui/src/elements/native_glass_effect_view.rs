@@ -1,6 +1,6 @@
 use refineable::Refineable as _;
-use std::ffi::c_void;
 
+use crate::platform::native_controls::{GlassEffectViewConfig, NativeControlState};
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Element, ElementId, GlobalElementId, Hsla,
     InspectorElementId, IntoElement, LayoutId, Length, Pixels, Style, StyleRefinement, Styled,
@@ -67,37 +67,6 @@ impl NativeGlassEffectView {
     }
 }
 
-struct NativeGlassEffectViewState {
-    view_ptr: *mut c_void,
-    current_style: NativeGlassEffectStyle,
-    current_corner_radius: Option<f64>,
-    current_tint_color: Option<Hsla>,
-    attached: bool,
-}
-
-impl Drop for NativeGlassEffectViewState {
-    fn drop(&mut self) {
-        if self.attached {
-            #[cfg(target_os = "macos")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_glass_effect_view(
-                    self.view_ptr as cocoa::base::id,
-                );
-            }
-            #[cfg(target_os = "ios")]
-            unsafe {
-                use crate::platform::native_controls;
-                native_controls::release_native_glass_effect_view(
-                    self.view_ptr as native_controls::id,
-                );
-            }
-        }
-    }
-}
-
-unsafe impl Send for NativeGlassEffectViewState {}
-
 impl IntoElement for NativeGlassEffectView {
     type Element = Self;
 
@@ -163,244 +132,43 @@ impl Element for NativeGlassEffectView {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        #[cfg(target_os = "macos")]
-        {
-            use crate::platform::native_controls;
+        if !window.native_controls().is_glass_effect_available() {
+            return;
+        }
 
-            if !native_controls::is_glass_effect_available() {
-                return;
-            }
+        let parent = window.raw_native_view_ptr();
+        if parent.is_null() {
+            return;
+        }
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
+        let glass_style = self.glass_style;
+        let corner_radius = self.corner_radius;
+        let tint_color = self.tint_color;
 
-            let glass_style = self.glass_style;
-            let corner_radius = self.corner_radius;
-            let tint_color = self.tint_color;
+        window.with_optional_element_state::<NativeControlState, _>(id, |prev_state, window| {
+            let mut control_state = prev_state.flatten().unwrap_or_default();
 
-            window.with_optional_element_state::<NativeGlassEffectViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state_val = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as cocoa::base::id,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
+            let tint = tint_color.map(|color| {
+                let rgba = color.to_rgb();
+                (rgba.r as f64, rgba.g as f64, rgba.b as f64, rgba.a as f64)
+            });
 
-                            if element_state.current_style != glass_style {
-                                native_controls::set_native_glass_effect_style(
-                                    element_state.view_ptr as cocoa::base::id,
-                                    glass_style.to_raw(),
-                                );
-                                element_state.current_style = glass_style;
-                            }
-
-                            if element_state.current_corner_radius != corner_radius {
-                                if let Some(radius) = corner_radius {
-                                    native_controls::set_native_glass_effect_corner_radius(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        radius,
-                                    );
-                                }
-                                element_state.current_corner_radius = corner_radius;
-                            }
-
-                            if element_state.current_tint_color != tint_color {
-                                if let Some(color) = tint_color {
-                                    let rgba = color.to_rgb();
-                                    native_controls::set_native_glass_effect_tint_color(
-                                        element_state.view_ptr as cocoa::base::id,
-                                        rgba.r as f64,
-                                        rgba.g as f64,
-                                        rgba.b as f64,
-                                        rgba.a as f64,
-                                    );
-                                } else {
-                                    native_controls::clear_native_glass_effect_tint_color(
-                                        element_state.view_ptr as cocoa::base::id,
-                                    );
-                                }
-                                element_state.current_tint_color = tint_color;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_glass_effect_view();
-                            if view == cocoa::base::nil {
-                                return ((), None);
-                            }
-
-                            native_controls::set_native_glass_effect_style(
-                                view,
-                                glass_style.to_raw(),
-                            );
-
-                            if let Some(radius) = corner_radius {
-                                native_controls::set_native_glass_effect_corner_radius(
-                                    view, radius,
-                                );
-                            }
-
-                            if let Some(color) = tint_color {
-                                let rgba = color.to_rgb();
-                                native_controls::set_native_glass_effect_tint_color(
-                                    view,
-                                    rgba.r as f64,
-                                    rgba.g as f64,
-                                    rgba.b as f64,
-                                    rgba.a as f64,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as cocoa::base::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as cocoa::base::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeGlassEffectViewState {
-                                view_ptr: view as *mut c_void,
-                                current_style: glass_style,
-                                current_corner_radius: corner_radius,
-                                current_tint_color: tint_color,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state_val))
+            let scale = window.scale_factor();
+            let nc = window.native_controls();
+            nc.update_glass_effect_view(
+                &mut control_state,
+                parent,
+                bounds,
+                scale,
+                GlassEffectViewConfig {
+                    style: glass_style.to_raw(),
+                    corner_radius: corner_radius.unwrap_or(0.0),
+                    tint_color: tint,
                 },
             );
-        }
-        #[cfg(target_os = "ios")]
-        {
-            use crate::platform::native_controls;
 
-            let native_view = window.raw_native_view_ptr();
-            if native_view.is_null() {
-                return;
-            }
-
-            let glass_style = self.glass_style;
-            let corner_radius = self.corner_radius;
-            let tint_color = self.tint_color;
-
-            window.with_optional_element_state::<NativeGlassEffectViewState, _>(
-                id,
-                |prev_state, window| {
-                    let state_val = if let Some(Some(mut element_state)) = prev_state {
-                        unsafe {
-                            native_controls::set_native_view_frame(
-                                element_state.view_ptr as native_controls::id,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            if element_state.current_style != glass_style {
-                                native_controls::set_native_glass_effect_style(
-                                    element_state.view_ptr as native_controls::id,
-                                    glass_style.to_raw(),
-                                );
-                                element_state.current_style = glass_style;
-                            }
-
-                            if element_state.current_corner_radius != corner_radius {
-                                if let Some(radius) = corner_radius {
-                                    native_controls::set_native_glass_effect_corner_radius(
-                                        element_state.view_ptr as native_controls::id,
-                                        radius,
-                                    );
-                                }
-                                element_state.current_corner_radius = corner_radius;
-                            }
-
-                            if element_state.current_tint_color != tint_color {
-                                if let Some(color) = tint_color {
-                                    let rgba = color.to_rgb();
-                                    native_controls::set_native_glass_effect_tint_color(
-                                        element_state.view_ptr as native_controls::id,
-                                        rgba.r as f64,
-                                        rgba.g as f64,
-                                        rgba.b as f64,
-                                        rgba.a as f64,
-                                    );
-                                } else {
-                                    native_controls::clear_native_glass_effect_tint_color(
-                                        element_state.view_ptr as native_controls::id,
-                                    );
-                                }
-                                element_state.current_tint_color = tint_color;
-                            }
-                        }
-
-                        element_state
-                    } else {
-                        unsafe {
-                            let view = native_controls::create_native_glass_effect_view();
-                            if view == native_controls::nil {
-                                return ((), None);
-                            }
-
-                            native_controls::set_native_glass_effect_style(
-                                view,
-                                glass_style.to_raw(),
-                            );
-
-                            if let Some(radius) = corner_radius {
-                                native_controls::set_native_glass_effect_corner_radius(
-                                    view, radius,
-                                );
-                            }
-
-                            if let Some(color) = tint_color {
-                                let rgba = color.to_rgb();
-                                native_controls::set_native_glass_effect_tint_color(
-                                    view,
-                                    rgba.r as f64,
-                                    rgba.g as f64,
-                                    rgba.b as f64,
-                                    rgba.a as f64,
-                                );
-                            }
-
-                            native_controls::attach_native_view_to_parent(
-                                view,
-                                native_view as native_controls::id,
-                            );
-                            native_controls::set_native_view_frame(
-                                view,
-                                bounds,
-                                native_view as native_controls::id,
-                                window.scale_factor(),
-                            );
-
-                            NativeGlassEffectViewState {
-                                view_ptr: view as *mut c_void,
-                                current_style: glass_style,
-                                current_corner_radius: corner_radius,
-                                current_tint_color: tint_color,
-                                attached: true,
-                            }
-                        }
-                    };
-
-                    ((), Some(state_val))
-                },
-            );
-        }
+            ((), Some(control_state))
+        });
     }
 }
 

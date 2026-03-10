@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, CheckboxChangeEvent, Context, Window, WindowAppearance, WindowBounds,
+    App, Bounds, CheckboxChangeEvent, Context, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_checkbox, prelude::*, px, rgb, size,
 };
 
@@ -54,7 +54,7 @@ impl Render for CheckboxExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(520.), px(280.)), cx);
         cx.open_window(
             WindowOptions {

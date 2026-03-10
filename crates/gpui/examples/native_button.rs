@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, Window, WindowAppearance, WindowBounds, WindowOptions, div,
+    App, Bounds, Context, Window, WindowAppearance, WindowBounds, WindowOptions, div,
     native_button, prelude::*, px, rgb, size,
 };
 
@@ -48,7 +48,7 @@ impl Render for NativeButtonExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(400.), px(300.)), cx);
         cx.open_window(
             WindowOptions {

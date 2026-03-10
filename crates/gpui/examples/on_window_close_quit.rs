@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, KeyBinding, Window, WindowBounds,
+    App, Bounds, Context, FocusHandle, KeyBinding, Window, WindowBounds,
     WindowOptions, actions, div, prelude::*, px, rgb, size,
 };
 
@@ -35,7 +35,7 @@ impl Render for ExampleWindow {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let mut bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 
         cx.bind_keys([KeyBinding::new("cmd-w", CloseWindow, None)]);

@@ -1,5 +1,5 @@
 use gpui::{
-    App, Application, Bounds, Context, TableRowSelectEvent, Window, WindowAppearance, WindowBounds,
+    App, Bounds, Context, TableRowSelectEvent, Window, WindowAppearance, WindowBounds,
     WindowOptions, div, native_table_view, prelude::*, px, rgb, size,
 };
 
@@ -67,7 +67,7 @@ impl Render for TableViewExample {
 }
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    gpui_platform::application().run(|cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
         cx.open_window(
             WindowOptions {

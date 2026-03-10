@@ -30,6 +30,13 @@ pub struct Keystroke {
     /// this binding was pressed.
     /// e.g. for s this is "s", for option-s "ß", and cmd-s None
     pub key_char: Option<String>,
+
+    /// The platform-specific key code when the underlying platform can provide one.
+    /// For example, macOS virtual key codes, iOS key codes, or other native identifiers.
+    ///
+    /// This is optional because not all platforms can provide a stable native code for
+    /// every synthesized or translated keystroke.
+    pub native_key_code: Option<u16>,
 }
 
 /// Represents a keystroke that can be used in keybindings and displayed to the user.
@@ -216,6 +223,7 @@ impl Keystroke {
             modifiers,
             key,
             key_char,
+            native_key_code: None,
         })
     }
 
