@@ -3239,7 +3239,7 @@ fn update_window_scale_factor(window_state: &Arc<Mutex<MacWindowState>>) {
     };
 }
 
-fn flush_pending_resize_callback(window_state: &Arc<Mutex<MacWindowState>>, reason: &str) {
+fn flush_pending_resize_callback(window_state: &Arc<Mutex<MacWindowState>>, _reason: &str) {
     let mut lock = window_state.lock();
     if !lock.pending_resize_callback {
         return;
