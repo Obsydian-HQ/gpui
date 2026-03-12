@@ -2032,28 +2032,32 @@ impl PlatformWindow for MacWindow {
 
             let window_point: NSPoint = msg_send![native_window, mouseLocationOutsideOfEventStream];
             let local_point: NSPoint = msg_send![native_view, convertPoint: window_point fromView: nil];
-            let hit_view: id = msg_send![native_view, hitTest: local_point];
-            if hit_view == nil {
-                return false;
+            let mut view: id = msg_send![native_view, hitTest: local_point];
+            while view != nil {
+                let is_gpui_view: BOOL = msg_send![view, isKindOfClass: class!(GPUIView)];
+                if is_gpui_view == YES {
+                    return false;
+                }
+
+                let is_surface_view: BOOL = msg_send![view, isKindOfClass: class!(GPUISurfaceView)];
+                if is_surface_view == YES {
+                    return false;
+                }
+
+                let is_control: BOOL = msg_send![view, isKindOfClass: class!(NSControl)];
+                if is_control == YES {
+                    return true;
+                }
+
+                let is_text_view: BOOL = msg_send![view, isKindOfClass: class!(NSTextView)];
+                if is_text_view == YES {
+                    return true;
+                }
+
+                view = msg_send![view, superview];
             }
 
-            let is_gpui_view: BOOL = msg_send![hit_view, isKindOfClass: class!(GPUIView)];
-            if is_gpui_view == YES {
-                return false;
-            }
-
-            let is_surface_view: BOOL = msg_send![hit_view, isKindOfClass: class!(GPUISurfaceView)];
-            if is_surface_view == YES {
-                return false;
-            }
-
-            let is_control: BOOL = msg_send![hit_view, isKindOfClass: class!(NSControl)];
-            if is_control == YES {
-                return true;
-            }
-
-            let is_text_view: BOOL = msg_send![hit_view, isKindOfClass: class!(NSTextView)];
-            is_text_view == YES
+            false
         }
     }
 
