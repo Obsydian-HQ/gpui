@@ -58,7 +58,7 @@ use std::{
     path::PathBuf,
     ptr::{self, NonNull},
     rc::Rc,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, Weak},
     time::Duration,
 };
 use util::ResultExt;
@@ -72,6 +72,11 @@ static mut VIEW_CLASS: *const Class = ptr::null();
 static mut BLURRED_VIEW_CLASS: *const Class = ptr::null();
 static mut TOOLBAR_DELEGATE_CLASS: *const Class = ptr::null();
 static MAC_NATIVE_CONTROLS: MacNativeControls = MacNativeControls;
+
+fn cursor_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GPUI_CURSOR_DEBUG").is_some())
+}
 
 #[allow(non_upper_case_globals)]
 const NSWindowStyleMaskNonactivatingPanel: NSWindowStyleMask =
@@ -2019,48 +2024,6 @@ impl PlatformWindow for MacWindow {
         }
     }
 
-    fn defers_cursor_to_native_view(&self) -> bool {
-        let lock = self.0.lock();
-        let native_window = lock.native_window;
-        let native_view = lock.native_view.as_ptr() as id;
-        drop(lock);
-
-        unsafe {
-            if native_window == nil || native_view == nil {
-                return false;
-            }
-
-            let window_point: NSPoint = msg_send![native_window, mouseLocationOutsideOfEventStream];
-            let local_point: NSPoint = msg_send![native_view, convertPoint: window_point fromView: nil];
-            let mut view: id = msg_send![native_view, hitTest: local_point];
-            while view != nil {
-                let is_gpui_view: BOOL = msg_send![view, isKindOfClass: class!(GPUIView)];
-                if is_gpui_view == YES {
-                    return false;
-                }
-
-                let is_surface_view: BOOL = msg_send![view, isKindOfClass: class!(GPUISurfaceView)];
-                if is_surface_view == YES {
-                    return false;
-                }
-
-                let is_control: BOOL = msg_send![view, isKindOfClass: class!(NSControl)];
-                if is_control == YES {
-                    return true;
-                }
-
-                let is_text_view: BOOL = msg_send![view, isKindOfClass: class!(NSTextView)];
-                if is_text_view == YES {
-                    return true;
-                }
-
-                view = msg_send![view, superview];
-            }
-
-            false
-        }
-    }
-
     fn show_native_alert_sheet(
         &self,
         alert_config: PlatformNativeAlert,
@@ -2646,6 +2609,14 @@ impl PlatformWindow for MacWindow {
         parent_view: *mut c_void,
         config: HostedContentConfig,
     ) {
+        if cursor_debug_enabled() {
+            log::info!(
+                "gpui_cursor_debug configure_hosted_content host_view={host_view:p} parent_view={parent_view:p} embed_in_host={} manage_window_chrome={} manage_toolbar={}",
+                config.embed_in_host,
+                config.manage_window_chrome,
+                config.manage_toolbar
+            );
+        }
         self.0.as_ref().lock().configuring_hosted_content = true;
         unsafe {
             crate::native_controls::configure_sidebar_window(
@@ -3293,6 +3264,15 @@ fn flush_pending_resize_callback(window_state: &Arc<Mutex<MacWindowState>>, _rea
 
     let content_size = lock.content_size();
     let scale_factor = lock.scale_factor();
+    if cursor_debug_enabled() {
+        log::info!(
+            "gpui_cursor_debug flush_pending_resize_callback reason={} size=({}, {}) scale_factor={}",
+            _reason,
+            content_size.width.as_f32(),
+            content_size.height.as_f32(),
+            scale_factor
+        );
+    }
     if let Some(mut callback) = lock.resize_callback.take() {
         lock.pending_resize_callback = false;
         drop(lock);
@@ -3456,6 +3436,20 @@ extern "C" fn set_frame_size(this: &Object, _: Sel, size: NSSize) {
 
     if skip_callback {
         lock.pending_resize_callback = true;
+    }
+
+    if cursor_debug_enabled() {
+        log::info!(
+            "gpui_cursor_debug set_frame_size old=({}, {}) new=({}, {}) mid_frame={} configuring_hosted_content={} skip_callback={} pending_resize_callback={}",
+            old_size.width.as_f32(),
+            old_size.height.as_f32(),
+            new_size.width.as_f32(),
+            new_size.height.as_f32(),
+            display_layer_mid_frame,
+            lock.configuring_hosted_content,
+            skip_callback,
+            lock.pending_resize_callback
+        );
     }
 
     if !skip_callback {

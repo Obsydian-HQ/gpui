@@ -905,10 +905,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
 
     fn blur_native_field_editor(&self) {}
 
-    fn defers_cursor_to_native_view(&self) -> bool {
-        false
-    }
-
     fn show_native_alert_sheet(
         &self,
         _alert: PlatformNativeAlert,

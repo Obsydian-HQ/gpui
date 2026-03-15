@@ -71,6 +71,11 @@ mod prompts;
 use crate::util::atomic_incr_if_not_zero;
 pub use prompts::*;
 
+fn cursor_debug_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("GPUI_CURSOR_DEBUG").is_some())
+}
+
 /// An identifier for a secondary GPUI rendering surface within a window.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct SurfaceId(pub(crate) u32);
@@ -4224,6 +4229,17 @@ impl Window {
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
 
+        if cursor_debug_enabled() {
+            log::info!(
+                "gpui_cursor_debug bounds_changed viewport=({}, {}) scale_factor={} active={} hovered={}",
+                self.viewport_size.width.0,
+                self.viewport_size.height.0,
+                self.scale_factor,
+                self.active.get(),
+                self.hovered.get()
+            );
+        }
+
         self.refresh();
 
         self.bounds_observers
@@ -6648,15 +6664,21 @@ impl Window {
     fn reset_cursor_style(&self, cx: &mut App) {
         // Set the cursor only if we're the active window.
         if self.is_window_hovered() {
-            #[cfg(target_os = "macos")]
-            if self.platform_window.defers_cursor_to_native_view() {
-                return;
-            }
-
             let style = self
                 .rendered_frame
                 .cursor_style(self)
                 .unwrap_or(CursorStyle::Arrow);
+
+            if cursor_debug_enabled() {
+                log::info!(
+                    "gpui_cursor_debug reset_cursor_style mouse=({}, {}) style={:?} hitbox_count={} cursor_style_requests={}",
+                    self.mouse_position.x.0,
+                    self.mouse_position.y.0,
+                    style,
+                    self.mouse_hit_test.ids.len(),
+                    self.rendered_frame.cursor_styles.len()
+                );
+            }
             cx.platform.set_cursor_style(style);
         }
     }
@@ -6828,6 +6850,15 @@ impl Window {
     fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
         if hit_test != self.mouse_hit_test {
+            if cursor_debug_enabled() {
+                log::info!(
+                    "gpui_cursor_debug hit_test_changed mouse=({}, {}) old_hitbox_count={} new_hitbox_count={}",
+                    self.mouse_position.x.0,
+                    self.mouse_position.y.0,
+                    self.mouse_hit_test.ids.len(),
+                    hit_test.ids.len()
+                );
+            }
             self.mouse_hit_test = hit_test;
             self.reset_cursor_style(cx);
         }
